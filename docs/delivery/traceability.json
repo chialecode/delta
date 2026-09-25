@@ -1,0 +1,851 @@
+{
+  "schemaVersion": 1,
+  "requirements": [
+    {
+      "id": "FR-BASE-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-27"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-BASE-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-27"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-DATA-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-09"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-DATA-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-03"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-DATA-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-21"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-DATA-04",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-17"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-DATA-05",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-06"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-21",
+        "AC-26"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-21"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-21"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-05",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-11"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-MKT-06",
+      "stage": "S4",
+      "status": "planned",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-29"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-05"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-22"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-22"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-22"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-05",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-07"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-06",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-07"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-07",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-07",
+        "AC-18"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-08",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-05"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-LED-09",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md"
+      ],
+      "acceptance": [
+        "AC-18"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-JRN-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-JRN-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-JRN-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-JRN-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-JRN-05",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-28"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-01",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-02",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-13"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-03",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-13"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-04",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-15"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-05",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-18"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-TRN-06",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/ai-design.md"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-19"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-01",
+      "stage": "S3",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-15"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-02",
+      "stage": "S3",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-16"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-03",
+      "stage": "S3",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-15"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-04",
+      "stage": "S3",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-15",
+        "AC-18"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-05",
+      "stage": "S3",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-15"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-STR-06",
+      "stage": "S4",
+      "status": "planned",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-29"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-19",
+        "AC-25"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-10",
+        "AC-19"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-19",
+        "AC-24"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-10",
+        "AC-19"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-05",
+      "stage": "S2",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-16",
+        "AC-28"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-06",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-19"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-07",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-24"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-AI-08",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/ai-design.md",
+        "docs/design/integration-contracts.md",
+        "docs/design/context-state-management.md"
+      ],
+      "acceptance": [
+        "AC-23",
+        "AC-25"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-OPS-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-09"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-OPS-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-20"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-OPS-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-20",
+        "AC-25"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "FR-OPS-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/data-model.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-20"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-01",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-02",
+        "AC-22"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-02",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-10",
+        "AC-24"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-03",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-26"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-04",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-26"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-05",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-16",
+        "AC-24",
+        "AC-26"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-06",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-09"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-07",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-08",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-23",
+        "AC-27"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-09",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "evidence": []
+    },
+    {
+      "id": "NFR-10",
+      "stage": "S1",
+      "status": "planned",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/integration-contracts.md"
+      ],
+      "acceptance": [
+        "AC-19",
+        "AC-20",
+        "AC-25"
+      ],
+      "evidence": []
+    }
+  ]
+}

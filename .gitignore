@@ -1,0 +1,25 @@
+# Local data and secrets
+.local/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.key
+*.pem
+# Build and dependencies
+target/
+dist/
+build/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

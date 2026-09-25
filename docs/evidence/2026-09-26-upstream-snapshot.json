@@ -1,0 +1,1870 @@
+{
+  "queried_at": "2026-09-25T16:44:06.638118+00:00",
+  "purpose": "Official metadata snapshot; not integration, security or licensing clearance.",
+  "results": [
+    {
+      "kind": "crate",
+      "name": "gpui-kit",
+      "url": "https://crates.io/api/v1/crates/gpui-kit",
+      "version": "0.6.6",
+      "released_at": "2026-09-21T13:27:45.725652Z",
+      "updated_at": "2026-09-21T13:27:45.725652Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/longbridge/gpui-kit",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "gpui-component",
+      "url": "https://crates.io/api/v1/crates/gpui-component",
+      "version": "0.6.6",
+      "released_at": "2026-09-21T13:25:19.406802Z",
+      "updated_at": "2026-09-21T13:25:19.406802Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/longbridge/gpui-kit",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "gpui",
+      "url": "https://crates.io/api/v1/crates/gpui",
+      "version": "0.2.2",
+      "released_at": "2025-10-22T03:56:29.835700Z",
+      "updated_at": "2025-10-22T03:56:29.835700Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/zed-industries/zed",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "iced",
+      "url": "https://crates.io/api/v1/crates/iced",
+      "version": "0.14.0",
+      "released_at": "2025-12-07T20:51:51.386769Z",
+      "updated_at": "2025-12-07T20:51:51.386769Z",
+      "license": "MIT",
+      "repository": "https://github.com/iced-rs/iced",
+      "rust_version": "1.88",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "eframe",
+      "url": "https://crates.io/api/v1/crates/eframe",
+      "version": "0.36.2",
+      "released_at": "2026-09-08T15:12:19.120290Z",
+      "updated_at": "2026-09-08T15:12:19.120290Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/emilk/egui/tree/main/crates/eframe",
+      "rust_version": "1.95",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "tauri",
+      "url": "https://crates.io/api/v1/crates/tauri",
+      "version": "2.11.6",
+      "released_at": "2026-09-19T23:47:51.959344Z",
+      "updated_at": "2026-09-21T16:10:24.834741Z",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/tauri-apps/tauri",
+      "rust_version": "1.77.2",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "wry",
+      "url": "https://crates.io/api/v1/crates/wry",
+      "version": "0.57.0",
+      "released_at": "2026-09-08T03:54:05.166931Z",
+      "updated_at": "2026-09-08T03:54:05.166931Z",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/tauri-apps/wry",
+      "rust_version": "1.85",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "rusqlite",
+      "url": "https://crates.io/api/v1/crates/rusqlite",
+      "version": "0.40.2",
+      "released_at": "2026-08-08T14:21:52.570893Z",
+      "updated_at": "2026-08-08T14:21:52.570893Z",
+      "license": "MIT",
+      "repository": "https://github.com/rusqlite/rusqlite",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "sqlx",
+      "url": "https://crates.io/api/v1/crates/sqlx",
+      "version": "0.9.0",
+      "released_at": "2026-05-21T17:35:53.403466Z",
+      "updated_at": "2026-05-21T17:35:53.403466Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/launchbadge/sqlx",
+      "rust_version": "1.94.0",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "rust_decimal",
+      "url": "https://crates.io/api/v1/crates/rust_decimal",
+      "version": "1.43.0",
+      "released_at": "2026-09-02T00:43:11.457502Z",
+      "updated_at": "2026-09-02T00:43:11.457502Z",
+      "license": "MIT",
+      "repository": "https://github.com/paupino/rust-decimal",
+      "rust_version": "1.67.1",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "bigdecimal",
+      "url": "https://crates.io/api/v1/crates/bigdecimal",
+      "version": "0.4.10",
+      "released_at": "2025-12-27T23:58:11.318859Z",
+      "updated_at": "2025-12-27T23:58:11.318859Z",
+      "license": "MIT/Apache-2.0",
+      "repository": "https://github.com/akubera/bigdecimal-rs",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "tokio",
+      "url": "https://crates.io/api/v1/crates/tokio",
+      "version": "1.53.1",
+      "released_at": "2026-07-20T17:06:09.996426Z",
+      "updated_at": "2026-07-20T17:06:09.996426Z",
+      "license": "MIT",
+      "repository": "https://github.com/tokio-rs/tokio",
+      "rust_version": "1.71",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "reqwest",
+      "url": "https://crates.io/api/v1/crates/reqwest",
+      "version": "0.13.5",
+      "released_at": "2026-09-08T20:55:26.479356Z",
+      "updated_at": "2026-09-08T20:55:26.479356Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/seanmonstar/reqwest",
+      "rust_version": "1.85.0",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "chrono",
+      "url": "https://crates.io/api/v1/crates/chrono",
+      "version": "0.4.45",
+      "released_at": "2026-06-04T12:16:42.063037Z",
+      "updated_at": "2026-06-04T12:16:42.063037Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/chronotope/chrono",
+      "rust_version": "1.62.0",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "chrono-tz",
+      "url": "https://crates.io/api/v1/crates/chrono-tz",
+      "version": "0.10.4",
+      "released_at": "2025-07-11T19:08:33.700056Z",
+      "updated_at": "2025-07-11T19:08:33.700056Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/chronotope/chrono-tz",
+      "rust_version": "1.65",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "keyring",
+      "url": "https://crates.io/api/v1/crates/keyring",
+      "version": "4.2.0",
+      "released_at": "2026-08-29T23:48:56.175457Z",
+      "updated_at": "2026-08-29T23:48:56.175457Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/open-source-cooperative/keyring-rs",
+      "rust_version": "1.88.0",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "serde",
+      "url": "https://crates.io/api/v1/crates/serde",
+      "version": "1.0.229",
+      "released_at": "2026-07-18T23:05:13.266456Z",
+      "updated_at": "2026-07-18T23:05:13.266456Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/serde",
+      "rust_version": "1.56",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "thiserror",
+      "url": "https://crates.io/api/v1/crates/thiserror",
+      "version": "2.0.21",
+      "released_at": "2026-09-23T20:24:07.771104Z",
+      "updated_at": "2026-09-23T20:24:07.771104Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/dtolnay/thiserror",
+      "rust_version": "1.77",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "tracing",
+      "url": "https://crates.io/api/v1/crates/tracing",
+      "version": "0.1.44",
+      "released_at": "2025-12-18T14:26:12.360139Z",
+      "updated_at": "2025-12-18T14:26:12.360139Z",
+      "license": "MIT",
+      "repository": "https://github.com/tokio-rs/tracing",
+      "rust_version": "1.65.0",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "csv",
+      "url": "https://crates.io/api/v1/crates/csv",
+      "version": "1.4.0",
+      "released_at": "2025-10-17T13:56:07.013801Z",
+      "updated_at": "2025-10-17T13:56:07.013801Z",
+      "license": "Unlicense/MIT",
+      "repository": "https://github.com/BurntSushi/rust-csv",
+      "rust_version": "1.73",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "schemars",
+      "url": "https://crates.io/api/v1/crates/schemars",
+      "version": "1.2.2",
+      "released_at": "2026-07-27T14:35:28.246709Z",
+      "updated_at": "2026-07-27T14:35:28.246709Z",
+      "license": "MIT",
+      "repository": "https://github.com/GREsau/schemars",
+      "rust_version": "1.74",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "rig-core",
+      "url": "https://crates.io/api/v1/crates/rig-core",
+      "version": "0.42.0",
+      "released_at": "2026-08-17T18:43:08.057965Z",
+      "updated_at": "2026-08-17T18:43:08.057965Z",
+      "license": "MIT",
+      "repository": "https://github.com/0xPlaygrounds/rig",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "rmcp",
+      "url": "https://crates.io/api/v1/crates/rmcp",
+      "version": "3.4.1",
+      "released_at": "2026-09-23T17:30:22.394262Z",
+      "updated_at": "2026-09-23T17:30:22.394262Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/modelcontextprotocol/rust-sdk/",
+      "rust_version": "1.88",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "ta",
+      "url": "https://crates.io/api/v1/crates/ta",
+      "version": "0.5.0",
+      "released_at": "2021-06-26T22:28:52.679579Z",
+      "updated_at": "2021-06-26T22:28:52.679579Z",
+      "license": "MIT",
+      "repository": "https://github.com/greyblake/ta-rs",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "yata",
+      "url": "https://crates.io/api/v1/crates/yata",
+      "version": "0.7.0",
+      "released_at": "2024-03-07T19:07:49.190268Z",
+      "updated_at": "2024-03-07T19:07:49.190268Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/amv-dev/yata",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "longport",
+      "url": "https://crates.io/api/v1/crates/longport",
+      "version": "4.3.7",
+      "released_at": "2026-08-12T04:54:33.728906Z",
+      "updated_at": "2026-08-12T04:54:33.728906Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/longportapp/openapi",
+      "rust_version": null,
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "crate",
+      "name": "proptest",
+      "url": "https://crates.io/api/v1/crates/proptest",
+      "version": "1.11.0",
+      "released_at": "2026-03-24T11:01:38.993611Z",
+      "updated_at": "2026-03-24T11:01:38.993611Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/proptest-rs/proptest",
+      "rust_version": "1.85",
+      "yanked": false,
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "longbridge/gpui-kit",
+      "url": "https://api.github.com/repos/longbridge/gpui-kit",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T16:40:29Z",
+      "updated_at": "2026-09-25T16:29:15Z",
+      "default_branch": "main",
+      "license": "NOASSERTION",
+      "open_issues_count": 102,
+      "html_url": "https://github.com/longbridge/gpui-kit",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "zed-industries/zed",
+      "url": "https://api.github.com/repos/zed-industries/zed",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T16:26:13Z",
+      "updated_at": "2026-09-25T15:59:35Z",
+      "default_branch": "main",
+      "license": "NOASSERTION",
+      "open_issues_count": 3129,
+      "html_url": "https://github.com/zed-industries/zed",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "tauri-apps/tauri",
+      "url": "https://api.github.com/repos/tauri-apps/tauri",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T16:26:36Z",
+      "updated_at": "2026-09-25T16:23:00Z",
+      "default_branch": "dev",
+      "license": "Apache-2.0",
+      "open_issues_count": 1458,
+      "html_url": "https://github.com/tauri-apps/tauri",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "tauri-apps/wry",
+      "url": "https://api.github.com/repos/tauri-apps/wry",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-24T22:03:45Z",
+      "updated_at": "2026-09-25T14:47:59Z",
+      "default_branch": "dev",
+      "license": "Apache-2.0",
+      "open_issues_count": 208,
+      "html_url": "https://github.com/tauri-apps/wry",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "iced-rs/iced",
+      "url": "https://api.github.com/repos/iced-rs/iced",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T11:59:04Z",
+      "updated_at": "2026-09-25T14:12:06Z",
+      "default_branch": "master",
+      "license": "MIT",
+      "open_issues_count": 498,
+      "html_url": "https://github.com/iced-rs/iced",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "emilk/egui",
+      "url": "https://api.github.com/repos/emilk/egui",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T13:51:18Z",
+      "updated_at": "2026-09-25T16:15:31Z",
+      "default_branch": "main",
+      "license": "Apache-2.0",
+      "open_issues_count": 1119,
+      "html_url": "https://github.com/emilk/egui",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "rusqlite/rusqlite",
+      "url": "https://api.github.com/repos/rusqlite/rusqlite",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-25T11:09:39Z",
+      "updated_at": "2026-09-25T11:09:47Z",
+      "default_branch": "master",
+      "license": "MIT",
+      "open_issues_count": 170,
+      "html_url": "https://github.com/rusqlite/rusqlite",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "0xPlaygrounds/rig",
+      "url": "https://api.github.com/repos/0xPlaygrounds/rig",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-24T23:37:57Z",
+      "updated_at": "2026-09-25T15:57:39Z",
+      "default_branch": "main",
+      "license": "MIT",
+      "open_issues_count": 114,
+      "html_url": "https://github.com/0xPlaygrounds/rig",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "modelcontextprotocol/rust-sdk",
+      "url": "https://api.github.com/repos/modelcontextprotocol/rust-sdk",
+      "archived": false,
+      "disabled": false,
+      "pushed_at": "2026-09-24T19:42:55Z",
+      "updated_at": "2026-09-25T12:04:55Z",
+      "default_branch": "main",
+      "license": "NOASSERTION",
+      "open_issues_count": 51,
+      "html_url": "https://github.com/modelcontextprotocol/rust-sdk",
+      "status": "retrieved"
+    },
+    {
+      "kind": "repo",
+      "name": "tradingview/lightweight-charts",
+      "url": "https://api.github.com/repos/tradingview/lightweight-charts",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "ccxt/ccxt",
+      "url": "https://api.github.com/repos/ccxt/ccxt",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "longportapp/openapi",
+      "url": "https://api.github.com/repos/longportapp/openapi",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "TA-Lib/ta-lib-python",
+      "url": "https://api.github.com/repos/TA-Lib/ta-lib-python",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "astral-sh/uv",
+      "url": "https://api.github.com/repos/astral-sh/uv",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "langchain-ai/langgraph",
+      "url": "https://api.github.com/repos/langchain-ai/langgraph",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "nautechsystems/nautilus_trader",
+      "url": "https://api.github.com/repos/nautechsystems/nautilus_trader",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "hledger/hledger",
+      "url": "https://api.github.com/repos/hledger/hledger",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "repo",
+      "name": "beancount/beancount",
+      "url": "https://api.github.com/repos/beancount/beancount",
+      "status": "unavailable",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "kind": "pypi",
+      "name": "TA-Lib",
+      "url": "https://pypi.org/pypi/TA-Lib/json",
+      "version": "0.8.1",
+      "released_at": "2026-09-21T17:21:51.111942Z",
+      "license": null,
+      "project_urls": {
+        "download": "https://github.com/ta-lib/ta-lib-python/releases",
+        "homepage": "http://github.com/ta-lib/ta-lib-python"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "pypi",
+      "name": "uv",
+      "url": "https://pypi.org/pypi/uv/json",
+      "version": "0.12.19",
+      "released_at": "2026-09-25T00:31:37.121419Z",
+      "license": "MIT OR Apache-2.0",
+      "project_urls": {
+        "Changelog": "https://github.com/astral-sh/uv/blob/main/CHANGELOG.md",
+        "Discord": "https://discord.gg/astral-sh",
+        "Documentation": "https://docs.astral.sh/uv",
+        "Homepage": "https://pypi.org/project/uv/",
+        "Releases": "https://github.com/astral-sh/uv/releases",
+        "Repository": "https://github.com/astral-sh/uv"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "pypi",
+      "name": "exchange_calendars",
+      "url": "https://pypi.org/pypi/exchange_calendars/json",
+      "version": "4.13.2",
+      "released_at": "2026-03-10T03:24:38.536533Z",
+      "license": "Apache-2.0",
+      "project_urls": {
+        "Issue Tracker": "https://github.com/gerrymanoim/exchange_calendars/issues",
+        "Source Code": "https://github.com/gerrymanoim/exchange_calendars",
+        "documentation": "https://github.com/gerrymanoim/exchange_calendars/tree/master/docs",
+        "homepage": "https://github.com/gerrymanoim/exchange_calendars"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "pypi",
+      "name": "pydantic",
+      "url": "https://pypi.org/pypi/pydantic/json",
+      "version": "2.13.5",
+      "released_at": "2026-08-28T14:04:00.916255Z",
+      "license": "MIT",
+      "project_urls": {
+        "Changelog": "https://docs.pydantic.dev/latest/changelog/",
+        "Documentation": "https://docs.pydantic.dev",
+        "Funding": "https://github.com/sponsors/samuelcolvin",
+        "Homepage": "https://github.com/pydantic/pydantic",
+        "Source": "https://github.com/pydantic/pydantic"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "pypi",
+      "name": "ccxt",
+      "url": "https://pypi.org/pypi/ccxt/json",
+      "version": "4.5.84",
+      "released_at": "2026-09-24T11:04:11.260127Z",
+      "license": "MIT",
+      "project_urls": {
+        "Discord": "https://discord.gg/ccxt",
+        "Documentation": "https://github.com/ccxt/ccxt/wiki",
+        "Funding": "https://opencollective.com/ccxt",
+        "Homepage": "https://ccxt.com",
+        "Twitter": "https://twitter.com/ccxt_official"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "pypi",
+      "name": "polars",
+      "url": "https://pypi.org/pypi/polars/json",
+      "version": "1.44.2",
+      "released_at": "2026-09-09T07:42:08.859791Z",
+      "license": "Copyright (c) 2025 Ritchie Vink\n        Copyright (c) 2024 (Some portions) NVIDIA CORPORATION & AFFILIATES. All rights reserved.\n        \n        Permission is hereby granted, free of charge, to any person obtaining a copy\n        of this software and associated documentation files (the \"Software\"), to deal\n        in the Software without restriction, including without limitation the rights\n        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n        copies of the Software, and to permit persons to whom the Software is\n        furnished to do so, subject to the following conditions:\n        \n        The above copyright notice and this permission notice shall be included in all\n        copies or substantial portions of the Software.\n        \n        THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n        SOFTWARE.\n        ",
+      "project_urls": {
+        "Changelog": "https://github.com/pola-rs/polars/releases",
+        "Documentation": "https://docs.pola.rs/api/python/stable/reference/index.html",
+        "Homepage": "https://www.pola.rs/",
+        "Repository": "https://github.com/pola-rs/polars"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "npm",
+      "name": "lightweight-charts",
+      "url": "https://registry.npmjs.org/lightweight-charts/latest",
+      "version": "5.2.1",
+      "license": "Apache-2.0",
+      "repository": {
+        "url": "git+https://github.com/tradingview/lightweight-charts.git",
+        "type": "git"
+      },
+      "status": "retrieved"
+    },
+    {
+      "kind": "npm",
+      "name": "ccxt",
+      "url": "https://registry.npmjs.org/ccxt",
+      "status": "retrieved",
+      "version": "4.5.84",
+      "released_at": "2026-09-24T11:13:18.215Z",
+      "license": "MIT",
+      "engines": {},
+      "repository": {
+        "url": "git+https://github.com/ccxt/ccxt.git",
+        "type": "git"
+      }
+    },
+    {
+      "kind": "crate",
+      "name": "uuid",
+      "url": "https://crates.io/api/v1/crates/uuid",
+      "status": "retrieved",
+      "version": "1.26.1",
+      "released_at": "2026-09-10T00:30:44.938530Z",
+      "license": "Apache-2.0 OR MIT",
+      "repository": "https://github.com/uuid-rs/uuid",
+      "rust_version": "1.85.0"
+    },
+    {
+      "kind": "crate",
+      "name": "directories",
+      "url": "https://crates.io/api/v1/crates/directories",
+      "status": "retrieved",
+      "version": "6.0.0",
+      "released_at": "2025-01-12T17:19:05.177535Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/soc/directories-rs",
+      "rust_version": null
+    },
+    {
+      "kind": "crate",
+      "name": "tempfile",
+      "url": "https://crates.io/api/v1/crates/tempfile",
+      "status": "retrieved",
+      "version": "3.27.0",
+      "released_at": "2026-03-11T00:20:04.812840Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/Stebalien/tempfile",
+      "rust_version": "1.63"
+    },
+    {
+      "kind": "crate",
+      "name": "serde_json",
+      "url": "https://crates.io/api/v1/crates/serde_json",
+      "status": "retrieved",
+      "version": "1.0.151",
+      "released_at": "2026-07-20T05:54:44.078083Z",
+      "license": "MIT OR Apache-2.0",
+      "repository": "https://github.com/serde-rs/json",
+      "rust_version": "1.71"
+    },
+    {
+      "kind": "crate",
+      "name": "tokio-util",
+      "url": "https://crates.io/api/v1/crates/tokio-util",
+      "status": "retrieved",
+      "version": "0.7.19",
+      "released_at": "2026-07-21T12:10:46.915710Z",
+      "license": "MIT",
+      "repository": "https://github.com/tokio-rs/tokio",
+      "rust_version": "1.71"
+    },
+    {
+      "kind": "crate",
+      "name": "pulldown-cmark",
+      "url": "https://crates.io/api/v1/crates/pulldown-cmark",
+      "status": "retrieved",
+      "version": "0.13.4",
+      "released_at": "2026-05-20T08:48:23.621050Z",
+      "license": "MIT",
+      "repository": "https://github.com/raphlinus/pulldown-cmark",
+      "rust_version": "1.71.1"
+    },
+    {
+      "kind": "crate",
+      "name": "calamine",
+      "url": "https://crates.io/api/v1/crates/calamine",
+      "status": "retrieved",
+      "version": "0.36.1",
+      "released_at": "2026-07-27T10:06:39.750200Z",
+      "license": "MIT",
+      "repository": "https://github.com/tafia/calamine",
+      "rust_version": "1.88"
+    },
+    {
+      "kind": "crate",
+      "name": "duckdb",
+      "url": "https://crates.io/api/v1/crates/duckdb",
+      "status": "retrieved",
+      "version": "1.10505.0",
+      "released_at": "2026-07-22T13:42:37.863025Z",
+      "license": "MIT",
+      "repository": "https://github.com/duckdb/duckdb-rs",
+      "rust_version": "1.85.1"
+    },
+    {
+      "kind": "crate",
+      "name": "parquet",
+      "url": "https://crates.io/api/v1/crates/parquet",
+      "status": "retrieved",
+      "version": "60.0.0",
+      "released_at": "2026-09-15T15:32:03.910524Z",
+      "license": "Apache-2.0",
+      "repository": "https://github.com/apache/arrow-rs",
+      "rust_version": "1.88"
+    },
+    {
+      "kind": "crate",
+      "name": "ccxt",
+      "url": "https://crates.io/api/v1/crates/ccxt",
+      "status": "retrieved",
+      "version": "4.5.84",
+      "released_at": "2026-09-24T10:55:20.267658Z",
+      "license": "MIT",
+      "repository": "https://github.com/ccxt/ccxt",
+      "rust_version": null
+    },
+    {
+      "kind": "crate",
+      "name": "ta-lib",
+      "url": "https://crates.io/api/v1/crates/ta-lib",
+      "status": "retrieved",
+      "version": "0.1.2",
+      "released_at": "2023-01-16T18:52:48.017575Z",
+      "license": "Apache-2.0 OR BSD-3-Clause OR MIT OR Zlib",
+      "repository": "https://github.com/virtualritz/ta-lib-rs/",
+      "rust_version": null
+    },
+    {
+      "kind": "crate",
+      "name": "talib",
+      "url": "https://crates.io/api/v1/crates/talib",
+      "status": "retrieved",
+      "version": "0.1.2",
+      "released_at": "2024-12-19T07:14:45.598040Z",
+      "license": "MIT",
+      "repository": "https://github.com/Yvictor/polars_ta_extension",
+      "rust_version": null
+    }
+  ],
+  "sourceDocuments": [
+    {
+      "name": "gpui-kit",
+      "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/main/README.md",
+      "status": "retrieved",
+      "sha256": "83158587667b033a35d8b5e56511e468e0411620d2cb445765a6c94109ce3c37",
+      "excerpt": [
+        {
+          "line": 11,
+          "text": "Build fantastic, high-performance desktop apps with Rust and GPUI."
+        },
+        {
+          "line": 13,
+          "text": "GPUI Kit is a comprehensive Rust desktop application framework. It combines a"
+        },
+        {
+          "line": 17,
+          "text": "WebAssembly support, AccessKit accessibility, UI integration testing, and an"
+        },
+        {
+          "line": 29,
+          "text": "and assets, so a Rust application lists a single dependency. JavaScript extension"
+        },
+        {
+          "line": 37,
+          "text": "- **Production Ready**: Used to build Longbridge Pro from day one and continuously refined in a publicly shipped commercial desktop application."
+        },
+        {
+          "line": 38,
+          "text": "- **WebAssembly**: Run applications and the same component showcases on the web with `wasm32-unknown-unknown`."
+        },
+        {
+          "line": 40,
+          "text": "- **UI Integration Testing**: Render real components in headless windows, drive pointer and keyboard input, and assert state, focus, layout, and accessibility."
+        },
+        {
+          "line": 41,
+          "text": "- **Native Feel**: Modern controls inspired by macOS and Windows, backed by semantic themes and multiple sizes."
+        },
+        {
+          "line": 49,
+          "text": "- **JavaScript Extensions**: `gpui-shell` lets a shipped Rust host load panels and business logic as scripts, with every capability granted explicitly."
+        },
+        {
+          "line": 50,
+          "text": "- **Cross Platform**: Ship one Rust codebase to macOS, Windows, and Linux."
+        },
+        {
+          "line": 63,
+          "text": "| Complete, styled components      | Unstyled behavior and infrastructure          | JavaScript runtime hosted by Rust          |"
+        },
+        {
+          "line": 112,
+          "text": "commercial desktop application rather than designed in isolation."
+        },
+        {
+          "line": 140,
+          "text": "    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {"
+        },
+        {
+          "line": 221,
+          "text": "# Code editor with LSP support and syntax highlighting"
+        },
+        {
+          "line": 240,
+          "text": "## License"
+        },
+        {
+          "line": 242,
+          "text": "Software source and documentation code examples: [Apache-2.0](LICENSE-APACHE)."
+        },
+        {
+          "line": 244,
+          "text": "Documentation prose and original illustrations in the Docs, Base, Component, and Shell sections (including Chinese translations) for which GPUI Kit holds licensing rights are also offered under [CC BY 4.0](LICENSE-DOCS.md). When copying or adapting that material, credit **GPUI Kit**, link to the source page and [CC BY 4.0 license](https://creativecommons.org/licenses/by/4.0/), and indicate changes. Existing Apache-2.0 permissions remain; earlier revisions retain their prior terms, and third-party contributions keep their own licenses unless separately authorized. Using facts or ideas without c"
+        },
+        {
+          "line": 246,
+          "text": "- Built on [GPUI](https://github.com/zed-industries/zed), the UI framework from Zed Industries, also Apache-2.0. The `gpui-pre-*` crates are snapshots of it, published with Zed's license and notices intact."
+        }
+      ]
+    },
+    {
+      "name": "gpui-candlestick",
+      "url": "https://raw.githubusercontent.com/longbridge/gpui-kit/main/crates/component/src/chart/candlestick_chart.rs",
+      "status": "retrieved",
+      "sha256": "cef5b4b1ae8a7f014aa2d437c95400129bab18b6924b7d875ccfec67f76f1370",
+      "excerpt": [
+        {
+          "line": 9,
+          "text": "use rust_i18n::t;"
+        },
+        {
+          "line": 16,
+          "text": "        tooltip::{CrossLine, Tooltip, TooltipState},"
+        },
+        {
+          "line": 20,
+          "text": "use super::{TooltipContent, build_band_labels, caller_id, labeled_items};"
+        },
+        {
+          "line": 23,
+          "text": "pub struct CandlestickChart<T, X, Y>"
+        },
+        {
+          "line": 43,
+          "text": "    tooltip_content: TooltipContent<T>,"
+        },
+        {
+          "line": 46,
+          "text": "impl<T, X, Y> CandlestickChart<T, X, Y>"
+        },
+        {
+          "line": 71,
+          "text": "            tooltip_content: TooltipContent::default(),"
+        },
+        {
+          "line": 89,
+          "text": "    /// band marks the hovered candle, and a tooltip shows its open, high, low and"
+        },
+        {
+          "line": 99,
+          "text": "    /// Set the hover tooltip's title for a datum, instead of its x value."
+        },
+        {
+          "line": 100,
+          "text": "    pub fn tooltip_title(mut self, title: impl Fn(&T) -> SharedString + 'static) -> Self {"
+        },
+        {
+          "line": 101,
+          "text": "        self.tooltip_content.set_title(title);"
+        },
+        {
+          "line": 105,
+          "text": "    /// Set the text of each tooltip row's value; the raw number by default."
+        },
+        {
+          "line": 109,
+          "text": "    pub fn tooltip_value("
+        },
+        {
+          "line": 113,
+          "text": "        self.tooltip_content.set_value(value);"
+        },
+        {
+          "line": 117,
+          "text": "    /// Color each tooltip row's value, such as green or red by its sign; the"
+        },
+        {
+          "line": 118,
+          "text": "    /// tooltip's text color by default."
+        },
+        {
+          "line": 121,
+          "text": "    /// [`tooltip_value`](Self::tooltip_value)."
+        },
+        {
+          "line": 122,
+          "text": "    pub fn tooltip_value_color<H>(mut self, color: impl Fn(&T, usize, f64) -> H + 'static) -> Self"
+        },
+        {
+          "line": 126,
+          "text": "        self.tooltip_content.set_value_color(color);"
+        },
+        {
+          "line": 130,
+          "text": "    /// Draw the tooltip box's content for a datum yourself, in place of the"
+        },
+        {
+          "line": 134,
+          "text": "    /// [`tooltip_title`](Self::tooltip_title), [`tooltip_value`](Self::tooltip_value)"
+        },
+        {
+          "line": 135,
+          "text": "    /// and [`tooltip_value_color`](Self::tooltip_value_color) no longer apply."
+        }
+      ]
+    },
+    {
+      "name": "rig",
+      "url": "https://raw.githubusercontent.com/0xPlaygrounds/rig/main/README.md",
+      "status": "retrieved",
+      "sha256": "351c301347a96fb309f779453e431792d52257b9c380d80eeb89a3881f266605",
+      "excerpt": [
+        {
+          "line": 15,
+          "text": "<a href=\"LICENSE\"><img src=\"https://img.shields.io/crates/l/rig.svg?color=dca282\" /></a>"
+        },
+        {
+          "line": 19,
+          "text": "<a href=\"\"><img src=\"https://img.shields.io/badge/built_with-Rust-dca282.svg?logo=rust\" /></a>"
+        },
+        {
+          "line": 57,
+          "text": "- [Integrations](#supported-integrations)"
+        },
+        {
+          "line": 60,
+          "text": "Rig is a Rust library for building scalable, modular, and ergonomic **LLM-powered** applications."
+        },
+        {
+          "line": 65,
+          "text": "- Agentic workflows that can handle multi-turn streaming and prompting"
+        },
+        {
+          "line": 70,
+          "text": "- Full support for LLM completion and embedding workflows"
+        },
+        {
+          "line": 71,
+          "text": "- Support for transcription, audio generation and image generation model capabilities"
+        },
+        {
+          "line": 73,
+          "text": "- Browser-WASM (`wasm32-unknown-unknown`) support for the portable core and"
+        },
+        {
+          "line": 74,
+          "text": "  classic runtime — see [target support](crates/rig-agent/README.md#target-support)"
+        },
+        {
+          "line": 75,
+          "text": "  for the full matrix (WASI is not supported; `rig-rmcp`/MCP is native-only)"
+        },
+        {
+          "line": 82,
+          "text": "  contextual tool contracts, memory and vector-store contracts, and built-in"
+        },
+        {
+          "line": 84,
+          "text": "- `rig-agent` contains the classic builder, prompt/streaming traits, typed hooks,"
+        },
+        {
+          "line": 85,
+          "text": "  the live tool registry, extraction, and the serializable `AgentRun` state machine. It"
+        },
+        {
+          "line": 102,
+          "text": "- [St Jude](https://www.stjude.org/) - Using Rig for a chatbot utility as part of [`proteinpaint`](https://github.com/stjude/proteinpaint), a genomics visualisation tool."
+        },
+        {
+          "line": 103,
+          "text": "- [Coral Protocol](https://www.coralprotocol.org/) - Using Rig extensively, both internally as well as part of the [Coral Rust SDK.](https://github.com/Coral-Protocol/coral-rs)"
+        },
+        {
+          "line": 104,
+          "text": "- [VT Code](https://github.com/vinhnx/vtcode) - VT Code is a Rust-based terminal coding agent with semantic code intelligence via Tree-sitter and ast-grep. VT Code uses `rig` for simplifying LLM calls and implementing the model picker."
+        },
+        {
+          "line": 108,
+          "text": "- [Neon](https://neon.com) - Using Rig for their [app.build](https://github.com/neondatabase/appdotbuild-agent) V2 reboot in Rust."
+        },
+        {
+          "line": 110,
+          "text": "- [Cairnify](https://cairnify.com/) - helps users find documents, links, and information instantly through an intelligent search bar. Rig provides the agentic foundation behind Cairnify’s AI search experience, enabling tool-calling, reasoning, and retrieval workflows."
+        },
+        {
+          "line": 112,
+          "text": "- [deepwiki-rs](https://github.com/sopaco/deepwiki-rs) - Turn code into clarity. Generate accurate technical docs and AI-ready context in minutes—perfectly structured for human teams and intelligent agents."
+        },
+        {
+          "line": 118,
+          "text": "For a curated list of Rig projects, libraries, tools, articles, and production users, check out [awesome-rig](https://github.com/0xPlaygrounds/awesome-rig)."
+        },
+        {
+          "line": 132,
+          "text": "```rust"
+        },
+        {
+          "line": 173,
+          "text": "## Supported Integrations"
+        }
+      ]
+    },
+    {
+      "name": "rmcp",
+      "url": "https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/main/README.md",
+      "status": "retrieved",
+      "sha256": "c4f68586fc688a74a32f3177f00aa2f9d2e529f5c64326a0cfdc50eaa37679f0",
+      "excerpt": [
+        {
+          "line": 4,
+          "text": "[![CI](https://github.com/modelcontextprotocol/rust-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/modelcontextprotocol/rust-sdk/actions/workflows/ci.yml)"
+        },
+        {
+          "line": 5,
+          "text": "[![License](https://img.shields.io/crates/l/rmcp)](LICENSE)"
+        },
+        {
+          "line": 7,
+          "text": "An official Rust Model Context Protocol SDK implementation with tokio async runtime."
+        },
+        {
+          "line": 9,
+          "text": "> **Migrating to 3.x?** See the [migration guide](https://github.com/modelcontextprotocol/rust-sdk/discussions/969) for breaking changes and upgrade instructions."
+        },
+        {
+          "line": 14,
+          "text": "- [rmcp-macros](crates/rmcp-macros): A procedural macro crate for generating RMCP tool implementations - see [rmcp-macros](crates/rmcp-macros/README.md)"
+        },
+        {
+          "line": 22,
+          "text": "[modelcontextprotocol.io](https://modelcontextprotocol.io/specification/2026-07-28)."
+        },
+        {
+          "line": 27,
+          "text": "- [Tools](#tools)"
+        },
+        {
+          "line": 38,
+          "text": "- [Tasks](#tasks-long-running-tool-invocations)"
+        },
+        {
+          "line": 41,
+          "text": "- [Stateless Streamable HTTP](#stateless-streamable-http)"
+        },
+        {
+          "line": 47,
+          "text": "- [OAuth Support](#oauth-support)"
+        },
+        {
+          "line": 65,
+          "text": "cargo add rmcp --features server --git https://github.com/modelcontextprotocol/rust-sdk --branch main"
+        },
+        {
+          "line": 80,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 87,
+          "text": "        cmd.arg(\"-y\").arg(\"@modelcontextprotocol/server-everything\");"
+        },
+        {
+          "line": 101,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 137,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 149,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 157,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 168,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 173,
+          "text": "server.notify_cancelled(...).await?;"
+        },
+        {
+          "line": 180,
+          "text": "```rust, ignore"
+        },
+        {
+          "line": 182,
+          "text": "// or cancel it"
+        },
+        {
+          "line": 183,
+          "text": "let quit_reason = server.cancel().await?;"
+        }
+      ]
+    },
+    {
+      "name": "lightweight-charts",
+      "url": "https://raw.githubusercontent.com/tradingview/lightweight-charts/master/README.md",
+      "status": "retrieved",
+      "sha256": "ab4bb0bf16d36e75a97f44fab90515e3e4c2cde8f8e2563cdb98a1dac4d6d922",
+      "excerpt": [
+        {
+          "line": 107,
+          "text": "- [`lightweight-charts-plugin-authoring`](https://github.com/tradingview/lightweight-charts/blob/master/.github/skills/lightweight-charts-plugin-authoring/SKILL.md) is about *writing* a [plugin](https://tradingview.github.io/lightweight-charts/docs/plugins/intro). The skill helps choose between a custom series and a primitive, build on `@tradingview/lwc-toolkit`, and learn from the official plugin packages. It also warns about the common autoscale, whitespace, and hit-test traps. The `create-lwc-plugin` wizard offers to install this skill into a new plugin project."
+        },
+        {
+          "line": 119,
+          "text": "## License"
+        },
+        {
+          "line": 121,
+          "text": "Licensed under the Apache License, Version 2.0 (the \"License\"); you may not use this software except in compliance with the License."
+        },
+        {
+          "line": 122,
+          "text": "You may obtain a copy of the License in the [LICENSE](./LICENSE) file."
+        },
+        {
+          "line": 123,
+          "text": "Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License."
+        },
+        {
+          "line": 125,
+          "text": "This software incorporates several parts of tslib (<https://github.com/Microsoft/tslib>, (c) Microsoft Corporation) that are covered by BSD Zero Clause License."
+        },
+        {
+          "line": 127,
+          "text": "This license requires specifying TradingView as the product creator."
+        },
+        {
+          "line": 128,
+          "text": "You shall add the \"attribution notice\" from the NOTICE file and a link to <https://www.tradingview.com/> to the page of your website or mobile application that is available to your users."
+        },
+        {
+          "line": 130,
+          "text": "You can use the [`attributionLogo`](https://tradingview.github.io/lightweight-charts/docs/api/interfaces/LayoutOptions#attributionLogo) chart option for displaying an appropriate link to <https://www.tradingview.com/> on the chart itself, which will satisfy the link requirement."
+        }
+      ]
+    },
+    {
+      "name": "lightweight-notice",
+      "url": "https://raw.githubusercontent.com/tradingview/lightweight-charts/master/NOTICE",
+      "status": "retrieved",
+      "sha256": "f76c6afab94884448f0426e30d6e9d555ca7247894cd3484e477d2f87513036e",
+      "excerpt": []
+    },
+    {
+      "name": "nautilus",
+      "url": "https://raw.githubusercontent.com/nautechsystems/nautilus_trader/develop/README.md",
+      "status": "retrieved",
+      "sha256": "2f214ae1f49e5e0a9d4519398af11dbadd7e51569e875afae110bd81568d117d",
+      "excerpt": [
+        {
+          "line": 3,
+          "text": "[![rustc](https://img.shields.io/crates/msrv/nautilus-core?color=ea7233&logo=rust&label=rustc)](https://crates.io/crates/nautilus-core)"
+        },
+        {
+          "line": 4,
+          "text": "[![crates.io](https://img.shields.io/crates/v/nautilus-core?logo=rust)](https://crates.io/crates/nautilus-core)"
+        },
+        {
+          "line": 6,
+          "text": "![pythons](https://img.shields.io/pypi/pyversions/nautilus_trader)"
+        },
+        {
+          "line": 17,
+          "text": "| Platform           | Rust   | Python    |"
+        },
+        {
+          "line": 22,
+          "text": "| `Windows (x86_64)` | 1.98.1 | 3.12-3.14 |"
+        },
+        {
+          "line": 26,
+          "text": "- **Support**: [support@nautilustrader.io](mailto:support@nautilustrader.io)"
+        },
+        {
+          "line": 30,
+          "text": "NautilusTrader is an open-source, production-grade, Rust-native engine for multi-asset,"
+        },
+        {
+          "line": 34,
+          "text": "event-driven architecture, with Python serving as the control plane for strategy logic,"
+        },
+        {
+          "line": 38,
+          "text": "the flexibility of Python for system composition and strategy development."
+        },
+        {
+          "line": 39,
+          "text": "Trading systems can also be written entirely in Rust for mission-critical workloads."
+        },
+        {
+          "line": 54,
+          "text": "- **Fast**: Rust core with the [mimalloc](https://crates.io/crates/mimalloc) allocator and asynchronous networking using [tokio](https://crates.io/crates/tokio)."
+        },
+        {
+          "line": 55,
+          "text": "- **Reliable**: Type- and thread-safety backed by Rust, with optional Redis-backed state persistence."
+        },
+        {
+          "line": 56,
+          "text": "- **Portable**: Runs on Linux, macOS, and Windows. Deploy using Docker."
+        },
+        {
+          "line": 74,
+          "text": "Trading strategy research is often conducted in Python using vectorized approaches, while"
+        },
+        {
+          "line": 80,
+          "text": "A Rust-native core provides a deterministic event-driven runtime for both research and live"
+        },
+        {
+          "line": 81,
+          "text": "execution, while Python serves as the control plane. The same architecture, execution"
+        },
+        {
+          "line": 85,
+          "text": "Python bindings are provided via [PyO3](https://pyo3.rs) for the Rust-native v2 runtime."
+        },
+        {
+          "line": 88,
+          "text": "No Rust toolchain is required to install prebuilt wheels."
+        },
+        {
+          "line": 90,
+          "text": "This project makes the [Soundness Pledge](https://raphlinus.github.io/rust/2020/01/18/soundness-pledge.html):"
+        },
+        {
+          "line": 97,
+          "text": "> **MSRV:** NautilusTrader relies heavily on improvements in the Rust language and compiler."
+        },
+        {
+          "line": 98,
+          "text": "> As a result, the Minimum Supported Rust Version (MSRV) is generally equal to the latest stable release of Rust."
+        },
+        {
+          "line": 105,
+          "text": "The following integrations are currently supported; see [docs/integrations/](https://nautilustrader.io/docs/latest/integrations/) for details:"
+        }
+      ]
+    },
+    {
+      "name": "beancount",
+      "url": "https://raw.githubusercontent.com/beancount/beancount/master/README.rst",
+      "status": "retrieved",
+      "sha256": "e7cf6618278bf39bcc1d68e703e214afaed777cab5d2b0084a932bed718a64cb",
+      "excerpt": [
+        {
+          "line": 12,
+          "text": "    6  Copyright and License"
+        },
+        {
+          "line": 66,
+          "text": "  this version is trimmed down from v2 and most of the tools the v2 branch"
+        },
+        {
+          "line": 89,
+          "text": "Copyright and License"
+        }
+      ]
+    },
+    {
+      "name": "ccxt",
+      "url": "https://raw.githubusercontent.com/ccxt/ccxt/master/README.md",
+      "status": "retrieved",
+      "sha256": "261cd7504db12c6f356d3b96157257fda99a4d33c88da856a9a77866cb0726b1",
+      "excerpt": [
+        {
+          "line": 3,
+          "text": "[![NPM Downloads](https://img.shields.io/npm/dy/ccxt.svg)](https://www.npmjs.com/package/ccxt) [![npm](https://img.shields.io/npm/v/ccxt.svg)](https://npmjs.com/package/ccxt) [![PyPI](https://img.shields.io/pypi/v/ccxt.svg)](https://pypi.python.org/pypi/ccxt) [![NuGet version](https://img.shields.io/nuget/v/ccxt)](https://www.nuget.org/packages/ccxt) [![GoDoc](https://img.shields.io/github/v/tag/ccxt/ccxt?label=go)](https://godoc.org/github.com/ccxt/ccxt/go/v4) [![Mvn](https://badges.mvnrepository.com/badge/io.github.ccxt/ccxt/badge.svg?label=mvn)](https://mvnrepository.com/artifact/io.github."
+        },
+        {
+          "line": 14,
+          "text": "- supports 100+ cryptocurrency exchanges and prediction markets:"
+        },
+        {
+          "line": 63,
+          "text": "## Supported Cryptocurrency Exchanges"
+        },
+        {
+          "line": 64,
+          "text": "<!--- init list -->The CCXT library currently supports the following 104 cryptocurrency exchange markets and trading APIs:"
+        },
+        {
+          "line": 98,
+          "text": "| [![btse](https://github.com/user-attachments/assets/879ce771-6db1-4d8f-868a-77c9621635dc)](https://www.btse.com/referral/o2tjIXx5)                                                                  | btse                  | [BTSE](https://www.btse.com/referral/o2tjIXx5)                                              | [![API Version 3](https://img.shields.io/badge/3-lightgray)](https://support.btse.com/en/support/solutions/articles/43000044751-btse-api)        | ![CEX – Centralized EXchange](https://img.shields.io/badge/CEX-green.svg \"CEX – Centralized EXchange\") |                               "
+        },
+        {
+          "line": 176,
+          "text": "The library is under [MIT license](https://github.com/ccxt/ccxt/blob/master/LICENSE.txt), that means it's absolutely free for any developer to build commercial and opensource software on top of it, but use it at your own risk with no warranties, as is."
+        },
+        {
+          "line": 180,
+          "text": "<!--- init prediction list -->The CCXT library currently supports the following 9 prediction market exchanges and trading APIs:"
+        },
+        {
+          "line": 211,
+          "text": "CCXT participates in builder programs with the exchanges listed above, which means that in order to support the CCXT project users pay a small fee (1 bps) on top of the exchanges' fees when using the exchanges' API through CCXT. This is optional and can be disabled by setting `exchange.options['builderFee'] = False`. For all other exchanges no additional fee is charged and in some cases you receive discounts or special conditions by using CCXT."
+        },
+        {
+          "line": 220,
+          "text": "- [ccxt in **PyPI**](https://pypi.python.org/pypi/ccxt) (Python 3.7.0+)"
+        },
+        {
+          "line": 225,
+          "text": "- [ccxt in **Crates.io**](https://crates.io/crates/ccxt) (Rust, Cargo)"
+        },
+        {
+          "line": 287,
+          "text": "### Python"
+        },
+        {
+          "line": 289,
+          "text": "[ccxt in **PyPI**](https://pypi.python.org/pypi/ccxt)"
+        },
+        {
+          "line": 295,
+          "text": "```Python"
+        },
+        {
+          "line": 300,
+          "text": "The library supports concurrent asynchronous mode with asyncio and async/await in Python 3.7.0+"
+        },
+        {
+          "line": 302,
+          "text": "```Python"
+        },
+        {
+          "line": 303,
+          "text": "import ccxt.async_support as ccxt # link against the asynchronous version of ccxt"
+        },
+        {
+          "line": 306,
+          "text": "#### orjson support"
+        }
+      ]
+    },
+    {
+      "name": "longport",
+      "url": "https://raw.githubusercontent.com/longportapp/openapi/main/README.md",
+      "status": "retrieved",
+      "sha256": "63f5d3fd4747c23f0f43f623515707c94bb116e19b5d4fa25805ed4d0d0ec4b8",
+      "excerpt": [
+        {
+          "line": 6,
+          "text": "Longport OpenAPI provides programmatic quote trading interfaces for investors with research and development capabilities and assists them to build trading or quote strategy analysis tools based on their own investment strategies. The functions fall into the following categories:"
+        },
+        {
+          "line": 8,
+          "text": "- Trading - Create, amend, cancel orders, query today’s/past orders and transaction details, etc."
+        },
+        {
+          "line": 17,
+          "text": "| [Rust](rust/README.md)      | [Doc](https://longportapp.github.io/openapi/rust/longport/index.html) | Longport OpenAPI for Rust `(>= 1.89.0)`           |"
+        },
+        {
+          "line": 18,
+          "text": "| [Python](python/README.md)  | [Doc](https://longportapp.github.io/openapi/python/index.html)        | Longport OpenAPI for Python 3 `(>= 3.8)`          |"
+        },
+        {
+          "line": 27,
+          "text": "## Context Types"
+        },
+        {
+          "line": 29,
+          "text": "| Context | Description |"
+        },
+        {
+          "line": 31,
+          "text": "| `QuoteContext` | Real-time quotes, candlesticks, options, warrants, watchlists, push subscriptions |"
+        },
+        {
+          "line": 32,
+          "text": "| `TradeContext` | Orders, positions, account balance, executions, cash flow |"
+        },
+        {
+          "line": 33,
+          "text": "| `AssetContext` | Account statement download |"
+        },
+        {
+          "line": 34,
+          "text": "| `ContentContext` | News, community topics |"
+        },
+        {
+          "line": 35,
+          "text": "| `FundamentalContext` | Financial reports, analyst ratings, dividends, valuation, company overview, shareholders |"
+        },
+        {
+          "line": 36,
+          "text": "| `MarketContext` | Market status, broker holdings, A/H premium, trade statistics, anomaly alerts, index constituents |"
+        },
+        {
+          "line": 37,
+          "text": "| `CalendarContext` | Financial calendar (earnings, dividends, splits, IPOs, macro data, market closures) |"
+        },
+        {
+          "line": 38,
+          "text": "| `PortfolioContext` | Exchange rates, portfolio P&L analysis |"
+        },
+        {
+          "line": 39,
+          "text": "| `AlertContext` | Price alert management (add/enable/disable/delete) |"
+        },
+        {
+          "line": 40,
+          "text": "| `DCAContext` | Dollar-cost averaging plan management |"
+        },
+        {
+          "line": 41,
+          "text": "| `SharelistContext` | Community sharelist management |"
+        },
+        {
+          "line": 55,
+          "text": "  - Windows: `setx ...` requires opening a new terminal/session to take effect."
+        },
+        {
+          "line": 72,
+          "text": "- Python:"
+        },
+        {
+          "line": 75,
+          "text": "  python examples/python/http_client.py"
+        },
+        {
+          "line": 84,
+          "text": "- Rust:"
+        },
+        {
+          "line": 87,
+          "text": "  cargo run --manifest-path examples/rust/Cargo.toml -p http_client"
+        }
+      ]
+    },
+    {
+      "name": "TA-Lib",
+      "url": "https://raw.githubusercontent.com/TA-Lib/ta-lib-python/master/README.md",
+      "status": "retrieved",
+      "sha256": "c09eeacf82819918588478a8b6c3bd49e183e97af41061a976c4477c32db2493",
+      "excerpt": [
+        {
+          "line": 4,
+          "text": "![Tests](https://github.com/ta-lib/ta-lib-python/actions/workflows/tests.yml/badge.svg)"
+        },
+        {
+          "line": 5,
+          "text": "[![Release](https://img.shields.io/github/v/release/ta-lib/ta-lib-python?label=Release)](https://github.com/ta-lib/ta-lib-python/releases)"
+        },
+        {
+          "line": 8,
+          "text": "[![Python Versions](https://img.shields.io/pypi/pyversions/TA-Lib?label=Python)](https://pypi.org/project/TA-Lib/)"
+        },
+        {
+          "line": 9,
+          "text": "[![License](https://img.shields.io/badge/License-BSD%202--Clause-blue.svg)](https://opensource.org/licenses/BSD-2-Clause)"
+        },
+        {
+          "line": 11,
+          "text": "This is a Python wrapper for [TA-LIB](http://ta-lib.org) based on Cython"
+        },
+        {
+          "line": 19,
+          "text": "> * Candlestick pattern recognition"
+        },
+        {
+          "line": 20,
+          "text": "> * Open-source API for C/C++, Java, Perl, Python and 100% Managed .NET"
+        },
+        {
+          "line": 22,
+          "text": "The original Python bindings included with TA-Lib use"
+        },
+        {
+          "line": 29,
+          "text": "In addition, this project also supports the use of the"
+        },
+        {
+          "line": 35,
+          "text": "The upstream TA-Lib C library released version 0.6.1 and changed the library"
+        },
+        {
+          "line": 36,
+          "text": "name to `-lta-lib` from `-lta_lib`. After trying to support both via"
+        },
+        {
+          "line": 37,
+          "text": "autodetect and having some issues, we have decided to currently support three"
+        },
+        {
+          "line": 40,
+          "text": "* `ta-lib-python` 0.4.x (supports `ta-lib` 0.4.x and `numpy` 1)"
+        },
+        {
+          "line": 41,
+          "text": "* `ta-lib-python` 0.5.x (supports `ta-lib` 0.4.x and `numpy` 2)"
+        },
+        {
+          "line": 42,
+          "text": "* `ta-lib-python` 0.6.x (supports `ta-lib` 0.6.x and `numpy` 2)"
+        },
+        {
+          "line": 43,
+          "text": "* `ta-lib-python` 0.7.x (supports `ta-lib` 0.7.x and `numpy` 2)"
+        },
+        {
+          "line": 44,
+          "text": "* `ta-lib-python` 0.8.x (supports `ta-lib` 0.8.x and `numpy` 2)"
+        },
+        {
+          "line": 51,
+          "text": "python -m pip install TA-Lib"
+        },
+        {
+          "line": 57,
+          "text": "python setup.py install"
+        },
+        {
+          "line": 68,
+          "text": "To use TA-Lib for python, you need to have the [TA-Lib](http://ta-lib.org)"
+        },
+        {
+          "line": 105,
+          "text": "your-arm64-python -m pip install --no-cache-dir ta-lib"
+        },
+        {
+          "line": 108,
+          "text": "#### Windows"
+        }
+      ]
+    },
+    {
+      "name": "TA-Lib-license",
+      "url": "https://raw.githubusercontent.com/TA-Lib/ta-lib-python/master/LICENSE",
+      "status": "retrieved",
+      "sha256": "78dbb65a3526ca5cf3c9eb8a0648d6293651ca40f6d414a626b45ef2406ae5d0",
+      "excerpt": [
+        {
+          "line": 1,
+          "text": "# BSD 2-Clause License"
+        }
+      ]
+    },
+    {
+      "name": "openai-streaming",
+      "url": "https://developers.openai.com/api/docs/guides/streaming-responses.md",
+      "status": "retrieved",
+      "sha256": "7e147ae8c9e2ef2a30ecd7f3502a4c350e929487c7e51643cef2e4fb66281f7f",
+      "excerpt": [
+        {
+          "line": 1,
+          "text": "# Streaming API responses"
+        },
+        {
+          "line": 3,
+          "text": "> For the complete documentation index, see [llms.txt](/llms.txt). Markdown versions of documentation pages are available by appending `.md` to the page URL."
+        },
+        {
+          "line": 5,
+          "text": "By default, when you make a request to the OpenAI API, we generate the model's entire output before sending it back in a single HTTP response. When generating long outputs, waiting for a response can take time. Streaming responses lets you start printing or processing the beginning of the model's output while it continues generating the full response."
+        },
+        {
+          "line": 7,
+          "text": "This guide focuses on HTTP streaming (`stream=true`) over server-sent events (SSE). For persistent WebSocket transport with incremental inputs via `previous_response_id`, see [the Responses API WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)."
+        },
+        {
+          "line": 9,
+          "text": "## Enable streaming"
+        },
+        {
+          "line": 12,
+          "text": "To start streaming responses, set `stream=True` in your request to the Responses endpoint:"
+        },
+        {
+          "line": 18,
+          "text": "const stream = await client.responses.create({"
+        },
+        {
+          "line": 26,
+          "text": "  stream: true,"
+        },
+        {
+          "line": 29,
+          "text": "for await (const event of stream) {"
+        },
+        {
+          "line": 39,
+          "text": "stream = client.responses.create("
+        },
+        {
+          "line": 47,
+          "text": "    stream=True,"
+        },
+        {
+          "line": 50,
+          "text": "for event in stream:"
+        },
+        {
+          "line": 58,
+          "text": "\t\"context\""
+        },
+        {
+          "line": 67,
+          "text": "\tstream := client.Responses.NewStreaming(context.Background(), responses.ResponseNewParams{"
+        },
+        {
+          "line": 71,
+          "text": "\tfor stream.Next() {"
+        },
+        {
+          "line": 72,
+          "text": "\t\tfmt.Println(stream.Current().Type)"
+        },
+        {
+          "line": 74,
+          "text": "\tif err := stream.Err(); err != nil {"
+        },
+        {
+          "line": 83,
+          "text": "import com.openai.core.http.StreamResponse;"
+        },
+        {
+          "line": 85,
+          "text": "import com.openai.models.responses.ResponseStreamEvent;"
+        },
+        {
+          "line": 93,
+          "text": "try (StreamResponse<ResponseStreamEvent> stream = client.responses().createStreaming(params)) {"
+        },
+        {
+          "line": 94,
+          "text": "  stream.stream().forEach(System.out::println);"
+        },
+        {
+          "line": 105,
+          "text": "var responses = client.CreateResponseStreamingAsync("
+        },
+        {
+          "line": 110,
+          "text": "await foreach (StreamingResponseUpdate response in responses)"
+        },
+        {
+          "line": 112,
+          "text": "    if (response is StreamingResponseOutputTextDeltaUpdate delta)"
+        },
+        {
+          "line": 124,
+          "text": "stream = openai.responses.stream("
+        },
+        {
+          "line": 134,
+          "text": "stream.each do |event|"
+        },
+        {
+          "line": 140,
+          "text": "The Responses API uses semantic events for streaming. Each event is typed with a predefined schema, so you can listen for events you care about."
+        },
+        {
+          "line": 142,
+          "text": "For a full list of event types, see the [API reference for streaming](https://developers.openai.com/api/reference/resources/responses). Here are a few examples:"
+        },
+        {
+          "line": 145,
+          "text": "for await (const event of stream) {"
+        },
+        {
+          "line": 157,
+          "text": "StreamingEvent = ("
+        }
+      ]
+    },
+    {
+      "name": "openai-migration",
+      "url": "https://developers.openai.com/api/docs/guides/migrate-to-responses.md",
+      "status": "retrieved",
+      "sha256": "9550a98f822a87262c563894f7d7627eab486d86643d0c21803ba34efe351d7a",
+      "excerpt": [
+        {
+          "line": 3,
+          "text": "> For the complete documentation index, see [llms.txt](/llms.txt). Markdown versions of documentation pages are available by appending `.md` to the page URL."
+        },
+        {
+          "line": 5,
+          "text": "The [Responses API](https://developers.openai.com/api/reference/resources/responses) is our new API primitive, an evolution of [Chat Completions](https://developers.openai.com/api/reference/resources/chat) which brings added simplicity and powerful agentic primitives to your integrations."
+        },
+        {
+          "line": 24,
+          "text": "- **Stateful context**: Use `store: true` to maintain state from turn to turn, preserving reasoning and tool context from turn-to-turn."
+        },
+        {
+          "line": 59,
+          "text": "many concerns are glued together into one object, Items are distinct from one another and better represent the basic unit of model context."
+        },
+        {
+          "line": 203,
+          "text": "- [Reasoning](https://developers.openai.com/api/docs/guides/reasoning) models have a richer experience in the Responses API with [improved tool usage](https://developers.openai.com/api/docs/guides/reasoning#keeping-reasoning-items-in-context). Starting with GPT-5.4, Chat Completions does not support tool calling with `reasoning_effort` values other than `none`."
+        },
+        {
+          "line": 222,
+          "text": "const context = ["
+        },
+        {
+          "line": 229,
+          "text": "  messages: context,"
+        },
+        {
+          "line": 234,
+          "text": "  input: context,"
+        },
+        {
+          "line": 239,
+          "text": "context = ["
+        },
+        {
+          "line": 244,
+          "text": "completion = client.chat.completions.create(model=\"gpt-6-astra\", messages=context)"
+        },
+        {
+          "line": 246,
+          "text": "response = client.responses.create(model=\"gpt-6-astra\", input=context)"
+        },
+        {
+          "line": 253,
+          "text": "\t\"context\""
+        },
+        {
+          "line": 263,
+          "text": "\tcompletion, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{"
+        },
+        {
+          "line": 275,
+          "text": "\tresponse, err := client.Responses.New(context.Background(), responses.ResponseNewParams{"
+        },
+        {
+          "line": 308,
+          "text": "completion.choices().stream()"
+        },
+        {
+          "line": 309,
+          "text": "    .flatMap(choice -> choice.message().content().stream())"
+        },
+        {
+          "line": 331,
+          "text": "response.output().stream()"
+        },
+        {
+          "line": 332,
+          "text": "    .flatMap(item -> item.message().stream())"
+        },
+        {
+          "line": 333,
+          "text": "    .flatMap(message -> message.content().stream())"
+        },
+        {
+          "line": 334,
+          "text": "    .flatMap(content -> content.outputText().stream())"
+        },
+        {
+          "line": 461,
+          "text": "\t\"context\""
+        },
+        {
+          "line": 470,
+          "text": "\tcompletion, err := client.Chat.Completions.New(context.Background(), openai.ChatCompletionNewParams{"
+        },
+        {
+          "line": 496,
+          "text": "client.chat().completions().create(params).choices().stream()"
+        },
+        {
+          "line": 497,
+          "text": "    .flatMap(choice -> choice.message().content().stream())"
+        },
+        {
+          "line": 593,
+          "text": "\t\"context\""
+        },
+        {
+          "line": 603,
+          "text": "\tresponse, err := client.Responses.New(context.Background(), responses.ResponseNewParams{"
+        },
+        {
+          "line": 627,
+          "text": "client.responses().create(params).output().stream()"
+        },
+        {
+          "line": 628,
+          "text": "    .flatMap(item -> item.message().stream())"
+        },
+        {
+          "line": 629,
+          "text": "    .flatMap(message -> message.content().stream())"
+        },
+        {
+          "line": 630,
+          "text": "    .flatMap(content -> content.outputText().stream())"
+        }
+      ]
+    }
+  ],
+  "scope_note": "Current Rust/Python baseline; withdrawn agent-runtime candidate entries removed by user-authorized history cleanup. Observations are research, not implementation validation. Selected upstream excerpts exclude unrelated language runtimes; source hashes still identify original fetched material."
+}

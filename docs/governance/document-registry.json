@@ -1,0 +1,410 @@
+{
+  "schemaVersion": 1,
+  "documents": [
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "问题与结果",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA：Agent 与开发者工作入口",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "CLAUDE.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "@AGENTS.md",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 开发与贡献",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "DESIGN.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 设计入口",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "README.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "REVIEW.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 审核口径",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "SECURITY.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 数据与安全说明",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 文档导航",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/decisions/0001-document-governance.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR-0001：文档约束与 A/B 交付",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/decisions/0002-ai-integration.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR-0002：参考 Codex 自研 Rust 模型客户端",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "决策与待处理入口",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/decisions/confirmed-decisions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "已确认决定与设计默认值",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/decisions/open-questions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "集中事项台账",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/delivery/status.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "当前执行状态",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design-rules/DESIGN.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA UI 与交互约束",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design/ai-design.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA AI 分析设计",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design/context-state-management.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "AI 上下文、会话与运行状态",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design/data-model.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 数据模型设计",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design/financial-engine.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 金融计算与模拟规则",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/design/integration-contracts.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "统一能力与适配接口",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/design/interaction-and-workflows.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 交互与工作流设计",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/design/rust-model-client.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A",
+      "scope": "Rust 模型客户端、双协议、流式与自研边界",
+      "reviewed": "2026-09-26",
+      "basis": "D-08；官方固定提交与 API 文档；未执行产品验证"
+    },
+    {
+      "path": "docs/design/system-architecture.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 系统架构设计",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/architecture-and-open-source.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "架构与开源复用规则",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/data-and-security.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "数据、凭据与恢复规则",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/development-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "Agent A / Agent B 连续开发与交接",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/git-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "Git 初始化与交付规则",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/quality-gates.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "验证与交付门禁",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/dev-rules/repo-map.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "仓库地图",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/engineering/delivery-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 实施路线与验收计划",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/engineering/technology-selection.md",
+      "kind": "research",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 技术选型：开源优先",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-codex-rust-research.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "Codex 官方固定源码、API、许可证参考核查",
+      "reviewed": "2026-09-26",
+      "basis": "D-08；官方固定提交与 API 文档；未执行产品验证"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-documentation-framework.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "文档框架实际检查和负向夹具结果",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-technology-research.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A / 维护者",
+      "scope": "2026-09-26：Agent A 技术调研证据",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/evidence/README.md",
+      "kind": "index",
+      "status": "reference",
+      "owner": "Agent A / 维护者",
+      "scope": "证据索引",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/governance/documentation-policy.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "文档治理与约束管理",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/product-rules/core-product-principles.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 产品不变量",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/project-baseline.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "项目关键事实与接续入口",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/requirements/product-requirements.md",
+      "kind": "requirements",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 产品需求文档",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/templates/agent-handoff.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "A/B 交接模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
+      "path": "docs/templates/change-proposal.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "变更提案模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/templates/decision-record.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR 模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/templates/module-spec.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "模块规格模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/templates/validation-report.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "验证报告模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    }
+  ]
+}
