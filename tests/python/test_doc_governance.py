@@ -28,7 +28,7 @@ class DocumentationGovernanceTest(unittest.TestCase):
     def test_expired_stage_documents_fail(self):
         path = self.root / "docs/governance/document-registry.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["currentStage"] = "R3"
+        data["currentStage"] = "M3"
         path.write_text(json.dumps(data), encoding="utf-8")
         errors = CHECKER.check(self.root)[0]
         self.assertTrue(any("retireAfter" in error for error in errors), errors)

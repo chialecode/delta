@@ -107,7 +107,7 @@ def check(root: Path) -> tuple[list[str], int, int]:
     rows = registry.get("documents", [])
     registered = Counter()
     current_stage = registry.get("currentStage")
-    if current_stage is not None and not re.fullmatch(r"R[1-9]\d*", str(current_stage)):
+    if current_stage is not None and not re.fullmatch(r"M(?:0|[1-9]\d*)", str(current_stage)):
         errors.append("registry: invalid currentStage")
     for row in rows:
         name = row.get("path", "")
@@ -180,10 +180,10 @@ def check(root: Path) -> tuple[list[str], int, int]:
         tracked[rid] += 1
         if rid not in reqs:
             errors.append(f"unknown traced requirement: {rid}")
-        if item.get("stage") not in {"S0", "S1", "S2", "S3", "S4"}:
+        if item.get("stage") not in {"M0", "M1", "M2", "M3", "M4"}:
             errors.append(f"{rid}: invalid stage")
-        if priorities.get(rid) == "P0" and item.get("stage") != "S1":
-            errors.append(f"{rid}: P0 must remain S1")
+        if priorities.get(rid) == "P0" and item.get("stage") != "M1":
+            errors.append(f"{rid}: P0 must remain M1")
         if item.get("status") not in {"planned", "in-progress", "implemented", "verified", "deferred"}:
             errors.append(f"{rid}: invalid implementation status")
         if not item.get("acceptance") or not item.get("design"):

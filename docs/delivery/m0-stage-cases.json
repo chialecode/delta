@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "stage": "R1",
-  "planVersion": "1.2",
+  "stage": "M0",
+  "planVersion": "1.0",
   "stageParent": "a1180cfb5f0a0051c1fc3f14ac4db7d8f06691fe",
   "branch": "codex/r1-workbench",
   "cases": [
@@ -95,5 +95,5 @@
       "expected": "授权真实模型兼容性与只读复盘"
     }
   ],
-  "scopeNote": "R1 合并范围；R2-* 仅为保留的桌面补全历史用例编号，不表示独立阶段；继承 r1-cases.json 全部回归。"
+  "scopeNote": "M0 已审核基础服务与最小桌面闭环；保留 R1/R2 历史用例编号与全部回归；完整 S1/P0 和 UI-02 仍属后续 M1，manual/live 不因阶段重划通过。"
 }

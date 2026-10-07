@@ -1,6 +1,6 @@
-# R1 合并阶段报告
+# M0 阶段报告与历史审核证据
 
-2026-10-07 · 当前计划 [R1 v1.2](stage-plan.md)。下列 A/B 原始记录是在误标 R2 v1.0 时执行，保留当时提交、命令、指纹和产物事实；其旧阶段指令已被末尾 A 合并审核取代。前半保留 Agent A 的 W00 记录；最新交付见下方“Agent B：W01～W06 实现与自检”。B 自检不等于 A 独立复核或 S1 产品验收。
+2026-10-07 · 当前计划 [M0 v1.0](stage-plan.md)。下列 A/B 原始记录是在误标 R2 v1.0 时执行，保留当时提交、命令、指纹和产物事实；其旧阶段指令已被末尾 A 合并审核取代。前半保留 Agent A 的 W00 记录；最新交付见下方“Agent B：W01～W06 实现与自检”。B 自检不等于 A 独立复核或 S1 产品验收。
 
 ## 基线与已做内容
 
@@ -69,7 +69,7 @@ Windows 截图检查已看到双层卡片、合成 K 线、成交量、MA20 正�
 | W05 | 协议/连接/OS 凭据引用、明确账户授权、已保存范围发送、聊天/历史/取消/撤销与证据入口 | 真实 Rust HTTP/SSE 客户端+AgentRuntime+ProductionHost+SQLite 的桌面受控工具闭环；只有凭据源为合成；默认拒绝全部账户、保存不含秘密、缩小范围/撤权含压缩；历史证据从持久工具消息恢复。真实供应商测试 not-run |
 | W06 | 备份/可读导出、新目录恢复；清单/路径/链接/哈希/数据库/附件验证后原子发布；当前验证器和稳定包 | 失败恢复不覆盖源库、附件/会话/证据一致；桌面备份→恢复→切换；零测试/缺模式/错阶段父提交/陈旧源码均阻断验证或打包；本地 release 包启动验证与许可盘点 |
 
-`tests/fixtures/r2-ledger.csv` 和 `r2-ohlcv.json` 为独立合成输入，不含真实数据。新自动用例在 `apps/desktop/src/workbench_tests.rs`、`crates/delta-infra/tests/r2_workbench.rs` 和 `tests/python/test_verify_stage.py`；机器映射为 [合并映射（保留原编号）](r1-stage-cases.json)。输入、预期、实际匹配测试和源码版本由验证报告保存。
+`tests/fixtures/r2-ledger.csv` 和 `r2-ohlcv.json` 为独立合成输入，不含真实数据。新自动用例在 `apps/desktop/src/workbench_tests.rs`、`crates/delta-infra/tests/r2_workbench.rs` 和 `tests/python/test_verify_stage.py`；机器映射为 [合并映射（保留原编号）](m0-stage-cases.json)。输入、预期、实际匹配测试和源码版本由验证报告保存。
 
 ### 自检发现与修复记录
 
@@ -163,12 +163,69 @@ A 已读代码核对 `tasks.rs` 的 CSV 原文件/映射/账户重验、提交�
 
 本轮 `python scripts/package_stage.py --stage R1 --plan-version 1.2` 成功；本地包 `dist/r1-91e8e8465a7e-ef3c048b9daa`，release exe SHA256 `ef3c048b9daaa0c244002eb1abe516e9bd31c3575d54275b5d543e0b997f7403`。包中 1471 个文件逐个复算哈希全部一致。许可盘点仍为 913 条，其中 91 条未找到包内许可文件（OSS-06）；本轮未重新启动该 release 窗口，不能套用旧包启动截图。
 
-### 结论与 B 接续
+### 历史结论与 B prompt（已由末尾 M0 记录取代，禁止执行旧授权）
 
-B 已交付基础服务和六包桌面闭环；A 已完成本次合并审核并修复 F-01，完整 R1 因 F-02 为 changes-requested；S0/S1 未验收。首选下一步是 B 在同一阶段完成 UI-02 后回交 A，不开启 R2。阶段分支推送和 draft PR 属于当前授权；PR 合并、发布、强推没有包含在授权内。
+B 已交付基础服务和六包桌面闭环；A 已完成本次合并审核并修复 F-01，完整 R1 因 F-02 为 changes-requested；S0/S1 未验收。首选下一步是 B 在同一阶段完成 UI-02 后回交 A，不开启 R2。当时将阶段分支推送和 draft PR 解释为已授权；用户已纠正此解释，当前仅按 ACT-04 的 PR #1 特例执行。
 
 ```text
 请作为 DELTA Agent B 继续 R1 v1.2。仓库为当前 DELTA 工作区，分支 codex/r1-workbench，稳定阶段父提交 a1180cfb5f0a0051c1fc3f14ac4db7d8f06691fe；以本次交付完整 SHA 和 git rev-parse HEAD 核对现场，不回退旧树。先读 AGENTS.md、docs/delivery/status.md、stage-plan.md 和 stage-report.md 的最新 Agent A 合并审核。
 原 R1 与误标 R2 已合并，当前仍 R1。按计划 §8 连续完成 F-02 / UI-02 全部工程范围；原 R1 v1.1 的 S1/P0 合同仍有效。保留 F-01 非空备份目录保护和全部既有金融、隔离、撤权、恢复断言。workers/agent/ 原样保留、不提交。真实服务/设备条件未满足保持 not-run，不转交用户补代码。
-执行统一 R1 验证和打包，补控件、重启、失败、自动保存并发、附件路径与修订证据。已推送后追加集中修复，不 amend/强推已共享提交；保持同一 PR。若门禁的单提交父校验阻止合法追加修复，按 Git 正本扩展为验证稳定父提交以来的同分支线性历史并补负例，禁止删去基线校验。更新唯一计划/报告/追踪/台账和源产物指纹，回传新完整 SHA 与给 A 的复核 prompt。push/PR 沿用 ACT-04 授权，合并/发布另需明确授权。
+执行统一 R1 验证和打包，补控件、重启、失败、自动保存并发、附件路径与修订证据。已推送后追加集中修复，不 amend/强推已共享提交；保持同一 PR。若门禁的单提交父校验阻止合法追加修复，按 Git 正本扩展为验证稳定父提交以来的同分支线性历史并补负例，禁止删去基线校验。更新唯一计划/报告/追踪/台账和源产物指纹，回传新完整 SHA 与给 A 的复核 prompt。此旧 prompt 已失效，不得据其执行 push/PR。
 ```
+
+
+## Agent A：M0 v1.0 范围、授权纠正与远端保护
+
+2026-10-07。用户先纠正未经具体授权的 push/PR，随后明确要求保留 PR #1 为本次特例，将已审核内容划为 M0；最后统一命名为 M 开头。M = Milestone（里程碑）。本节取代前文的当前阶段和交接授权，不改写当时的测试/提交事实。
+
+### M0 与 M1 的交付边界
+
+| 内容 | 当前归属与结论 |
+| --- | --- |
+| 共享应用服务、金融/权限/证据/恢复基础、已审核 RW 回归 | M0 已实现与技术审核范围；保留原 R1 测试和报告 |
+| 持久资料库、CSV 核对、文件日线/MA20、显式保存笔记、受控只读 AI、备份恢复最小桌面闭环 | M0 已实现范围；原 R2-Wxx 只作历史 ID |
+| F-01 非空备份目录拒绝 | 已修复，保留独立回归与失败字节不变证据，属于 M0 |
+| F-02 / UI-02 完整自选、指标参数、标签/自动保存/模板/附件和非现金编辑 | 仍未完成，由用户明确划分后的 M1 承接；没有把 open 问题改为 resolved，没有删 P0/AC |
+| 真实账户/行情/模型、IME/DPI、干净机与完整性能验收 | 继续按 ACT/H 保留 not-run；旧 S0 尚缺条件及完整产品验收由 M1 承接，不被 M0 工程通过覆盖 |
+
+原 R1 v1.2 的 changes-requested 针对完整产品范围；现在 M0 只包含已审核范围。M0 工程审核 reviewed，M1 产品尚未验收。Rust 产品代码、锁文件与既有数据格式本次未变；阶段配置和历史校验脚本有必要调整，不能套用旧报告宣称新脚本已测。
+
+### 授权纠正与 PR 处理事实
+
+上一轮把“后续按流程进行”扩张为持续 push/PR 授权，并在有工程缺口时推送、创建 draft PR，不符合明确授权与阶段收敛规则。已修正 AGENTS、Git 正本、USER-ACTIONS、决定、当前计划和旧交接入口；draft 不代替授权。普通本地工作继续，后续阶段远端动作需要具体授权。
+
+PR #1 在第一条纠正后被关闭；用户随后要求保留，已立即重开。没有删除远端分支，没有强推、合并或发布。此次 M0/治理调整的必要 push 和 PR #1 更新仅按 ACT-04 特例执行；不形成 M1 或以后阶段的许可。分支历史名 codex/r1-workbench 保留，避免仅为名称改写共享历史。
+
+### main 分支保护：实际应用和读回
+
+最初查询：rulesets 空列表，传统 branch protection 返回 404；仓库允许 merge commit/rebase，未启用合并后删分支。已配置并读回 [main-protection](https://github.com/chialecode/delta/rules/24631732)，ID 24631732：active，只覆盖 refs/heads/main，无 bypass actor，current_user_can_bypass=never。
+
+实际规则：禁止删除/非快进、线性历史、必须 PR、讨论线程必须解决、审批人数 0、只允许 squash；必需检查为 docs，绑定真实 GitHub Actions App 15368，不强制每次同步最新 main。docs 和 DCO 的成功运行均已观察，但 DCO 未被本次设为 required。仓库层 merge/rebase 已关闭，auto-merge 维持关闭，squash 消息取 PR 标题和正文，合并后自动清理任务分支已启用。
+
+Actions 默认权限已是 read，can_approve_pull_request_reviews=false，未做无关改动。本次未安装 App、修改许可、配置付费服务或照搬专属 CI。远端期望文件在 .github/rulesets/main.json 和 .github/repository-settings.json；读回证据在忽略的 .local/review-r1/authorization-correction。main 的有效 rules API 已返回全部规则，不只依赖配置文件存在。未通过尝试破坏性 push 来测试保护。
+
+main ruleset 不约束任务分支 push/PR 创建的用户授权，不能把保护当成自动批准。需要双重满足：具体用户许可及对应远端规则。
+
+### 里程碑和门禁调整
+
+currentStage/retireAfter、当前计划、状态、逐需求阶段、规则和默认验证/打包入口改为 M0；P0 产品归属仍为 M1，未降低验收。M1/M2/M3/M4 分别承接完整资产复盘、训练、策略和扩展。历史 R1/R2 用例及 S0-xx 验收 ID 原样映射。
+
+验证器允许已推送审核修复的线性追加，但逐提交检查分支、HEAD 父列表、链连接和固定框架基点。拒绝空链、merge、断链、错误基点；新增负例验证这些边界。保留零测试、缺行为模式、陈旧产物、原金融/权限过滤器等失败门禁。
+
+### 当前接续 prompt
+
+```text
+请作为 DELTA Agent A，以最新交付完整 SHA 和当前 M0 v1.0 报告为基线制定 M1 的完整实施计划。先读 AGENTS、status、stage-plan、stage-report 最新 M0 章节和集中台账 UI-02。M0 为已审核基础与最小桌面闭环，F-02/UI-02 仍未完成；保留所有历史金融、权限、恢复断言及 F-01 修复，不重做已完成范围。
+M 表示 Milestone，当前 PR #1 属 M0，本次特例只用于其阶段/治理调整。M1 计划需明确范围、工作包、验收、真实条件、基线与 B prompt；按规则先查证实际开源方案再推荐。不要自动创建其他 Agent，不 push、不创建/重开/更新 PR、不合并；这些需要该阶段具体授权。本地计划、检查与归属明确的版本保存可连续执行。
+```
+
+
+### M0 最终本地验证与产物
+
+`python scripts/verify_stage.py --stage M0 --plan-version 1.0` 退出 0：58 份 Markdown / 61 项需求，diff、fmt、clippy、Rust 178 项、Python 22 项、worker 11 项、workspace build 全通过；39 个继承 Cargo 映射均通过。新增第 22 个 Python 用例验证已公开提交的线性追加与错误基点/断链/merge 拒绝。真实和设备用例仍 not-run。
+
+被测基点 `b815ac19b49db1c5d9623a941d5a516be2d4bcd5` 加本次已核对工作区，源码指纹 `51a47a461b457fa90f30fe80d62b72172492bdaa779a393e117aa9dc1d4930fe`（75 文件）；最终提交包含这些文件，完整 SHA 在交付消息。后续叙述文档单独执行文档/diff 检查，提交后复核源码指纹与线性历史。
+
+M0 打包命令通过，本地包 `dist/m0-51a47a461b45-ef3c048b9daa`；release exe `ef3c048b9daaa0c244002eb1abe516e9bd31c3575d54275b5d543e0b997f7403`，1471 个包文件逐个重算哈希全部一致。产品 Rust 代码未改，二进制哈希与前次一致；本次没有重新启动原生窗口，不产生新的设备验收。913 个许可条目/91 个缺包内许可文件仍由 OSS-06 承接。
+
+本次治理/命名/脚本修复经 A 核对，M0 已审核范围无新增阻断；不据此关闭 M1 的 UI-02 或真实条件。PR #1 按当前 M0 范围更新供审核，合并没有授权。

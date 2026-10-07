@@ -6,7 +6,7 @@
 
 首次接手：根 [AGENTS](../AGENTS.md) → [项目关键事实](project-baseline.md) → [当前状态](delivery/status.md) → 当前计划 → [集中事项](decisions/open-questions.md)。按变更触发读专题，不要求每次全量阅读。
 
-当前轮次：[R1 唯一计划与 B prompt](delivery/stage-plan.md)、[当前报告](delivery/stage-report.md)、[用户待办](../USER-ACTIONS.md)。原 R1 v1.1 的计划/用例/审核作为本阶段基础范围、回归与未关闭验收依据保留；当前唯一执行入口为合并计划 R1 v1.2。
+当前轮次：[M0 唯一计划与接续范围](delivery/stage-plan.md)、[当前报告](delivery/stage-report.md)、[用户待办](../USER-ACTIONS.md)。原 R1 v1.1 的计划/用例/审核作为本阶段基础范围、回归与未关闭验收依据保留；当前唯一执行入口为 M0 v1.0 计划。
 
 | 专题 | 正本 | 管理内容 |
 | --- | --- | --- |

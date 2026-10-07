@@ -29,7 +29,7 @@ def git(*args: str) -> str:
 
 
 def load_stage(stage: str, version: str, parent: str | None = None) -> dict:
-    if not re.fullmatch(r"R[1-9][0-9]*", stage):
+    if not re.fullmatch(r"M(?:0|[1-9][0-9]*)", stage):
         raise ValueError("invalid stage")
     config = json.loads((ROOT / f"docs/delivery/{stage.lower()}-stage-cases.json").read_text(encoding="utf-8"))
     if config["stage"] != stage or config["planVersion"] != version:
@@ -39,9 +39,30 @@ def load_stage(stage: str, version: str, parent: str | None = None) -> dict:
     return config
 
 
-def validate_base(config: dict, branch: str, parents: str) -> None:
-    if branch != config["branch"] or parents.split() != [config["stageParent"]]:
-        raise ValueError("stage branch/parent mismatch (or merge commit); do not amend another stage")
+def validate_base(config: dict, branch: str, parents: str, history: str | None = None) -> None:
+    if branch != config["branch"]:
+        raise ValueError("stage branch mismatch")
+    if history is None:
+        if parents.split() != [config["stageParent"]]:
+            raise ValueError("stage parent mismatch (or merge commit)")
+        return
+    # Published review fixes append commits. Validate the entire linear chain
+    # back to the approved base instead of weakening the base requirement.
+    rows = [line.split() for line in history.splitlines() if line.strip()]
+    if not rows or any(len(row) != 2 for row in rows):
+        raise ValueError("stage history must be nonempty and linear")
+    if rows[0][1:] != parents.split():
+        raise ValueError("stage history does not match HEAD parents")
+    if any(left[1] != right[0] for left, right in zip(rows, rows[1:])):
+        raise ValueError("stage history is disconnected")
+    if rows[-1][1] != config["stageParent"]:
+        raise ValueError("stage history does not reach approved base")
+
+
+def validate_checkout(config: dict) -> None:
+    validate_base(config, git("branch", "--show-current"),
+                  git("show", "-s", "--format=%P", "HEAD"),
+                  git("rev-list", "--parents", "HEAD", "^" + config["stageParent"]))
 
 
 def source_fingerprint(config: dict) -> dict:
@@ -124,12 +145,12 @@ def inherited_assertions(names: list[str], output: str = "") -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", default="R1")
-    parser.add_argument("--plan-version", default="1.2")
+    parser.add_argument("--stage", default="M0")
+    parser.add_argument("--plan-version", default="1.0")
     parser.add_argument("--parent")
     args = parser.parse_args()
     config = load_stage(args.stage, args.plan_version, args.parent)
-    validate_base(config, git("branch", "--show-current"), git("show", "-s", "--format=%P", "HEAD"))
+    validate_checkout(config)
     before = source_fingerprint(config)
     report_dir = ROOT / f".local/reports/{args.stage.lower()}"
     report_dir.mkdir(parents=True, exist_ok=True)

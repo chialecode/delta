@@ -17,7 +17,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA：Agent 与开发者工作入口",
       "reviewed": "2026-10-07",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "CLAUDE.md",
@@ -172,7 +172,7 @@
       "owner": "Agent A / 维护者",
       "scope": "当前执行状态",
       "reviewed": "2026-10-07",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -289,7 +289,7 @@
       "owner": "Agent A / 维护者",
       "scope": "Git 初始化与交付规则",
       "reviewed": "2026-10-07",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/dev-rules/quality-gates.md",
@@ -298,7 +298,7 @@
       "owner": "Agent A / 维护者",
       "scope": "验证与交付门禁",
       "reviewed": "2026-10-07",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -316,7 +316,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA 实施路线与验收计划",
       "reviewed": "2026-10-07",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/engineering/technology-selection.md",
@@ -379,7 +379,7 @@
       "owner": "Agent A / 维护者",
       "scope": "文档治理与约束管理",
       "reviewed": "2026-10-07",
-      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/product-rules/core-product-principles.md",
@@ -478,7 +478,7 @@
       "owner": "Agent A / 维护者",
       "scope": "用户决定、配置、人工检查和授权的唯一入口",
       "reviewed": "2026-10-07",
-      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证；R1 v1.2 B 实现/自检（非 A 独立复核）"
+      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/dev-rules/communication-protocol.md",
@@ -511,22 +511,22 @@
       "path": "docs/delivery/stage-plan.md",
       "kind": "plan",
       "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "R1 v1.2 唯一执行计划与 B prompt",
+      "owner": "Agent A",
+      "scope": "M0 v1.0 当前交付与历史依据",
       "reviewed": "2026-10-07",
-      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证；R1 v1.2 B 实现/自检（非 A 独立复核）",
-      "retireAfter": "R1"
+      "basis": "D-14～16；用户范围调整；实际验证与远端保护复核",
+      "retireAfter": "M0"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A / 维护者",
-      "scope": "当前文档与视觉实现、验证限制及后续 B/A 接续",
+      "owner": "Agent A",
+      "scope": "M0 v1.0 当前交付与历史依据",
       "reviewed": "2026-10-07",
-      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证；R1 v1.2 B 实现/自检（非 A 独立复核）",
-      "retireAfter": "R1"
+      "basis": "D-14～16；用户范围调整；实际验证与远端保护复核",
+      "retireAfter": "M0"
     }
   ],
-  "currentStage": "R1"
+  "currentStage": "M0"
 }

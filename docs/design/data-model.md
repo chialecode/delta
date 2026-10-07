@@ -98,7 +98,7 @@ erDiagram
 | fx_rate | base_currency, quote_currency, rate, effective_at, observed_at, source, dataset_version | 明确方向：1 base 等于 rate quote |
 | calendar_session | venue, session_date, timezone, open_at, close_at, kind, version | 假期、半日市、夏令时；不把 weekday 当完整日历 |
 | dataset_version | id, manifest_hash, source, acquired_at, coverage, quality, temporal_quality | manifest 指向不可变内容；记录是否支持历史可得性 |
-| dataset_partition | version_id, instrument_range, time_range, location, checksum | S1 可指 SQLite 快照，后续指 Parquet |
+| dataset_partition | version_id, instrument_range, time_range, location, checksum | M1 可指 SQLite 快照，后续指 Parquet |
 | coverage_gap | dataset_version, instrument_id, range, gap_kind, resolution | 区分休市、无成交、供应商缺失和未知 |
 
 `effective_at` 表示事实对应时刻，`observed_at/acquired_at` 表示取得时刻。历史下载不必然包含真实历史发布时间；没有可得性证据时，标为重建历史数据，不能宣称严格的 point-in-time 数据集。

@@ -8,9 +8,9 @@ DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
 ## 当前阶段
 
-当前是 [R1 v1.2](docs/delivery/stage-plan.md) 桌面工作台交付：本地资料库、CSV 预览入账、账户核对、日线与笔记、只读 AI 和备份恢复已有实现。实现、自检和未测边界见 [阶段报告](docs/delivery/stage-report.md)，S0/S1 尚未验收。
+当前是 [M0 v1.0](docs/delivery/stage-plan.md) 桌面工作台交付：本地资料库、CSV 预览入账、账户核对、日线与笔记、只读 AI 和备份恢复已有实现。实现、自检和未测边界见 [阶段报告](docs/delivery/stage-report.md)，M0 工程范围已审核，完整 M1 产品尚未验收。
 
-首版产品验收仍需要真实去标识账户、合法行情、授权模型和 Windows 设备证据；用户事项只在 [USER-ACTIONS](USER-ACTIONS.md)。当前仍为 R1；Agent A 合并审核已完成，推荐 Agent B 按 R1 v1.2 完成 F-02 / UI-02 工程收口。
+首版产品验收仍需要真实去标识账户、合法行情、授权模型和 Windows 设备证据；用户事项只在 [USER-ACTIONS](USER-ACTIONS.md)。当前 M0 只交付已审核基础与最小闭环；推荐 Agent A 为 M1 的 F-02 / UI-02 收口制定计划。
 
 ## 文档
 
@@ -38,4 +38,4 @@ DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
 后续采用 Agent A 计划与审核、Agent B 连续实现与自检；每轮输出对方可直接使用的 prompt。用户事项只看 [USER-ACTIONS](USER-ACTIONS.md)，工程问题与后续优化在 [集中事项](docs/decisions/open-questions.md)。需求、决定、契约、运行证据和交接全部保存在仓库，见 [文档治理](docs/governance/documentation-policy.md)。
 
-当前阶段检查：`python scripts/verify_stage.py --stage R1 --plan-version 1.2`；本地稳定包：`python scripts/package_stage.py --stage R1 --plan-version 1.2`。桌面用 `cargo run --locked -p delta-desktop` 打开持久资料库，显式样例用 `python scripts/run_r1.py --demo --keep-alive`。可复现操作见 [USER-ACTIONS](USER-ACTIONS.md)。项目许可证尚未选择，依赖开源许可不等于本项目已按相同许可发布。
+当前阶段检查：`python scripts/verify_stage.py --stage M0 --plan-version 1.0`；本地稳定包：`python scripts/package_stage.py --stage M0 --plan-version 1.0`。桌面用 `cargo run --locked -p delta-desktop` 打开持久资料库，显式样例用 `python scripts/run_r1.py --demo --keep-alive`。可复现操作见 [USER-ACTIONS](USER-ACTIONS.md)。项目许可证尚未选择，依赖开源许可不等于本项目已按相同许可发布。

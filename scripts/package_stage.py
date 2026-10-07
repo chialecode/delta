@@ -47,12 +47,12 @@ def verified_source(report: dict, fingerprint: dict, config: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", default="R1")
-    parser.add_argument("--plan-version", default="1.2")
+    parser.add_argument("--stage", default="M0")
+    parser.add_argument("--plan-version", default="1.0")
     parser.add_argument("--parent")
     args = parser.parse_args()
     config = verify.load_stage(args.stage, args.plan_version, args.parent)
-    verify.validate_base(config, verify.git("branch", "--show-current"), verify.git("show", "-s", "--format=%P", "HEAD"))
+    verify.validate_checkout(config)
     before = verify.source_fingerprint(config)
     reports = ROOT / f".local/reports/{args.stage.lower()}"
     verified_source(json.loads((reports / "verification.json").read_text(encoding="utf-8")), before, config)

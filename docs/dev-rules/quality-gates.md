@@ -32,12 +32,12 @@ R1 清单存在后同时检查必要用例字段、ID、工作包引用及全部
 
 ## 阶段判断
 
-B 自检完成需要实现与必要自动检查通过；A 审核通过需要实际检查代码/版本/关键边界；S1 退出需要全部 P0、适用 NFR、真实账户/行情/模型和必要实机验证满足。模拟全过只能说明模拟范围通过。
+B 自检完成需要实现与必要自动检查通过；A 审核通过需要实际检查代码/版本/关键边界；M1 退出需要全部 P0、适用 NFR、真实账户/行情/模型和必要实机验证满足。模拟全过只能说明模拟范围通过。
 
-## 当前阶段入口（R1 v1.2）
+## 当前阶段入口（M0 v1.0）
 
-`python scripts/verify_stage.py --stage R1 --plan-version 1.2` 读取 [用例映射](../delivery/r1-stage-cases.json)，核验分支/唯一父提交，执行文档、diff、fmt、clippy、workspace tests、两套 Python 测试与 build。每个行为模式必须匹配真实通过的测试；零测试、缺模式、失败门禁都返回非零。继承 R1 的 Cargo 测试过滤和集成套件检查单独记录，父提交校验统一为原文档框架，旧报告检查由当前基线参数替代，旧人工缺口不删除。
+`python scripts/verify_stage.py --stage M0 --plan-version 1.0` 读取 [用例映射](../delivery/m0-stage-cases.json)，核验分支及通向固定父提交的完整线性历史，执行文档、diff、fmt、clippy、workspace tests、两套 Python 测试与 build。每个行为模式必须匹配真实通过的测试；零测试、缺模式、失败门禁都返回非零。继承 R1 的 Cargo 测试过滤和集成套件检查单独记录，父提交校验统一为原文档框架，旧报告检查由当前基线参数替代，旧人工缺口不删除。
 
-`python scripts/package_stage.py --stage R1 --plan-version 1.2` 要求当前源码已有成功验证报告，必须由 Cargo 检查 release 构建，拒绝中途源码变化。按源码与 exe 哈希创建独立目录，不覆盖历史包。源码指纹覆盖 Cargo/实现/worker Python/脚本/测试及当前用例映射；叙述性文档不入该指纹以避免证据自引用，文档修改后须单独重跑文档门禁。完整 Git SHA 在最终交接取值，报告写 pre-amend 基点与阶段父提交。
+`python scripts/package_stage.py --stage M0 --plan-version 1.0` 要求当前源码已有成功验证报告，必须由 Cargo 检查 release 构建，拒绝中途源码变化。按源码与 exe 哈希创建独立目录，不覆盖历史包。源码指纹覆盖 Cargo/实现/worker Python/脚本/测试及当前用例映射；叙述性文档不入该指纹以避免证据自引用，文档修改后须单独重跑文档门禁。完整 Git SHA 在最终交接取值，报告写 pre-amend 基点与阶段父提交。
 
-机器结果在忽略的 `.local/reports/r1/verification.json` 和 `package.json`。人工/live 不由命令自动改为 passed；R1 命令保留历史作用域，不能用其旧包验收当前 R1。
+机器结果在忽略的 `.local/reports/m0/verification.json` 和 `package.json`。人工/live 不由命令自动改为 passed；R1 命令保留历史作用域，不能用其旧包验收当前 M0。

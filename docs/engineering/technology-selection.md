@@ -80,8 +80,8 @@ Rust 现场 1.98.1、Python 3.12.14 可调用，B 依据上游 MSRV 和实际兼
 | 美股数据 | Longport 官方 Rust SDK 4.3.7；CSV/OHLCV 文件兜底 | 用户账户/地区/权限/费用未确定；先做能力和格式验证，不以 SDK 等于数据采购完成 |
 | 加密数据 | CCXT Python 4.5.84 / Rust 候选 | Python 生态与现有分析环境可复用；Rust 可减少 worker，但目标场所完备性待测。按 Q-01 选择 Rust/Python 的已验证接口，不额外引入语言栈 |
 | Python 管理 | uv 0.12.19 + 锁文件；Pydantic 按协议需要 | 开发/构建工具，不要求终端用户安装 Python；下载或捆绑 runtime 的许可、校验和离线启动需验证 |
-| 扫描与分析 | Polars 或 DuckDB 后续按表达式/SQL 工作流取舍 | S1 SQLite 足够时不引入；先测数据量瓶颈再扩展 Parquet |
-| 训练/回测 | S2 比较 NautilusTrader 等活跃核心和最小模拟适配 | 当前只读取官方架构/平台说明，未完成许可/时钟/订单语义验证；不能在 S1 顺带嵌入完整交易平台或先默认自研撮合 |
+| 扫描与分析 | Polars 或 DuckDB 后续按表达式/SQL 工作流取舍 | M1 SQLite 足够时不引入；先测数据量瓶颈再扩展 Parquet |
+| 训练/回测 | M2 比较 NautilusTrader 等活跃核心和最小模拟适配 | 当前只读取官方架构/平台说明，未完成许可/时钟/订单语义验证；不能在 M1 顺带嵌入完整交易平台或先默认自研撮合 |
 
 TA-Lib 原生及 wheel 的许可分别核对；Python 包 license 元数据为空时以实际 LICENSE 为证据。CCXT 各语言/交易所语义可能不同，统一 API 不消除分页、费用币种、历史覆盖和限流差异。所有账户连接只读，不向模型注册下单能力。
 

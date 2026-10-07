@@ -11,7 +11,7 @@ import package_stage as package
 
 class CurrentStageTest(unittest.TestCase):
     def setUp(self):
-        self.config = verify.load_stage("R1", "1.2")
+        self.config = verify.load_stage("M0", "1.0")
 
     def test_parent_and_branch_fail_closed(self):
         verify.validate_base(self.config, "codex/r1-workbench", self.config["stageParent"])
@@ -21,7 +21,7 @@ class CurrentStageTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify.validate_base(self.config, branch, parents)
         with self.assertRaises(ValueError):
-            verify.load_stage("R1", "1.2", "a" * 40)
+            verify.load_stage("M0", "1.0", "a" * 40)
 
     def test_zero_test_success_exit_is_still_failure(self):
         gate = verify.gate_result("rust", ["cargo", "test"], 0,
@@ -31,6 +31,18 @@ class CurrentStageTest(unittest.TestCase):
         self.assertTrue(all(c["status"] == "failed" for c in cases if c["mode"] == "automated"))
         self.assertTrue(all(c["status"] == "not-run" for c in cases if c["mode"] != "automated"))
 
+    def test_published_review_fixes_require_an_unbroken_linear_base(self):
+        base = self.config["stageParent"]
+        first, head = "a" * 40, "b" * 40
+        branch = self.config["branch"]
+        verify.validate_base(self.config, branch, first, f"{head} {first}\n{first} {base}")
+        for history in ["", f"{head} {first} {base}", f"{head} {first}\n{first} wrong",
+                        f"{head} {first}\nother {base}"]:
+            with self.assertRaises(ValueError):
+                verify.validate_base(self.config, branch, first, history)
+        with self.assertRaises(ValueError):
+            verify.validate_base(self.config, branch, "wrong", f"{head} {base}")
+
     def test_missing_pattern_is_not_hidden_by_other_passing_tests(self):
         cases = verify.cases_for(self.config, ["unrelated_test"], [])
         self.assertTrue(all(c["status"] == "failed" for c in cases if c["mode"] == "automated"))
@@ -38,7 +50,7 @@ class CurrentStageTest(unittest.TestCase):
     def test_source_edit_or_old_verification_blocks_package(self):
         with self.assertRaises(ValueError):
             verify.require_unchanged({"sha256": "old"}, {"sha256": "new"})
-        report = {"stage": "R1", "planVersion": "1.2", "stageParent": self.config["stageParent"],
+        report = {"stage": "M0", "planVersion": "1.0", "stageParent": self.config["stageParent"],
                   "sourceFingerprint": {"sha256": "old"}, "exitCode": 0}
         with self.assertRaises(ValueError):
             package.verified_source(report, {"sha256": "new"}, self.config)
@@ -48,7 +60,7 @@ class CurrentStageTest(unittest.TestCase):
             package.verified_source(report, {"sha256": "old"}, self.config)
 
     def test_version_and_path_are_validated(self):
-        for stage, version in [("../R1", "1.2"), ("R1", "wrong")]:
+        for stage, version in [("../M0", "1.0"), ("M0", "wrong")]:
             with self.assertRaises(ValueError):
                 verify.load_stage(stage, version)
 
