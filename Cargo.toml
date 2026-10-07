@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/delta-core",
+    "crates/delta-app",
+    "crates/delta-infra",
+    "apps/desktop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["DELTA maintainers"]
+publish = false
+
+[workspace.dependencies]
+# Domain numbers
+rust_decimal = { version = "1.43.0", features = ["serde"] }
+# Serialization
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# Time
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+# Errors, ids, logging
+thiserror = "2.0.21"
+anyhow = "1.0"
+uuid = { version = "1.26.1", features = ["v4", "v7", "serde"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Async runtime and HTTP (model client transport)
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-util = "0.7.19"
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+futures = "0.3"
+eventsource-stream = "0.2.1"
+# Storage
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Files and credentials
+csv = "1.4.0"
+keyring = { version = "4.2.0", features = ["windows-native-keyring-store"] }
+directories = "6.0.0"
+# Dev / test
+proptest = "1.11.0"
+tempfile = "3.27.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+strip = "debuginfo"

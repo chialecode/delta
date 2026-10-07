@@ -1,0 +1,27 @@
+[package]
+name = "delta-app"
+description = "DELTA application services: contracts, commands/queries, AI runtime and tool gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+delta-core = { path = "../delta-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = "1.40"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

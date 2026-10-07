@@ -1,0 +1,607 @@
+{
+  "schemaVersion": 1,
+  "planVersion": "1.1",
+  "definitionStatus": "planned",
+  "resultStates": [
+    "passed",
+    "failed",
+    "blocked",
+    "not-run"
+  ],
+  "cases": [
+    {
+      "id": "R1-A-01",
+      "mode": "automated",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "work_packages": [
+        "R1-W00",
+        "R1-W01"
+      ],
+      "precondition": "干净隔离工作目录及依赖锁文件",
+      "steps": "从锁文件构建 Rust 与按需 Python，检查公共 schema 与客户端依赖；记录工具链和 Codex 参考版本",
+      "expected": "可重建；core 无 UI/DB/模型传输依赖；仅 Rust + Python 工程，无额外 Agent 运行时；必需依赖版本完整",
+      "evidence": "安装/构建退出码、锁文件、依赖/许可清单"
+    },
+    {
+      "id": "R1-A-02",
+      "mode": "automated",
+      "requirements": [
+        "FR-BASE-01",
+        "FR-BASE-02"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-27"
+      ],
+      "work_packages": [
+        "R1-W02"
+      ],
+      "precondition": "新建演示资料库",
+      "steps": "设置时区/报表币种、建立各账户类型、组合重复加入、重启",
+      "expected": "设置恢复；本位币不可被报表切换修改；组合不重复计资产",
+      "evidence": "服务测试与桌面流程证据"
+    },
+    {
+      "id": "R1-A-03",
+      "mode": "automated",
+      "requirements": [
+        "FR-DATA-01",
+        "FR-DATA-02"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-09"
+      ],
+      "work_packages": [
+        "R1-W01",
+        "R1-W02"
+      ],
+      "precondition": "CSV 含正常/无效/同秒同价独立成交、跨文件重叠",
+      "steps": "预览映射；选择有效行；重复确认、重导；变更文件/映射/修订后提交旧预览",
+      "expected": "已入库批次幂等；独立成交保留；疑似跨文件重复需显式处理；旧预览拒绝；计数和排除理由准确",
+      "evidence": "固定 CSV/manifest、事件/回执断言"
+    },
+    {
+      "id": "R1-A-04",
+      "mode": "automated",
+      "requirements": [
+        "FR-DATA-02",
+        "FR-LED-01",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-09"
+      ],
+      "work_packages": [
+        "R1-W02",
+        "R1-W03"
+      ],
+      "precondition": "已导入成交与旧分析报告",
+      "steps": "更正金额；注入提交失败；重试同 ID；更正过程中查询旧修订",
+      "expected": "冲销/替代和版本原子；投影只生效一次；旧报告提示过期且来源可打开",
+      "evidence": "事务/重启/版本快照测试"
+    },
+    {
+      "id": "R1-A-05",
+      "mode": "automated",
+      "requirements": [
+        "FR-LED-01",
+        "FR-LED-03",
+        "FR-LED-06",
+        "NFR-01"
+      ],
+      "acceptance": [
+        "AC-02"
+      ],
+      "work_packages": [
+        "R1-W01",
+        "R1-W03"
+      ],
+      "precondition": "AC-02 手算数据：2000；买10×100费1；卖4×110费1；价105",
+      "steps": "完成入账、FIFO、估值；从 UI 与服务读取结果；分多批全卖验证舍入",
+      "expected": "现金1438、余6、成本600.6、已实现38.6、未实现29.4、总68；费用不重复扣；清仓成本分摊守恒",
+      "evidence": "独立 expected.json、Decimal 精确断言"
+    },
+    {
+      "id": "R1-A-06",
+      "mode": "automated",
+      "requirements": [
+        "FR-LED-04",
+        "FR-DATA-05"
+      ],
+      "acceptance": [
+        "AC-04",
+        "AC-22"
+      ],
+      "work_packages": [
+        "R1-W03"
+      ],
+      "precondition": "两账户现金和持仓，明确本金与费用",
+      "steps": "配对转账；组合与单账户分别查询；资产转移；对照余额快照",
+      "expected": "组合本金无收益、手续费单扣、单账户资金流正确；成本批次搬移；差异不自动抹平",
+      "evidence": "现金/数量/成本守恒与对账测试"
+    },
+    {
+      "id": "R1-A-07",
+      "mode": "automated",
+      "requirements": [
+        "FR-LED-02",
+        "FR-LED-03",
+        "FR-MKT-04"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-22"
+      ],
+      "work_packages": [
+        "R1-W03",
+        "R1-W04"
+      ],
+      "precondition": "BTC/USDT、第三资产手续费、USDT偏离1USD、缺FX/费用价/成本",
+      "steps": "有完整数据入账估值；分别移除必要值；超卖/超精度/溢出输入",
+      "expected": "资产分开；按真实FX折算；缺本位币折算进待入账；缺估值partial；超卖/溢出拒绝，不能静默截断",
+      "evidence": "独立跨资产期望、边界和缺失测试"
+    },
+    {
+      "id": "R1-A-08",
+      "mode": "automated",
+      "requirements": [
+        "FR-LED-08",
+        "FR-LED-01"
+      ],
+      "acceptance": [
+        "AC-05"
+      ],
+      "work_packages": [
+        "R1-W03",
+        "R1-W04"
+      ],
+      "precondition": "2:1拆股、现金分红与原始/复权行情",
+      "steps": "变更持仓、登记支付日分红和利息；重复来源导入；对比基准",
+      "expected": "拆股成本不变数量翻倍；分红/利息仅一次；复权不重复收益",
+      "evidence": "公司行动手算与重复测试"
+    },
+    {
+      "id": "R1-A-09",
+      "mode": "automated",
+      "requirements": [
+        "FR-LED-05",
+        "FR-LED-06"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-07"
+      ],
+      "work_packages": [
+        "R1-W03",
+        "R1-W05"
+      ],
+      "precondition": "期初1000、入金1000、市场不变；手工资产/负债及过期估值",
+      "steps": "查询资产/净值/区间变化；切组合/期间；含缺价资产",
+      "expected": "损益0不显示100%收益；负债方向正确；缺价列明已知部分；无可比净值不称投资回撤",
+      "evidence": "独立现金流样本、UI结果/状态"
+    },
+    {
+      "id": "R1-A-10",
+      "mode": "automated",
+      "requirements": [
+        "FR-DATA-03",
+        "FR-MKT-04"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-21"
+      ],
+      "work_packages": [
+        "R1-W01",
+        "R1-W04"
+      ],
+      "precondition": "版本化OHLCV/FX/公司行动/session文件，DST/半日市/加密24×7",
+      "steps": "导入并校验OHLC顺序/缺口；查询边界；修订数据集",
+      "expected": "UTC/市场时区与日期一致；休市与缺数据区分；原数据版本不可变；来源/复权/覆盖可见",
+      "evidence": "来源manifest和日历/版本回归"
+    },
+    {
+      "id": "R1-A-11",
+      "mode": "automated",
+      "requirements": [
+        "FR-MKT-02"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-21"
+      ],
+      "work_packages": [
+        "R1-W04"
+      ],
+      "precondition": "TA-Lib锁版本独立参考向量、含短窗口和缺值",
+      "steps": "运行MA/EMA/MACD/RSI；改变参数；向visible_until后注入哨兵",
+      "expected": "预热为空且参数/初始化一致；记录容差；当前结果不受未来改变影响",
+      "evidence": "参考工具/版本、输入/输出hash和对照结果"
+    },
+    {
+      "id": "R1-A-12",
+      "mode": "automated",
+      "requirements": [
+        "FR-MKT-01",
+        "FR-MKT-03",
+        "FR-JRN-03",
+        "FR-JRN-04"
+      ],
+      "acceptance": [
+        "AC-08"
+      ],
+      "work_packages": [
+        "R1-W05",
+        "R1-W06"
+      ],
+      "precondition": "合成两场所标的、成交、多笔记与ChartContext",
+      "steps": "自选/搜索、缩放/平移/十字线/指定日期；标记→详情→笔记→图表",
+      "expected": "标的身份不混淆；周期/窗口/复权/参数恢复；关联对象变化提示；分配数量不超额",
+      "evidence": "组件/应用集成结果、截图和可复现操作"
+    },
+    {
+      "id": "R1-A-13",
+      "mode": "automated",
+      "requirements": [
+        "FR-JRN-01",
+        "FR-JRN-02"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "work_packages": [
+        "R1-W06"
+      ],
+      "precondition": "中英文笔记、标签和前/中/后模板",
+      "steps": "编辑自动保存；注入写入失败与进程中断；短中文关键词/标签/时间搜索",
+      "expected": "失败不显示已保存；保留缓冲；恢复最近持久版本；中文相关笔记可命中且不越权",
+      "evidence": "存储故障和搜索固定样本"
+    },
+    {
+      "id": "R1-A-14",
+      "mode": "automated",
+      "requirements": [
+        "FR-JRN-04",
+        "FR-OPS-01"
+      ],
+      "acceptance": [
+        "AC-08",
+        "AC-09"
+      ],
+      "work_packages": [
+        "R1-W06",
+        "R1-W09"
+      ],
+      "precondition": "附件与图表上下文、缺失/损坏附件",
+      "steps": "保存关联；更正来源；删除/损坏附件并恢复备份",
+      "expected": "引用状态诚实；路径/哈希可核；恢复后正确或列出缺失，不能指向半文件",
+      "evidence": "附件生命周期/恢复清单"
+    },
+    {
+      "id": "R1-A-15",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-08",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-23"
+      ],
+      "work_packages": [
+        "R1-W01",
+        "R1-W07",
+        "R1-W08"
+      ],
+      "precondition": "统一服务与真实 Rust ModelClient/AgentRuntime 接入受控端点",
+      "steps": "同 scope/修订走 UI 查询和 Rust 工具调用；注入未知工具/schema/错误版本/陈旧 run",
+      "expected": "值/质量/证据一致；拒绝未知及陈旧调用；DTO金额无损；错误码一致",
+      "evidence": "统一契约、真实 Rust 客户端及工具轨迹"
+    },
+    {
+      "id": "R1-A-16",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-01",
+        "FR-AI-08"
+      ],
+      "acceptance": [
+        "AC-25"
+      ],
+      "work_packages": [
+        "R1-W07"
+      ],
+      "precondition": "真实 Rust 客户端；Responses 与 Chat Completions 两套独立受控 HTTP/SSE 服务场景",
+      "steps": "逐协议测试碎片 UTF-8/多行 SSE/工具 JSON 和关联、重复异参数 ID、unknown 事件、incomplete/length/正常终态、usage 缺失、401/429/5xx、Retry-After、重定向、超大累计流、背压/超时；半流后断网禁止自动重放",
+      "expected": "两协议分别通过；完整参数且工具回合正常结束才执行；未知用量不当零；无静默回退、凭据泄露、部分流自动重放或重复工具；缺终态不能成功",
+      "evidence": "两协议场景矩阵、独立 wire fixtures、请求计数/事件/退出状态"
+    },
+    {
+      "id": "R1-A-17",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-03",
+        "FR-AI-07"
+      ],
+      "acceptance": [
+        "AC-19",
+        "AC-24"
+      ],
+      "work_packages": [
+        "R1-W07",
+        "R1-W08"
+      ],
+      "precondition": "两账户/敏感笔记、一个运行冻结scope和版本",
+      "steps": "运行中改账/切页面/切账户；让模型请求其他scope/旧代次；重试旧快照",
+      "expected": "在途范围不扩大；旧数据可重放或明确不可用；换账户使用干净上下文；报告新版本提示",
+      "evidence": "scope/generation/快照断言"
+    },
+    {
+      "id": "R1-A-18",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-07"
+      ],
+      "acceptance": [
+        "AC-24"
+      ],
+      "work_packages": [
+        "R1-W07"
+      ],
+      "precondition": "Rust/SQLite 持久会话、多轮工具配对、可控小窗口触发摘要；真实客户端连受控服务",
+      "steps": "强制压缩、摘要后写库失败、压缩中撤权/取消、宿主崩溃恢复、工具结果提交前后故障、换小窗口模型；核对 checkpoint/历史哈希",
+      "expected": "原历史保留；完整工具配对；范围/数值不从摘要恢复；失败不切换 checkpoint；未完成调用标 interrupted；无重复成功或旧代次污染",
+      "evidence": "SQLite 转录/checkpoint 及故障时间线、恢复断言"
+    },
+    {
+      "id": "R1-A-19",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-01",
+        "FR-AI-07",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-24",
+        "AC-26"
+      ],
+      "work_packages": [
+        "R1-W07",
+        "R1-W08"
+      ],
+      "precondition": "长流式/慢工具运行且队列有事件",
+      "steps": "流读取/退避/压缩中取消，关闭窗口、库切换；注入迟到文本/工具结果；检查任务退出与资源释放",
+      "expected": "UI≤1s响应；后台目标≤5s退出或明确终止处理中；无后续工具；晚到事件不写新运行",
+      "evidence": "状态时间线、取消延迟、任务/句柄释放、陈旧回调断言"
+    },
+    {
+      "id": "R1-A-20",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-01",
+        "FR-OPS-03",
+        "NFR-10"
+      ],
+      "acceptance": [
+        "AC-19",
+        "AC-25"
+      ],
+      "work_packages": [
+        "R1-W07",
+        "R1-W09"
+      ],
+      "precondition": "隔离环境内放置假的开发配置、探针凭据、AGENTS/skills/插件和 shell/文件工具请求",
+      "steps": "启动 Rust 客户端/编排并枚举工具；注入恶意笔记要求读文件/命令/其他账户；确认 Python 不接收模型凭据；导出诊断/备份",
+      "expected": "只含业务查询；不加载其他开发工具配置/凭据/指令；越权代码拒绝；日志/备份不泄露秘密；仅 prompt 声明不算通过",
+      "evidence": "隔离探针清单、工具目录、配置/凭据访问与诊断断言"
+    },
+    {
+      "id": "R1-A-21",
+      "mode": "automated",
+      "requirements": [
+        "FR-AI-02",
+        "FR-AI-04",
+        "FR-AI-06"
+      ],
+      "acceptance": [
+        "AC-10",
+        "AC-19"
+      ],
+      "work_packages": [
+        "R1-W08"
+      ],
+      "precondition": "AC-02和缺成本/少样本；假服务产生正确/伪造引用和矛盾数字",
+      "steps": "生成复盘并打开证据；注入假引用/数值；停止模型连接后操作账本/图表/笔记",
+      "expected": "68及分项来自工具；证据可打开；伪造不当有效报告；不足明确；离线功能可用",
+      "evidence": "结构化报告/引用验证、离线端到端"
+    },
+    {
+      "id": "R1-A-22",
+      "mode": "automated",
+      "requirements": [
+        "FR-OPS-01",
+        "FR-OPS-02",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-20"
+      ],
+      "work_packages": [
+        "R1-W09"
+      ],
+      "precondition": "WAL 活跃库、笔记附件、Rust 会话/压缩检查点和迁移前版本",
+      "steps": "一致性备份、导出、恢复新目录；注入缺文件/坏hash/迁移失败",
+      "expected": "金额/数量/证据与会话范围恢复一致；坏备份拒绝；旧库不损坏；导出CSV/JSON/Markdown可解释",
+      "evidence": "manifest/hash、升级恢复与导出重读"
+    },
+    {
+      "id": "R1-A-23",
+      "mode": "automated",
+      "requirements": [
+        "FR-OPS-03",
+        "FR-OPS-04",
+        "NFR-10"
+      ],
+      "acceptance": [
+        "AC-20",
+        "AC-25"
+      ],
+      "work_packages": [
+        "R1-W09"
+      ],
+      "precondition": "仅新建隔离库及备份，含任务句柄、凭据引用和路径逃逸输入",
+      "steps": "删除预览/取消/确认；测试越界附件/恢复路径；扫描日志与打包内容",
+      "expected": "范围清楚；取消不删除；确认仅处理目标库；任务先关闭；备份/远端副本边界明确；无key入包",
+      "evidence": "路径/删除测试和秘密探针结果"
+    },
+    {
+      "id": "R1-A-24",
+      "mode": "automated",
+      "requirements": [
+        "FR-DATA-01",
+        "FR-MKT-01",
+        "FR-JRN-01",
+        "FR-AI-02",
+        "FR-OPS-01",
+        "NFR-03",
+        "NFR-04"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-08",
+        "AC-10",
+        "AC-26"
+      ],
+      "work_packages": [
+        "R1-W05",
+        "R1-W08",
+        "R1-W10"
+      ],
+      "precondition": "美股/加密演示库、10万交易/10万K线/1000可见；记录硬件",
+      "steps": "全流程导入至AI报告恢复；重复启动、交互和图表基准测量",
+      "expected": "两市场流程完整；首屏≤3s、交互P95≤100ms、图表目标≥50FPS；达不到记录实际失败而非声称达标",
+      "evidence": "全链路录制/截图、基准数据和统计方法"
+    },
+    {
+      "id": "R1-A-25",
+      "mode": "automated",
+      "requirements": [
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "work_packages": [
+        "R1-W00",
+        "R1-W10",
+        "R1-W11"
+      ],
+      "precondition": "所有自动场景有结构化结果、待人工/live仍独立",
+      "steps": "verify 遇缺结果/命令失败返回非零；核对源码指纹/阶段父提交/计划 v1.1、构建产物和文档追踪；核对本阶段 commit/amend 与工作区归属",
+      "expected": "自动缺项不能通过；人工/live 不伪装通过；R1 计划/实现/审核共用一个阶段 commit，父提交为文档框架，审核返工已 amend；证据可定位，输出新完整 SHA 的 B→A prompt",
+      "evidence": "验证器负向夹具、报告矩阵、最终commit"
+    },
+    {
+      "id": "R1-M-01",
+      "mode": "manual",
+      "requirements": [
+        "FR-MKT-01",
+        "FR-JRN-01",
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "work_packages": [
+        "R1-W05",
+        "R1-W06",
+        "R1-W10"
+      ],
+      "precondition": "最终Windows包与隔离演示库、真实中文IME",
+      "steps": "中文候选/回车/撤销/选区、键盘导航/对话框、125%和150%缩放、长数值/窄窗",
+      "expected": "不误提交；可见焦点/按钮/金额；图表与笔记可用；涨跌有符号文字",
+      "evidence": "实际系统/缩放/主题、步骤、截图/观察"
+    },
+    {
+      "id": "R1-M-02",
+      "mode": "manual",
+      "requirements": [
+        "FR-OPS-01",
+        "NFR-07",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-27"
+      ],
+      "work_packages": [
+        "R1-W09",
+        "R1-W10"
+      ],
+      "precondition": "无开发工具的Windows11环境、最终包、合法捆绑依赖与演示库",
+      "steps": "离线安装/卸载；Rust 应用及按需 Python 启动；导入/备份/恢复；重启",
+      "expected": "不依赖系统全局 Python/Cargo 或额外 Agent 运行时；主流程可用；未配置模型不影响本地；无意外凭据",
+      "evidence": "干净环境清单、构建指纹、安装日志/恢复结果"
+    },
+    {
+      "id": "R1-L-01",
+      "mode": "live",
+      "requirements": [
+        "FR-DATA-01",
+        "FR-DATA-03",
+        "FR-DATA-05",
+        "FR-MKT-04",
+        "FR-LED-02",
+        "FR-LED-08"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-05",
+        "AC-06",
+        "AC-21",
+        "AC-22"
+      ],
+      "work_packages": [
+        "R1-W04",
+        "R1-W10"
+      ],
+      "precondition": "用户明确指定合法去标识美股和加密真实数据与来源授权",
+      "steps": "两市场各走一个完整导入/行情/对账；核查费用/时区/公司行动/覆盖和来源权限",
+      "expected": "映射与真实来源相符；差异可解释且不自动抹平；无未授权下载或私有数据入仓",
+      "evidence": "脱敏能力/支持矩阵、样本指纹；Q-01/ACT-03状态"
+    },
+    {
+      "id": "R1-L-02",
+      "mode": "live",
+      "requirements": [
+        "FR-AI-01",
+        "FR-AI-02",
+        "FR-AI-04",
+        "FR-AI-07"
+      ],
+      "acceptance": [
+        "AC-10",
+        "AC-19",
+        "AC-24",
+        "AC-25"
+      ],
+      "work_packages": [
+        "R1-W07",
+        "R1-W08",
+        "R1-W10"
+      ],
+      "precondition": "用户本地配置并授权的OpenAI API形式真实端点；仅合成金融样本",
+      "steps": "在明确选择的协议/模型上一次短工具链报告、一次取消；校验 tools/stream/引用与用量；其他协议真实结果保持未测，不用受控结果替代",
+      "expected": "真实协议可用、68来自工具、引用有效、取消诚实；能力不足明确；不宣称跨模型通用",
+      "evidence": "脱敏连接/模型/协议/能力结果与预算；ACT-01状态"
+    }
+  ]
+}

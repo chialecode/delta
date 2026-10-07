@@ -16,8 +16,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA：Agent 与开发者工作入口",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "CLAUDE.md",
@@ -52,8 +52,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "REVIEW.md",
@@ -79,7 +79,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 文档导航",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -101,6 +101,15 @@
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
+      "path": "docs/decisions/0003-first-round-stack.md",
+      "kind": "decision",
+      "status": "draft",
+      "owner": "Agent A",
+      "scope": "ADR-0003：首轮技术与通用栈",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
       "path": "docs/decisions/README.md",
       "kind": "index",
       "status": "active",
@@ -115,7 +124,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "已确认决定与设计默认值",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -124,6 +133,35 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "集中事项台账",
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
+    },
+    {
+      "path": "docs/delivery/r1-agent-a-review-prompt.md",
+      "kind": "template",
+      "status": "superseded",
+      "owner": "Agent A",
+      "scope": "R1：B → A 审核 prompt 模板",
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据",
+      "supersededBy": "docs/delivery/stage-plan.md"
+    },
+    {
+      "path": "docs/delivery/r1-agent-b-prompt.md",
+      "kind": "template",
+      "status": "superseded",
+      "owner": "Agent A",
+      "scope": "R1：A → B 可复制实施 prompt",
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据",
+      "supersededBy": "docs/delivery/stage-plan.md"
+    },
+    {
+      "path": "docs/delivery/r1-execution-plan.md",
+      "kind": "plan",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "R1 v1.1 原基础范围和验收依据；当前入口 stage-plan.md",
       "reviewed": "2026-09-26",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
@@ -133,8 +171,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "当前执行状态",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -142,7 +180,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA UI 与交互约束",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -151,7 +189,7 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA AI 分析设计",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-01",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -160,7 +198,7 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "AI 上下文、会话与运行状态",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-01",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -169,8 +207,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 数据模型设计",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "docs/design/financial-engine.md",
@@ -196,8 +234,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 交互与工作流设计",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "docs/design/rust-model-client.md",
@@ -205,8 +243,8 @@
       "status": "draft",
       "owner": "Agent A",
       "scope": "Rust 模型客户端、双协议、流式与自研边界",
-      "reviewed": "2026-09-26",
-      "basis": "D-08；官方固定提交与 API 文档；未执行产品验证"
+      "reviewed": "2026-10-07",
+      "basis": "D-08；官方固定提交与 API 文档；R1 本机假端点与假代理测试（RW-03 复核），未做真实服务验证；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "docs/design/system-architecture.md",
@@ -214,8 +252,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 系统架构设计",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "docs/dev-rules/architecture-and-open-source.md",
@@ -223,7 +261,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "架构与开源复用规则",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -241,7 +279,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "Agent A / Agent B 连续开发与交接",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -250,8 +288,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "Git 初始化与交付规则",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/dev-rules/quality-gates.md",
@@ -259,8 +297,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "验证与交付门禁",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -268,8 +306,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "仓库地图",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；R1 v1.2 B 实现/自检（非 A 独立复核）"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
@@ -277,8 +315,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 实施路线与验收计划",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/engineering/technology-selection.md",
@@ -286,7 +324,7 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 技术选型：开源优先",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -308,6 +346,15 @@
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
+      "path": "docs/evidence/2026-09-26-planning-delivery.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "2026-09-26：A 规划交付与 Git 核验",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
+    },
+    {
       "path": "docs/evidence/2026-09-26-technology-research.md",
       "kind": "evidence",
       "status": "reference",
@@ -322,7 +369,7 @@
       "status": "reference",
       "owner": "Agent A / 维护者",
       "scope": "证据索引",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -331,8 +378,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "文档治理与约束管理",
-      "reviewed": "2026-09-26",
-      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+      "reviewed": "2026-10-07",
+      "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据；D-14～16，M0/明确授权与实际 main ruleset 核对"
     },
     {
       "path": "docs/product-rules/core-product-principles.md",
@@ -349,7 +396,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "项目关键事实与接续入口",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -358,7 +405,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 产品需求文档",
-      "reviewed": "2026-09-26",
+      "reviewed": "2026-10-07",
       "basis": "D-01～09；Rust/Python 基线、官方 Codex 参考；本文所链接职责正本与证据"
     },
     {
@@ -405,6 +452,81 @@
       "scope": "验证报告模板",
       "reviewed": "2026-09-26",
       "basis": "D-01～07；原需求基线；ADR-0001；本文所链接正本与证据"
+    },
+    {
+      "path": "docs/evidence/r1-delivery.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B",
+      "scope": "R1 计划 v1.1 的合成闭环实现、命令、结果矩阵与未覆盖边界；含 B 的 RW-01、RW-02、RW-03 返工回应",
+      "basis": "R1 执行计划 v1.1 与 29 用例；实际运行的 verify/demo/package/cargo 结果；不含真实数据或真实模型验证",
+      "reviewed": "2026-10-01"
+    },
+    {
+      "path": "docs/evidence/r1-review.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "R1 集中审核：F 编号发现、A 修复与验证、三项结论、32 项 P0 现状和 B 返工批次；RW-01、RW-02、RW-03 复核",
+      "reviewed": "2026-10-01",
+      "basis": "首轮：B 提交 fa40991 的真实代码与复现门禁、A 修复前失败探针与修复后全部门禁。RW-01 复核：B 返工提交 46f0577 的代码、门禁复现、修复前失败探针与修复后全部门禁。RW-02、RW-03 复核：B 返工提交 4298b08、9284ccb 的代码、门禁复现、修复前失败探针、变异检查与修复后全部门禁。均未做真实服务与实机验证"
+    },
+    {
+      "path": "USER-ACTIONS.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "用户决定、配置、人工检查和授权的唯一入口",
+      "reviewed": "2026-10-07",
+      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证；R1 v1.2 B 实现/自检（非 A 独立复核）；D-14～16，M0/明确授权与实际 main ruleset 核对"
+    },
+    {
+      "path": "docs/dev-rules/communication-protocol.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "A/B 与用户两条沟通路径、编号与连续执行",
+      "reviewed": "2026-10-07",
+      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证"
+    },
+    {
+      "path": "docs/dev-rules/local-files-and-references.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "本地参考、未跟踪文件、公开边界与阶段整理",
+      "reviewed": "2026-10-07",
+      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证"
+    },
+    {
+      "path": "docs/design/workbench-visual-spec.md",
+      "kind": "design",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "参考图构图、主题、样例隔离与交互边界",
+      "reviewed": "2026-10-07",
+      "basis": "用户 2026-10-07 请求；D-10/11；R1 v1.2；实际源码与验证"
+    },
+    {
+      "path": "docs/delivery/stage-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "Agent A",
+      "scope": "M0 v1.0 当前交付与历史依据",
+      "reviewed": "2026-10-07",
+      "basis": "D-14～16；用户范围调整；实际验证与远端保护复核",
+      "retireAfter": "M0"
+    },
+    {
+      "path": "docs/delivery/stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "M0 v1.0 当前交付与历史依据",
+      "reviewed": "2026-10-07",
+      "basis": "D-14～16；用户范围调整；实际验证与远端保护复核",
+      "retireAfter": "M0"
     }
-  ]
+  ],
+  "currentStage": "M0"
 }

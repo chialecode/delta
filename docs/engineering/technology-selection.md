@@ -2,6 +2,8 @@
 
 版本 0.4 · 2026-09-26 · Agent A 已完成首轮资料比较，尚无本轮 Rust 模型客户端兼容验证证据。用户决定见 [确认记录](../decisions/confirmed-decisions.md)，实际来源见 [调研报告](../evidence/2026-09-26-technology-research.md)和[快照](../evidence/2026-09-26-upstream-snapshot.json)。
 
+2026-10-07 补充：GPUI Kit 官方主分支最新提交 10 月 6 日，release v0.7.1 为 10 月 5 日；本项目继续锁定 0.6.6，构图变更不自动升级。AKShare release-v1.19.1 为 9 月 30 日，代码 MIT，数据许可另核；仅为行情 Provider 候选，尚未引入依赖。官方查询和许可边界见 [当前计划](../delivery/stage-plan.md)。维护选择按相同功能比较，不使用仓库 updated_at 单独排序。
+
 ## 1. 结论与状态
 
 首轮建议：**Rust + GPUI Kit；SQLite/rusqlite；rust_decimal；Tokio/reqwest；参考 Codex 官方实现的自研 Rust 模型客户端；按需 TA-Lib/Python；统一 Rust 应用能力与上下文范围。** 开源负责通用机制，DELTA 负责领域语义、业务装配、快照/权限和证据。
@@ -78,8 +80,8 @@ Rust 现场 1.98.1、Python 3.12.14 可调用，B 依据上游 MSRV 和实际兼
 | 美股数据 | Longport 官方 Rust SDK 4.3.7；CSV/OHLCV 文件兜底 | 用户账户/地区/权限/费用未确定；先做能力和格式验证，不以 SDK 等于数据采购完成 |
 | 加密数据 | CCXT Python 4.5.84 / Rust 候选 | Python 生态与现有分析环境可复用；Rust 可减少 worker，但目标场所完备性待测。按 Q-01 选择 Rust/Python 的已验证接口，不额外引入语言栈 |
 | Python 管理 | uv 0.12.19 + 锁文件；Pydantic 按协议需要 | 开发/构建工具，不要求终端用户安装 Python；下载或捆绑 runtime 的许可、校验和离线启动需验证 |
-| 扫描与分析 | Polars 或 DuckDB 后续按表达式/SQL 工作流取舍 | S1 SQLite 足够时不引入；先测数据量瓶颈再扩展 Parquet |
-| 训练/回测 | S2 比较 NautilusTrader 等活跃核心和最小模拟适配 | 当前只读取官方架构/平台说明，未完成许可/时钟/订单语义验证；不能在 S1 顺带嵌入完整交易平台或先默认自研撮合 |
+| 扫描与分析 | Polars 或 DuckDB 后续按表达式/SQL 工作流取舍 | M1 SQLite 足够时不引入；先测数据量瓶颈再扩展 Parquet |
+| 训练/回测 | M2 比较 NautilusTrader 等活跃核心和最小模拟适配 | 当前只读取官方架构/平台说明，未完成许可/时钟/订单语义验证；不能在 M1 顺带嵌入完整交易平台或先默认自研撮合 |
 
 TA-Lib 原生及 wheel 的许可分别核对；Python 包 license 元数据为空时以实际 LICENSE 为证据。CCXT 各语言/交易所语义可能不同，统一 API 不消除分页、费用币种、历史覆盖和限流差异。所有账户连接只读，不向模型注册下单能力。
 

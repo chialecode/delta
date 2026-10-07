@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "files": {
+    "tests/fixtures/ac02-events.json": {
+      "sha256": "363afc9adada7959400576bca3e6884e85102d5af3afdfc2812e2bae58a87a91"
+    },
+    "tests/fixtures/ac02-expected.json": {
+      "sha256": "ade33a9d01b406c99908be67c0bc37b1b7ea329bf411b2e801eb45f350baa0ae"
+    }
+  },
+  "note": "合成样本与独立期望；真实样本不入 Git（R1 计划 §6）"
+}

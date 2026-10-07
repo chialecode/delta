@@ -1,0 +1,38 @@
+[package]
+name = "delta-infra"
+description = "DELTA infrastructure: SQLite storage, market data files, model client, python worker, backup"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+delta-core = { path = "../delta-core" }
+delta-app = { path = "../delta-app" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+eventsource-stream = { workspace = true }
+bytes = "1"
+tokio-stream = "0.1"
+rusqlite = { workspace = true }
+csv = { workspace = true }
+keyring = { workspace = true }
+sha2 = "0.10"
+tracing = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = "1.40"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
