@@ -14,7 +14,7 @@ DELTA 使用 Rust + Python。模型客户端、只读工具编排和上下文状
 | --- | --- | --- |
 | `ModelClient` | 类型化请求、流式事件、取消、能力声明和错误 | 不访问业务数据库、不执行工具、不拥有会话真相 |
 | 协议适配 | Responses / Chat Completions 编解码、工具参数拼接、协议终态 | 不把一种协议的字段直接传给另一种，不暗换模型或端点 |
-| HTTP transport | TLS、认证注入、连接/空闲/总超时、有界响应、有限重试 | 复用库；不记录请求正文或凭据，不自动重定向携带认证的请求到别的主机 |
+| HTTP transport | TLS、认证注入、代理策略、连接/空闲/总超时、有界响应、有限重试 | 复用库；不记录请求正文或凭据，不自动重定向携带认证的请求到别的主机 |
 | `AgentRuntime`（Rust 应用层） | 冻结 scope、工具循环、预算、报告验证、上下文编排 | 工具只经 AnalysisToolGateway；模型返回的授权字段无效 |
 | SQLite 会话仓储 | 转录、工具回执、运行状态、检查点和压缩来源 | Rust 写入，数据库迁移；UI 仅是投影，详见 [上下文状态](context-state-management.md) |
 
@@ -25,7 +25,7 @@ DELTA 使用 Rust + Python。模型客户端、只读工具编排和上下文状
 ```text
 ModelConnection
   id, protocol, base_url, model_id, credential_ref,
-  context_window, capabilities, timeouts, retry_policy
+  context_window, capabilities, timeouts, proxy, retry_policy
 
 ModelRequest
   request_id, run_id, generation, connection_id,
@@ -66,6 +66,8 @@ OpenAI 官方连接优先推荐 Responses；兼容端点按用户选定协议连
 - 使用成熟 SSE parser（Codex 使用 eventsource-stream；B 核对实际维护、许可和 reqwest 兼容后锁版），测试跨字节 UTF-8、多行 data、分片 JSON、注释/空帧、重复/未知事件和有界缓冲。未知非关键事件可忽略并计数，关键完成信息缺失必须失败。
 - 工具参数完整、JSON/schema 合法、call ID 唯一且工具回合正常结束后才交网关；不能执行半条参数。重复 call ID 同参数去重，异参数拒绝；首轮顺序执行业务工具，避免并发放大范围或预算。
 - 正常 EOF 不能替代协议成功终态；length/content_filter、incomplete、断流保留部分结果并标明不完整。不能把部分文本包装为成功金融报告。
+- 代理策略 `proxy`（默认 `system`）：`system` 跟随系统/环境代理；`direct` 不使用代理；`custom` 使用连接里指定的代理 URL。明文 `http` 的非回环远端不经任何代理：`system` 改为直连，`custom` 在构建客户端时拒绝，避免令牌以明文穿过代理。回环地址（`localhost`、`127.0.0.1`、`[::1]`）在任何策略下都直连，`custom` 也不例外：代理自身的回环不是用户的本地服务，明文请求经代理会把令牌交给代理。路由由 `proxy_route` 在发出任何连接前决定，测试可直接断言。
+- 超时按阶段分开：连接预算覆盖 DNS、TCP 与 TLS 握手，超出后错误同时是连接错误和超时，按连接失败重试；空闲超时在每次成功读取后重置；总超时从连接到最后一字节。连接阶段之后的超时不属于连接失败，不自动重试。连接超时的测试一律不走代理，用挂起的自定义 DNS 解析器（`with_dns_resolver`）或只接受 TCP 而不完成握手的本机端点确定性触发，不依赖外网地址或本机代理。
 - 明确 401/403 不重试；429 和可重试 5xx/连接故障在尚无应用可见输出时最多重试 2 次，尊重 Retry-After、退避和总预算。远端是否处理未知时说明可能重复计费。出现可见文本/工具片段后不自动重放整个请求，不重复已完成工具。
 - 取消覆盖连接、流读取、退避等待、工具调度和压缩；关闭流、取消任务并回收句柄，期限未退出标 interrupted。陈旧 generation 不能写会话或 UI。进程内任务退出不以杀死桌面进程实现。
 - 默认每条 SSE/协议记录上限 1 MiB、工具明细 100 行、单 run 12 次工具调用与 120 秒；全请求/累计流/事件队列也必须有上限。B 按真实样本锁定具体值并记录；超限报错，不能无限缓存或截断成合法成功。
@@ -83,3 +85,5 @@ POC-04 先打通真实 Rust 客户端到受控 HTTP/SSE 服务，再做工具循
 首轮 R1-A-15～20、22 与 R1-L-02 覆盖本合同。必须留存两协议结果矩阵、取消/半流重试/工具配对证据、压缩原子失败与重启恢复，以及无模型配置仍可用的本地功能。
 
 每次上游参考升级记录旧/新 SHA、采用模式、相关 API 文档和回归范围；不自动跟随 main。实际复制源码须记录文件/提交/改动、保留适用 Apache-2.0 许可、版权和 NOTICE，并核对片段的其他来源；本轮只引用源码。若维护或兼容成本失控，记录 OSS-08，A 比较 Rust 库替换窄适配，维持 ModelClient 与 SQLite 数据格式的迁移/导出边界。
+
+R1 桌面接入使用同一客户端/AgentRuntime/ProductionHost。设置持久化字段经过 URL 与预算验证，秘密通过 OS 凭据库解析；每次运行至多 5 次模型请求、12 次工具调用、120 秒。桌面受控测试仅替换凭据源，HTTP/SSE、工具执行、SQLite 与证据验证均走生产链路；双协议故障/代理/压缩撤权矩阵继续执行。供应商 live 条件仍取 USER-ACTIONS ACT-01。

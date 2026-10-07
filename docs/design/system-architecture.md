@@ -155,3 +155,11 @@ delta-library/
 先发布 Windows 安装包/可执行包，验证 GPU、输入法、缩放、Rust 模型网络依赖、Python 可选依赖以及无开发环境的干净机器。macOS/Linux 通过各自构建和验收后再发布。
 
 锁定 Rust 工具链与 Cargo.lock；Python 启用时增加其运行时与锁文件。升级依赖通过相同金融样本、UI 冒烟和打包检查；不能因库发布新版本自动改变计算口径。
+
+## 11. R1 桌面任务与恢复实现
+
+`apps/desktop/src/business.rs` 只持有输入/页面状态，`tasks.rs` 在 GPUI 后台 executor 调用 Library/ProductionHost；渲染、输入回调不执行 SQL、网络或阻塞 block_on。模型运行的 Tokio runtime 只在后台建立。每个本地结果带库 epoch 与任务 serial；模型另有 scope/config generation。切库取消旧任务并丢弃旧结果；最近成功库路径由有序后台写入和原子改名持久化，不让旧写入覆盖新库。
+
+Library 打开先只读检查身份/完整性，既有迁移器仍先一致性备份再按事务追加。恢复仅接受新/空目录，校验路径、链接、清单哈希、SQLite 完整性/外键和附件引用后在同文件系统内原子改名；失败清理仅本次独占暂存目录，不覆盖当前库。恢复和 UI 直接使用同一服务。
+
+当前参数化验证/打包入口见质量门禁；包先通过对应源码验证再由 Cargo release 构建，前后指纹不同立即拒绝。包附合成输入、启动器、README、第三方元数据和可找到的许可证/NOTICE 文件；缺失文件和项目许可待决如实记录，不构成外部分发授权。

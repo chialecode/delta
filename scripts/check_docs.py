@@ -106,6 +106,9 @@ def check(root: Path) -> tuple[list[str], int, int]:
         errors.append("registry: expected schemaVersion 1")
     rows = registry.get("documents", [])
     registered = Counter()
+    current_stage = registry.get("currentStage")
+    if current_stage is not None and not re.fullmatch(r"R[1-9]\d*", str(current_stage)):
+        errors.append("registry: invalid currentStage")
     for row in rows:
         name = row.get("path", "")
         registered[name] += 1
@@ -121,6 +124,9 @@ def check(root: Path) -> tuple[list[str], int, int]:
             errors.append(f"{name}: invalid reviewed date")
         if row.get("status") == "superseded":
             safe_file(row.get("supersededBy", ""))
+        retire_after = row.get("retireAfter")
+        if retire_after is not None and retire_after != current_stage:
+            errors.append(f"{name}: retireAfter differs from currentStage; extract and retire stage material")
     for name in sorted(documents.keys() - registered.keys()):
         errors.append(f"unregistered Markdown: {name}")
     for name in sorted(registered.keys() - documents.keys()):
@@ -133,7 +139,7 @@ def check(root: Path) -> tuple[list[str], int, int]:
         content = prose(text)
         if re.search(r"^\s*\[[^]]+\]:", content, re.M) or re.search(r"\[[^]]+\]\[[^]]*\]", content):
             errors.append(f"{name}: use inline links, reference-style links unsupported")
-        if re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]", content):
+        if re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]", text):
             errors.append(f"{name}: machine-specific absolute path")
         for match in re.finditer(r"!?\[[^]\n]+\]\((<[^>]+>|[^\s)]+)(?:\s+\"[^\"]*\")?\)", content):
             target = match.group(1).strip("<>")

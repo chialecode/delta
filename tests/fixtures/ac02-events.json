@@ -1,0 +1,53 @@
+[
+  {
+    "id": "ev-open",
+    "account_id": "acc-us",
+    "occurred_at": "2026-01-05T14:00:00Z",
+    "seq": 1,
+    "payload": {
+      "type": "cash_deposit",
+      "asset": "USD",
+      "amount": "2000"
+    }
+  },
+  {
+    "id": "ev-buy",
+    "account_id": "acc-us",
+    "occurred_at": "2026-01-06T14:00:00Z",
+    "seq": 2,
+    "payload": {
+      "type": "buy",
+      "instrument": "NASDAQ:AAPL",
+      "quantity": "10",
+      "price": "100",
+      "quote_currency": "USD",
+      "fees": [
+        {
+          "asset": "USD",
+          "amount": "1",
+          "category": "commission"
+        }
+      ]
+    }
+  },
+  {
+    "id": "ev-sell",
+    "account_id": "acc-us",
+    "occurred_at": "2026-01-08T14:00:00Z",
+    "seq": 3,
+    "payload": {
+      "type": "sell",
+      "instrument": "NASDAQ:AAPL",
+      "quantity": "4",
+      "price": "110",
+      "quote_currency": "USD",
+      "fees": [
+        {
+          "asset": "USD",
+          "amount": "1",
+          "category": "commission"
+        }
+      ]
+    }
+  }
+]

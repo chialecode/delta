@@ -1,0 +1,4 @@
+occurred_at,type,asset,quantity,price,fee,source_ref,instrument,quote_currency
+2026-01-01T00:00:00Z,deposit,USD,2000,,,r2-deposit,,USD
+2026-01-10T15:00:00Z,buy,AAPL,10,100,1,r2-buy,NASDAQ:AAPL,USD
+2026-01-20T15:00:00Z,sell,AAPL,4,110,1,r2-sell,NASDAQ:AAPL,USD

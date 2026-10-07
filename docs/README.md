@@ -6,9 +6,11 @@
 
 首次接手：根 [AGENTS](../AGENTS.md) → [项目关键事实](project-baseline.md) → [当前状态](delivery/status.md) → 当前计划 → [集中事项](decisions/open-questions.md)。按变更触发读专题，不要求每次全量阅读。
 
+当前轮次：[R1 唯一计划与 B prompt](delivery/stage-plan.md)、[当前报告](delivery/stage-report.md)、[用户待办](../USER-ACTIONS.md)。原 R1 v1.1 的计划/用例/审核作为本阶段基础范围、回归与未关闭验收依据保留；当前唯一执行入口为合并计划 R1 v1.2。
 
 | 专题 | 正本 | 管理内容 |
 | --- | --- | --- |
+| 沟通/本地资料 | [沟通协议](dev-rules/communication-protocol.md)、[本地文件与参考](dev-rules/local-files-and-references.md)、[用户待办](../USER-ACTIONS.md) | 用户与 Agent 分开交接、忽略/参考边界 |
 | 治理 | [政策](governance/documentation-policy.md)、[登记表](governance/document-registry.json) | 权威、元数据、更新/冲突/归档 |
 | 产品 | [原则](product-rules/core-product-principles.md)、[需求](requirements/product-requirements.md) | 长期行为、FR/NFR、阶段范围 |
 | 架构 | [系统](design/system-architecture.md)、[数据](design/data-model.md)、[金融](design/financial-engine.md) | 所有权、数值与恢复 |
@@ -26,6 +28,6 @@
 
 ## 维护约定
 
-保留稳定 FR/NFR/AC。需求、设计、验收和证据随行为变化同步；关键决定同轮回写。候选与正式依赖锁分开，模拟与真实验证分开。未决/人工/上游/后续事项仅在集中台账维护当前状态。
+保留稳定 FR/NFR/AC。需求、设计、验收和证据随行为变化同步；关键决定同轮回写。候选与正式依赖锁分开，模拟与真实验证分开。用户事项仅在 USER-ACTIONS.md 维护当前状态；工程未决/上游/后续事项在集中台账。
 
 机械检查：`python scripts/check_docs.py`；不代表产品实现或人工验收通过。

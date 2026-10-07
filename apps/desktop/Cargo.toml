@@ -1,0 +1,34 @@
+[package]
+name = "delta-desktop"
+description = "DELTA desktop host (GPUI)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "delta-desktop"
+path = "src/main.rs"
+
+[dependencies]
+delta-core = { path = "../../crates/delta-core" }
+delta-app = { path = "../../crates/delta-app" }
+delta-infra = { path = "../../crates/delta-infra" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rust_decimal = { workspace = true }
+gpui-kit = { version = "0.6.6", features = ["component"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Headless window, click and typing harness for the interaction tests (F-15).
+gpui-kit = { version = "0.6.6", features = ["component", "test-support"] }

@@ -1,0 +1,11 @@
+{
+  "case": "AC-02",
+  "source": "docs/engineering/delivery-plan.md AC-02（手算，独立于实现）",
+  "end_cash": "1438",
+  "remaining_quantity": "6",
+  "remaining_cost": "600.6",
+  "realized_pnl": "38.6",
+  "unrealized_pnl": "29.4",
+  "total_pnl": "68",
+  "end_price": "105"
+}

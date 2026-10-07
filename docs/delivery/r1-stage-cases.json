@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "stage": "R1",
+  "planVersion": "1.2",
+  "stageParent": "a1180cfb5f0a0051c1fc3f14ac4db7d8f06691fe",
+  "branch": "codex/r1-workbench",
+  "cases": [
+    {
+      "id": "R2-W01",
+      "mode": "automated",
+      "title": "多库、重启与任务代次",
+      "input": "临时两个库、损坏/外来 SQLite、陈旧后台回调",
+      "expected": "创建/重启持久；损坏不覆盖；旧代次不更新新库",
+      "testPatterns": [
+        "r2_w01_"
+      ]
+    },
+    {
+      "id": "R2-W02",
+      "mode": "automated",
+      "title": "CSV 桌面闭环",
+      "input": "r2-ledger.csv；更改文件/映射；手算 USD2000、买10×100 fee1、卖4×110 fee1",
+      "expected": "现金1438、持仓6、NAV2068/PnL68；更改文件及陈旧预览拒绝",
+      "testPatterns": [
+        "r2_w02_",
+        "r1_a_03",
+        "r1_a_04",
+        "r1_a_05"
+      ]
+    },
+    {
+      "id": "R2-W03",
+      "mode": "automated",
+      "title": "行情、图表与证据",
+      "input": "r2-ohlcv.json；AAPL、BINANCE/KRAKEN BTC/USDT；1月20日起窗口",
+      "expected": "版本不可变、原子失败、场所隔离；MA20含19根预热、标记打开证据",
+      "testPatterns": [
+        "r2_w03_",
+        "chart::tests::"
+      ]
+    },
+    {
+      "id": "R2-W04",
+      "mode": "automated",
+      "title": "笔记修订与失败恢复",
+      "input": "中文笔记、故障注入、旧修订、关联图表",
+      "expected": "失败保留缓冲；旧证据不变；上下文重启可用",
+      "testPatterns": [
+        "r2_w04_",
+        "r1_a_12"
+      ]
+    },
+    {
+      "id": "R2-W05",
+      "mode": "automated",
+      "title": "只读 AI 桌面与安全",
+      "input": "合成凭据源、真实Rust客户端/宿主/SQLite、回环双协议测试、桌面撤权",
+      "expected": "工具证据可点击；默认无授权；撤权含压缩；失败非成功；秘密不进配置",
+      "testPatterns": [
+        "r2_w05_",
+        "r1_a_18",
+        "r1_a_17"
+      ]
+    },
+    {
+      "id": "R2-W06",
+      "mode": "automated",
+      "title": "恢复、交付入口与继承回归",
+      "input": "备份附件/会话/证据；校验失败；当前阶段参数及源码变化",
+      "expected": "干净目录恢复；失败不覆盖；验证拒绝空测试/错误父提交/陈旧产物",
+      "testPatterns": [
+        "r2_w06_",
+        "r2_w01_desktop_switch_and_restore"
+      ]
+    },
+    {
+      "id": "R2-M01",
+      "mode": "manual",
+      "userActions": "H-01/ACT-02",
+      "input": "按 USER-ACTIONS 条件",
+      "expected": "观感、IME/DPI、干净机、GPU50FPS及交互延迟"
+    },
+    {
+      "id": "R2-L01",
+      "mode": "live",
+      "userActions": "Q-01/ACT-03",
+      "input": "按 USER-ACTIONS 条件",
+      "expected": "真实去标识账户与合法行情闭环"
+    },
+    {
+      "id": "R2-L02",
+      "mode": "live",
+      "userActions": "ACT-01",
+      "input": "按 USER-ACTIONS 条件",
+      "expected": "授权真实模型兼容性与只读复盘"
+    }
+  ],
+  "scopeNote": "R1 合并范围；R2-* 仅为保留的桌面补全历史用例编号，不表示独立阶段；继承 r1-cases.json 全部回归。"
+}

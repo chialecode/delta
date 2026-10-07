@@ -2,6 +2,8 @@
 
 版本 0.4 · 2026-09-26 · Agent A 已完成首轮资料比较，尚无本轮 Rust 模型客户端兼容验证证据。用户决定见 [确认记录](../decisions/confirmed-decisions.md)，实际来源见 [调研报告](../evidence/2026-09-26-technology-research.md)和[快照](../evidence/2026-09-26-upstream-snapshot.json)。
 
+2026-10-07 补充：GPUI Kit 官方主分支最新提交 10 月 6 日，release v0.7.1 为 10 月 5 日；本项目继续锁定 0.6.6，构图变更不自动升级。AKShare release-v1.19.1 为 9 月 30 日，代码 MIT，数据许可另核；仅为行情 Provider 候选，尚未引入依赖。官方查询和许可边界见 [当前计划](../delivery/stage-plan.md)。维护选择按相同功能比较，不使用仓库 updated_at 单独排序。
+
 ## 1. 结论与状态
 
 首轮建议：**Rust + GPUI Kit；SQLite/rusqlite；rust_decimal；Tokio/reqwest；参考 Codex 官方实现的自研 Rust 模型客户端；按需 TA-Lib/Python；统一 Rust 应用能力与上下文范围。** 开源负责通用机制，DELTA 负责领域语义、业务装配、快照/权限和证据。

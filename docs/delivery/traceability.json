@@ -4,7 +4,7 @@
     {
       "id": "FR-BASE-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -13,12 +13,16 @@
         "AC-01",
         "AC-27"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-BASE-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -27,12 +31,16 @@
         "AC-04",
         "AC-27"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 桌面支持 bank/brokerage/crypto/wallet/manual、多选统计范围及命名组合保存/应用；成员去重且一个账户可属于多个组合。已做合成重启/总值回归，真实账户验收仍未完成。"
     },
     {
       "id": "FR-DATA-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/integration-contracts.md"
@@ -41,12 +49,17 @@
         "AC-01",
         "AC-09"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-DATA-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/integration-contracts.md"
@@ -55,12 +68,17 @@
         "AC-01",
         "AC-03"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-DATA-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/integration-contracts.md"
@@ -69,7 +87,11 @@
         "AC-06",
         "AC-21"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-DATA-04",
@@ -87,7 +109,7 @@
     {
       "id": "FR-DATA-05",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/integration-contracts.md"
@@ -96,41 +118,58 @@
         "AC-04",
         "AC-06"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-MKT-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/interaction-and-workflows.md",
-        "docs/design/financial-engine.md"
+        "docs/design/financial-engine.md",
+        "docs/design/workbench-visual-spec.md"
       ],
       "acceptance": [
         "AC-08",
         "AC-21",
         "AC-26"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 搜索/自选列表、场所日线/日期/缩放/平移/十字线已接入；完整自选分组管理仍属 UI-02，不能把单列表写成全部分组能力。"
     },
     {
       "id": "FR-MKT-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/interaction-and-workflows.md",
-        "docs/design/financial-engine.md"
+        "docs/design/financial-engine.md",
+        "docs/design/workbench-visual-spec.md"
       ],
       "acceptance": [
         "AC-11",
         "AC-21"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-MKT-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/interaction-and-workflows.md",
         "docs/design/financial-engine.md"
@@ -138,21 +177,29 @@
       "acceptance": [
         "AC-08"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 文件日线的成交/笔记标记、证据打开及笔记图表恢复已有桌面回归；人工观感仍未验收。"
     },
     {
       "id": "FR-MKT-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/interaction-and-workflows.md",
-        "docs/design/financial-engine.md"
+        "docs/design/financial-engine.md",
+        "docs/design/workbench-visual-spec.md"
       ],
       "acceptance": [
         "AC-06",
         "AC-21"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-MKT-05",
@@ -184,7 +231,7 @@
     {
       "id": "FR-LED-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -195,12 +242,15 @@
         "AC-04",
         "AC-05"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -209,12 +259,15 @@
         "AC-06",
         "AC-22"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -223,12 +276,15 @@
         "AC-02",
         "AC-22"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -237,12 +293,16 @@
         "AC-04",
         "AC-22"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-05",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -251,12 +311,16 @@
         "AC-06",
         "AC-07"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-06",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -265,7 +329,10 @@
         "AC-02",
         "AC-07"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-07",
@@ -284,7 +351,7 @@
     {
       "id": "FR-LED-08",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
         "docs/design/data-model.md"
@@ -292,7 +359,10 @@
       "acceptance": [
         "AC-05"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-LED-09",
@@ -310,7 +380,7 @@
     {
       "id": "FR-JRN-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -319,12 +389,17 @@
         "AC-08",
         "AC-09"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 Markdown 文本、显式保存/检索/缓冲/修订恢复已接入；标签和自动保存的完整桌面入口仍属 UI-02。"
     },
     {
       "id": "FR-JRN-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -332,12 +407,16 @@
       "acceptance": [
         "AC-08"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "已有持久笔记与图表结构化字段；完整交易前/中/后模板编辑仍属 UI-02，不把正文输入当作全部模板。"
     },
     {
       "id": "FR-JRN-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -345,12 +424,15 @@
       "acceptance": [
         "AC-08"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-JRN-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/interaction-and-workflows.md"
@@ -359,7 +441,11 @@
         "AC-08",
         "AC-09"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 固定图表上下文、服务附件版本/存在性及备份恢复已验证；附件选择/管理的完整笔记桌面入口仍属 UI-02。"
     },
     {
       "id": "FR-JRN-05",
@@ -541,22 +627,28 @@
     {
       "id": "FR-AI-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
-        "docs/design/context-state-management.md"
+        "docs/design/context-state-management.md",
+        "docs/design/rust-model-client.md"
       ],
       "acceptance": [
         "AC-19",
         "AC-25"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已有连接/协议/凭据引用持久化和受控请求、超时/错误展示；真实端点能力检测和兼容性仍需 ACT-01，不声明供应商实测。"
     },
     {
       "id": "FR-AI-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -566,12 +658,17 @@
         "AC-10",
         "AC-19"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-AI-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -581,12 +678,17 @@
         "AC-19",
         "AC-24"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-AI-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -596,7 +698,12 @@
         "AC-10",
         "AC-19"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-AI-05",
@@ -616,7 +723,7 @@
     {
       "id": "FR-AI-06",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -625,12 +732,16 @@
       "acceptance": [
         "AC-19"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-AI-07",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -639,12 +750,17 @@
       "acceptance": [
         "AC-24"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-AI-08",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/ai-design.md",
         "docs/design/integration-contracts.md",
@@ -654,12 +770,17 @@
         "AC-23",
         "AC-25"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 已接入资料库、CSV/核对、日线/笔记、只读 AI 与恢复桌面路径；工作包行为与继承回归见 stage-report。仅离线/受控条件；真实数据、模型和设备验收未完成，S1 不关闭。"
     },
     {
       "id": "FR-OPS-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/system-architecture.md"
@@ -667,12 +788,16 @@
       "acceptance": [
         "AC-09"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-OPS-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/system-architecture.md"
@@ -680,12 +805,16 @@
       "acceptance": [
         "AC-20"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-OPS-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/system-architecture.md"
@@ -694,12 +823,15 @@
         "AC-20",
         "AC-25"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "FR-OPS-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/data-model.md",
         "docs/design/system-architecture.md"
@@ -707,12 +839,16 @@
       "acceptance": [
         "AC-20"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/evidence/r1-review.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "NFR-01",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -721,12 +857,15 @@
         "AC-02",
         "AC-22"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "NFR-02",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -736,12 +875,15 @@
         "AC-10",
         "AC-24"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "NFR-03",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -749,12 +891,15 @@
       "acceptance": [
         "AC-26"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 后台任务/分页/图表窗口/可访问按钮与本地包已实现；性能、IME/DPI、干净安装与平台验收仍按 USER-ACTIONS ACT-02 not-run，不能以自动测试充抵。"
     },
     {
       "id": "NFR-04",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -762,12 +907,15 @@
       "acceptance": [
         "AC-26"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 后台任务/分页/图表窗口/可访问按钮与本地包已实现；性能、IME/DPI、干净安装与平台验收仍按 USER-ACTIONS ACT-02 not-run，不能以自动测试充抵。"
     },
     {
       "id": "NFR-05",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -777,12 +925,13 @@
         "AC-24",
         "AC-26"
       ],
-      "evidence": []
+      "evidence": [],
+      "implementationScope": "R1 后台任务/分页/图表窗口/可访问按钮与本地包已实现；性能、IME/DPI、干净安装与平台验收仍按 USER-ACTIONS ACT-02 not-run，不能以自动测试充抵。"
     },
     {
       "id": "NFR-06",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -790,12 +939,15 @@
       "acceptance": [
         "AC-09"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "NFR-07",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -803,12 +955,13 @@
       "acceptance": [
         "AC-27"
       ],
-      "evidence": []
+      "evidence": [],
+      "implementationScope": "R1 后台任务/分页/图表窗口/可访问按钮与本地包已实现；性能、IME/DPI、干净安装与平台验收仍按 USER-ACTIONS ACT-02 not-run，不能以自动测试充抵。"
     },
     {
       "id": "NFR-08",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -817,25 +970,32 @@
         "AC-23",
         "AC-27"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     },
     {
       "id": "NFR-09",
       "stage": "S1",
-      "status": "planned",
+      "status": "in-progress",
       "design": [
         "docs/design/system-architecture.md",
-        "docs/design/integration-contracts.md"
+        "docs/design/integration-contracts.md",
+        "docs/design/workbench-visual-spec.md"
       ],
       "acceptance": [
         "AC-27"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementationScope": "R1 后台任务/分页/图表窗口/可访问按钮与本地包已实现；性能、IME/DPI、干净安装与平台验收仍按 USER-ACTIONS ACT-02 not-run，不能以自动测试充抵。"
     },
     {
       "id": "NFR-10",
       "stage": "S1",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
         "docs/design/integration-contracts.md"
@@ -845,7 +1005,10 @@
         "AC-20",
         "AC-25"
       ],
-      "evidence": []
+      "evidence": [
+        "docs/evidence/r1-delivery.md",
+        "docs/delivery/stage-report.md"
+      ]
     }
   ]
 }
