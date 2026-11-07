@@ -1,0 +1,4 @@
+account,datetime,symbol,action,quantity,price,currency,fee,tradeid
+ACC-SCHWAB,2024-03-01 09:00:00,USD,deposit,20000,1.0,USD,0,SCH-6000
+ACC-SCHWAB,2024-03-20 10:00:00,SPY,buy,10,520.00,USD,0.00,SCH-6001
+ACC-SCHWAB,2024-03-21 09:00:00,SPY,dividend,15.95,,USD,0.00,SCH-6002

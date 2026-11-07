@@ -1,0 +1,15 @@
+{
+  "allow_squash_merge": true,
+  "allow_merge_commit": false,
+  "allow_rebase_merge": false,
+  "allow_auto_merge": false,
+  "delete_branch_on_merge": true,
+  "squash_merge_commit_title": "PR_TITLE",
+  "squash_merge_commit_message": "PR_BODY",
+  "has_issues": false,
+  "has_pull_requests": true,
+  "pull_request_creation_policy": "collaborators_only",
+  "has_discussions": true,
+  "has_wiki": false,
+  "has_projects": false
+}

@@ -1,0 +1,503 @@
+{
+  "schemaVersion": 1,
+  "currentStage": "M1",
+  "documents": [
+    {
+      "path": ".github/PULL_REQUEST_TEMPLATE.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "问题与结果",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～09、D-18、D-20；PR 检查与远端授权说明"
+    },
+    {
+      "path": "AGENTS.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA：Agent 与开发者工作入口",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；从文档治理基线重建、数据底座优先、UI 解耦与 A/B 协作规范"
+    },
+    {
+      "path": "CLAUDE.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "@AGENTS.md",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；唯一引用 AGENTS.md"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 开发与贡献",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；从文档治理基线重建后的 M1 开发闭环与门禁说明"
+    },
+    {
+      "path": "DESIGN.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 设计入口",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～07、D-20；指向 UI 规则与交互工作流正本"
+    },
+    {
+      "path": "README.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "REVIEW.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 审核口径",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；增加金融数据源质量与水位线同步审核口径"
+    },
+    {
+      "path": "SECURITY.md",
+      "kind": "entry",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 数据与安全说明",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～09；本地优先、凭据存储与日志脱敏边界"
+    },
+    {
+      "path": "USER-ACTIONS.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "用户决定、配置、人工检查和授权的唯一入口",
+      "reviewed": "2026-11-07",
+      "basis": "D-10、D-14、D-18、D-20～D-23；维护 Q-01～03 与 ACT-01/03/06/07"
+    },
+    {
+      "path": "docs/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 文档导航",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；专题正本与最短阅读路径"
+    },
+    {
+      "path": "docs/decisions/0001-document-governance.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR-0001：文档约束与 A/B 交付",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～04、D-07、D-18；文档分层与 A/B 协作决定"
+    },
+    {
+      "path": "docs/decisions/0002-ai-integration.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR-0002：参考 Codex 自研 Rust 模型客户端",
+      "reviewed": "2026-11-07",
+      "basis": "D-08；参考 Codex 官方固定源码实现窄 ModelClient"
+    },
+    {
+      "path": "docs/decisions/0003-first-round-stack.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A",
+      "scope": "ADR-0003：数据优先架构重排与桌面 UI 技术栈重评",
+      "reviewed": "2026-11-07",
+      "basis": "D-20；2026-11-07 GPUI 合理性复盘与金融数据底座调研证据"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "决策与待处理入口",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；ADR-0001～0003 与确认记录索引"
+    },
+    {
+      "path": "docs/decisions/confirmed-decisions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "已确认决定与设计默认值",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～D-23 用户确认决定及 A-01～A-07 可逆设计默认值"
+    },
+    {
+      "path": "docs/decisions/open-questions.md",
+      "kind": "decision",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "集中事项台账",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/delivery/stage-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "Agent A",
+      "scope": "M1 v2.6 金融数据来源底座、自动化增量同步与账本核对实施计划（100% 纯 Rust）",
+      "reviewed": "2026-11-07",
+      "basis": "D-20～D-23；2026-11-07 技术与数据源调研及 A 自审在线实测；100% 纯 Rust S-01～S-11 阶段定案（v2.4 A 复审补价格口径与版本存储；v2.5 前台无干扰；v2.6 安装与数据位置）与主力平台分层；61 项需求与 29 项 AC 映射",
+      "retireAfter": "M1"
+    },
+    {
+      "path": "docs/delivery/stage-report.md",
+      "kind": "evidence",
+      "status": "active",
+      "owner": "Agent B",
+      "scope": "M1 v2.6 阶段验证与交付报告（100% 纯 Rust 数据底座与账本核心）",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13",
+      "retireAfter": "M1"
+    },
+    {
+      "path": "docs/delivery/status.md",
+      "kind": "status",
+      "status": "active",
+      "owner": "Agent A / Agent B",
+      "scope": "当前执行状态",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/design-rules/DESIGN.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA UI 与交互约束",
+      "reviewed": "2026-11-07",
+      "basis": "D-20、ADR-0003；核心与桌面 UI 解耦及 M2+ 图表与交互约束"
+    },
+    {
+      "path": "docs/design/ai-design.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA AI 分析设计",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～09、D-20；只读工具、证据引用与权限隔离设计（M2～M4 阶段映射）"
+    },
+    {
+      "path": "docs/design/context-state-management.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "AI 上下文、会话与运行状态",
+      "reviewed": "2026-11-07",
+      "basis": "D-08、D-20；Rust/SQLite 会话转录、原子压缩检查点与代次恢复契约"
+    },
+    {
+      "path": "docs/design/data-model.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 数据模型设计",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/design/financial-engine.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 金融计算与模拟规则",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/design/integration-contracts.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "统一能力与适配接口",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/design/interaction-and-workflows.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 交互与工作流设计",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～07；导入、对账、图表复盘、训练与策略工作流设计"
+    },
+    {
+      "path": "docs/design/rust-model-client.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A",
+      "scope": "Rust 模型客户端、双协议、流式与自研边界",
+      "reviewed": "2026-11-07",
+      "basis": "D-08；Responses 与 Chat Completions 双协议及受控流式契约"
+    },
+    {
+      "path": "docs/design/system-architecture.md",
+      "kind": "design",
+      "status": "draft",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 系统架构设计",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/dev-rules/architecture-and-open-source.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "架构与开源复用规则",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；开源调研门槛、数据所有权与 UI 解耦约束"
+    },
+    {
+      "path": "docs/dev-rules/communication-protocol.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "A/B 与用户两条沟通路径、编号与连续执行",
+      "reviewed": "2026-11-07",
+      "basis": "D-10、D-18、D-23；USER-ACTIONS 唯一入口、双通道非阻塞与阶段交接规范"
+    },
+    {
+      "path": "docs/dev-rules/data-and-security.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "数据、凭据与恢复规则",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～09；金融数据隔离、系统凭据与备份恢复规则"
+    },
+    {
+      "path": "docs/dev-rules/development-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "Agent A / Agent B 连续开发与交接",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；长计划、同阶段 amend、A 集中审核与远端授权衔接"
+    },
+    {
+      "path": "docs/dev-rules/git-workflow.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "阶段 Git、远端授权与分支保护",
+      "reviewed": "2026-11-07",
+      "basis": "D-04、D-09、D-13～14、D-18、D-20；从文档治理基线重建后的分支与提交规则"
+    },
+    {
+      "path": "docs/dev-rules/local-files-and-references.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "本地参考、未跟踪文件、公开边界与阶段整理",
+      "reviewed": "2026-11-07",
+      "basis": "D-10、D-18、D-20；DELTA_REFERENCE_DIR 发现、仓库外 reference 索引、忽略目录与四分类阶段清理"
+    },
+    {
+      "path": "docs/dev-rules/quality-gates.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "验证与交付门禁",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/dev-rules/repo-map.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "仓库地图",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/engineering/delivery-plan.md",
+      "kind": "plan",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 实施路线与验收计划",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/engineering/technology-selection.md",
+      "kind": "research",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 技术栈与通用能力比较",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-codex-rust-research.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "Codex 官方固定源码、API、许可证参考核查",
+      "reviewed": "2026-09-26",
+      "basis": "D-08；官方固定提交与 API 文档核查记录"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-documentation-framework.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "文档框架实际检查和负向夹具结果",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；初始文档框架验证记录"
+    },
+    {
+      "path": "docs/evidence/2026-09-26-technology-research.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A / 维护者",
+      "scope": "2026-09-26：Agent A 技术调研证据",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～09；首轮注册表与仓库调研历史对照"
+    },
+    {
+      "path": "docs/evidence/2026-11-07-stack-and-data-research.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "2026-11-07：GPUI 合理性复盘与金融数据底座调研证据",
+      "reviewed": "2026-11-07",
+      "basis": "D-20；2026-11-07 crates.io/PyPI/npm 查询与本地 gpui-kit/akshare 源码核查"
+    },
+    {
+      "path": "docs/evidence/README.md",
+      "kind": "index",
+      "status": "reference",
+      "owner": "Agent A / 维护者",
+      "scope": "证据索引",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；版本化调研与验证证据索引"
+    },
+    {
+      "path": "docs/governance/documentation-policy.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "文档治理与约束管理",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；文档分层、状态与机械门禁规则"
+    },
+    {
+      "path": "docs/product-rules/core-product-principles.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 产品不变量",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；七项长期产品不变量"
+    },
+    {
+      "path": "docs/project-baseline.md",
+      "kind": "index",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "项目关键事实与接续入口",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；从文档治理基线重建后的关键入口与接续规则"
+    },
+    {
+      "path": "docs/requirements/product-requirements.md",
+      "kind": "requirements",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "DELTA 产品需求文档",
+      "reviewed": "2026-11-07",
+      "basis": "D-01～20；61 项 FR/NFR 需求定义与 M1～M5 阶段边界"
+    },
+    {
+      "path": "docs/templates/agent-handoff.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "A/B 交接与审核后的用户授权入口",
+      "reviewed": "2026-10-08",
+      "basis": "D-01～09、D-18；A/B 交接与远端授权请求模板"
+    },
+    {
+      "path": "docs/templates/change-proposal.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "变更提案模板",
+      "reviewed": "2026-10-08",
+      "basis": "D-01～07、D-18；跨模块变更提案模板"
+    },
+    {
+      "path": "docs/templates/decision-record.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "ADR 模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；架构决策记录模板"
+    },
+    {
+      "path": "docs/templates/module-spec.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "模块规格模板",
+      "reviewed": "2026-09-26",
+      "basis": "D-01～07；模块规格说明模板"
+    },
+    {
+      "path": "docs/templates/validation-report.md",
+      "kind": "template",
+      "status": "active",
+      "owner": "Agent A / 维护者",
+      "scope": "验证报告模板",
+      "reviewed": "2026-10-08",
+      "basis": "D-01～07、D-18；验证报告模板"
+    },
+    {
+      "path": "tests/fixtures/PROVENANCE.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B",
+      "scope": "M1 测试夹具来源、合成边界与许可证说明",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+    },
+    {
+      "path": "docs/evidence/2026-11-08-ccxt-rust-poc.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B",
+      "scope": "官方 Rust ccxt 4.5.91 隔离构建、栈与公共网络实测",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 POC-D06；精度/栈边界与 LOOP-03"
+    },
+    {
+      "path": "docs/evidence/2026-11-08-dependency-licenses.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B",
+      "scope": "M1 锁文件 221 个第三方包的许可表达式、分支与盘点边界",
+      "reviewed": "2026-11-08",
+      "basis": "cargo metadata --locked 实际清单；D-24 / OSS-06"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "NVDA",
+          "exchangeName": "NMS",
+          "instrumentType": "EQUITY"
+        },
+        "timestamp": [
+          1717767000,
+          1718026200
+        ],
+        "events": {
+          "splits": {
+            "1718026200": {
+              "date": 1718026200,
+              "numerator": 10,
+              "denominator": 1,
+              "splitRatio": "10:1"
+            }
+          }
+        },
+        "indicators": {
+          "quote": [
+            {
+              "open": [
+                119.77,
+                120.37
+              ],
+              "high": [
+                121.692,
+                123.10
+              ],
+              "low": [
+                118.022,
+                117.01
+              ],
+              "close": [
+                120.888,
+                121.79
+              ],
+              "volume": [
+                412386000,
+                314162700
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}

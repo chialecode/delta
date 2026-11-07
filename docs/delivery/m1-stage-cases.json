@@ -1,0 +1,565 @@
+{
+  "schemaVersion": 1,
+  "stage": "M1",
+  "planVersion": "2.6",
+  "cases": [
+    {
+      "id": "M1-A-01",
+      "title": "POC-D01 SQLite 1M bar bulk write, S-09 version query, and S-01 Backup API snapshot/restore",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01"
+      ],
+      "requirements": [
+        "FR-BASE-01",
+        "FR-BASE-02",
+        "FR-OPS-01",
+        "NFR-01",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-09"
+      ],
+      "precondition": "Temporary isolated data directory initialized with WAL + foreign_keys=ON.",
+      "steps": [
+        "Insert 1,000,000 daily bar rows (200 instruments x 5,000 sessions) plus 10,000 revised rows at dataset_version=2.",
+        "Query 5,000 bars for a single instrument at version 1 and version 2 with S-09 interval condition.",
+        "Create a consistent backup via rusqlite::backup::Backup and restore into a clean directory, verifying all SHA-256 hashes."
+      ],
+      "expected": "Bulk write completes in < 10 s; 5,000-bar version query completes in < 50 ms; restored SQLite SHA-256 matches backup manifest with 0 FK violations.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-01; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-02",
+      "title": "POC-D02 & S-06 Pure Rust XNYS/XNAS 1990-01-02..2027-12-31 day-by-day calendar verification",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W02"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-MKT-04",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-21"
+      ],
+      "precondition": "Embedded calendar_special_xnys.json and reference fixtures xnys_1990_2023.csv + xnys_2023_2027.csv loaded.",
+      "steps": [
+        "Generate XNYS calendar sessions for every calendar date in 1990-01-02..2027-12-31.",
+        "Compare trading/closed status, early closes (14:00 ET pre-1993, 13:00 ET 1993+), and UTC open/close timestamps against reference CSVs.",
+        "Query dates outside verified range (1989-12-29 and 2028-01-03)."
+      ],
+      "expected": "Zero mismatches across all 13,878 calendar days (9,569 trading sessions); out-of-range dates return calendar_unknown.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-02; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-03",
+      "title": "POC-D04 & S-08 US Equity raw price restoration (AAPL 2020-08-28 499.23) and cross-validation",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W04"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-MKT-04",
+        "FR-LED-08",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-05",
+        "AC-06",
+        "AC-11"
+      ],
+      "precondition": "LoopbackTestServer bound strictly to 127.0.0.1:0 serving Yahoo Chart v8, EastMoney fqt=0, and Alpaca corporate action fixtures.",
+      "steps": [
+        "Parse Yahoo Chart v8 AAPL JSON directly into Decimal without f64 intermediate.",
+        "Restore 2020-08-28 pre-split close (124.80750274658203 * 4 -> 499.23), volume (/ 4 -> 469074800), and 2020-08-07 dividend (0.205 * 4 -> 0.82).",
+        "Cross-validate against EastMoney push2his fqt=0 raw bars and simulate missing split jump."
+      ],
+      "expected": "Restored AAPL 2020-08-28 close equals 499.23 (0 bps diff vs EastMoney); simulated missing split emits missing_corporate_action quality issue.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-03; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-04",
+      "title": "S-07 Fiat FX carried_forward (<= 4 days), inverse FX, and USDT/USDC market close valuation",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W02"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-LED-02",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-21"
+      ],
+      "precondition": "Frankfurter fiat FX and Coinbase/Bitstamp/Kraken stablecoin FX fixtures loaded.",
+      "steps": [
+        "Query USD/HKD and USD/CNY on weekend/holiday non-publication dates (1..4 days gap vs >4 days gap).",
+        "Verify inverse FX rate calculation within the same dataset_version.",
+        "Verify USDT/USD and USDC/USD use actual market close (0.9998 / 1.0001) and never hardcode 1.0."
+      ],
+      "expected": "Gaps <= 4 days return carried_forward with source_date; gaps > 4 days return None (Partial valuation); stablecoins valued at actual close.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-04; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-05",
+      "title": "POC-D03 OKX 1Dutc confirm filter and Binance archive ms/us timestamp & SHA-256 CHECKSUM verification",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W03"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-DATA-04",
+        "FR-DATA-05",
+        "FR-MKT-01"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-17",
+        "AC-22"
+      ],
+      "precondition": "OKX 1Dutc fixture (with confirm='0' and confirm='1') and Binance monthly ZIP archive + .CHECKSUM loaded.",
+      "steps": [
+        "Parse OKX candles and verify unfinalized confirm='0' bars are excluded from finalized daily storage.",
+        "Verify SHA-256 .CHECKSUM of Binance ZIP archive and parse both 2024 millisecond (1735603200000) and 2025 microsecond (1740787200000000) timestamps.",
+        "Verify api.binance.com is rejected in favor of data-api.binance.vision / data.binance.vision.",
+        "Drive first backfill through monthly ZIP/CHECKSUM over loopback; checksum mismatch must publish neither version nor checkpoint."
+      ],
+      "expected": "Only finalized UTC daily bars are committed; both ms and us timestamps normalize to exact UTC dates.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-05; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-06",
+      "title": "AC-01..AC-05 Double-entry balanced ledger, FIFO cost lots, third-asset fee disposal, splits/dividends, and transfers",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W05"
+      ],
+      "requirements": [
+        "FR-LED-01",
+        "FR-LED-03",
+        "FR-LED-04",
+        "FR-LED-08",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-02",
+        "AC-03",
+        "AC-04",
+        "AC-05"
+      ],
+      "precondition": "Clean ledger projection engine in delta-core.",
+      "steps": [
+        "Replay deposits, multi-lot buys, partial sells, third-asset fee trades (OKB/BNB), 4:1 stock split, cash dividend, and cross-account cash/position transfers.",
+        "Verify every JournalTransaction has sum(book_amount) == 0.",
+        "Verify FIFO lot consumption, split quantity/cost invariant, and transfer lot acquisition date preservation."
+      ],
+      "expected": "All transactions balance to 0; FIFO realized PnL and remaining cost basis match exact Decimal expectations.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-06; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-07",
+      "title": "AC-06..AC-07 Multi-currency valuation, price/FX impact decomposition, TWR/XIRR/drawdown, and technical indicators",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W05",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-LED-02",
+        "FR-LED-05",
+        "FR-LED-06",
+        "FR-MKT-02",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-06",
+        "AC-07",
+        "AC-11"
+      ],
+      "precondition": "Committed ledger events and multi-source bars/FX in SqliteStore.",
+      "steps": [
+        "Run evaluate_portfolio across USD/HKD/USDT holdings and verify price_gain_report + fx_translation_gain_report == total_unrealized_gain_report.",
+        "Compute TWR, XIRR (converged vs NoSignChange/NonConvergent), and max drawdown.",
+        "Compute SMA, EMA, MACD, RSI, ATR, and Bollinger Bands with visible_until truncation."
+      ],
+      "expected": "Valuation never fabricates 0 for missing inputs; indicators respect visible_until and exclude unfinalized bars.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-07; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-08",
+      "title": "POC-D05 & AC-21 Statement import preview/commit for Futu, OKX, Generic, IBKR Flex XML, and Binance",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W05"
+      ],
+      "requirements": [
+        "FR-DATA-01",
+        "FR-DATA-02",
+        "FR-DATA-05"
+      ],
+      "acceptance": [
+        "AC-01",
+        "AC-03",
+        "AC-21"
+      ],
+      "precondition": "Synthetic statement fixtures for Futu (CN/EN), OKX, Generic, IBKR Flex XML, and Binance.",
+      "steps": [
+        "Verify strict header checking rejects wrong preset with UnknownColumns/MissingColumns.",
+        "Preview and commit each preset, verifying idempotent skip on repeat file import and suspected_duplicate detection across files.",
+        "Verify automatic instrument and FX subscription registration on commit."
+      ],
+      "expected": "All 5 required presets import with 0 errors; repeat commit is idempotent; auto-subscriptions are persisted.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-08; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-09",
+      "title": "AC-22 & AC-03 Committed event amendment via reversal + replacement in correction_group_id",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W05"
+      ],
+      "requirements": [
+        "FR-DATA-02",
+        "FR-LED-01",
+        "FR-LED-03",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-03",
+        "AC-22"
+      ],
+      "precondition": "Committed ledger event and existing analysis_report in SqliteStore.",
+      "steps": [
+        "Call amend_event on EV:ACC-GEN:GEN-0005:5 with updated quantity and price.",
+        "Verify original event is marked active_in_correction_group=0, reversal and replacement events are recorded in the same correction_group_id, and ledger_revision increments.",
+        "Verify prior analysis_report status is marked stale."
+      ],
+      "expected": "Original event preserved for audit; projection rebuilt from active events; prior reports marked stale.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-09; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-10",
+      "title": "AC-09 Backup/restore integrity & AC-17 read-only account balance reconciliation",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01",
+        "M1-W03"
+      ],
+      "requirements": [
+        "FR-DATA-04",
+        "FR-OPS-01",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-17"
+      ],
+      "precondition": "Populated SqliteStore with ledger events and market data.",
+      "steps": [
+        "Run reconcile_account with a mismatched observed balance snapshot and verify reconciliation_issue is recorded without mutating ledger events.",
+        "Create backup via create_backup and restore into a new target directory via restore_backup."
+      ],
+      "expected": "Reconciliation records exact difference while preserving ledger history; backup/restore verifies all SHA-256 hashes.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-10; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-11",
+      "title": "AC-11 Replay truncation (visible_until) & AC-20 subset library export with S-05 terms_class",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-MKT-02",
+        "FR-OPS-02",
+        "FR-OPS-03",
+        "FR-OPS-04",
+        "NFR-10"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-20"
+      ],
+      "precondition": "Populated SqliteStore with dataset_version and terms_class metadata.",
+      "steps": [
+        "Run export_library and verify ledger_events.csv, journal_postings.csv, cost_lots.csv, bars.csv, and export_manifest.json.",
+        "Verify export_manifest.json includes SHA-256 hashes, ledger_revision, dataset_version, and terms_classes."
+      ],
+      "expected": "All exported CSV hashes match export_manifest.json; terms_classes recorded accurately.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-11; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-12",
+      "title": "S-02 Synchronous boundary scan & AC-16 background job panic/timeout/cancel isolation",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01",
+        "M1-W04",
+        "M1-W06"
+      ],
+      "requirements": [
+        "NFR-01",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-16"
+      ],
+      "precondition": "Workspace source files and JobController initialized.",
+      "steps": [
+        "Scan crates/delta-core and crates/delta-app/src/lib.rs for forbidden async/tokio/reqwest leaks.",
+        "Spawn background jobs that panic, exceed timeout, or are cancelled, verifying structured ErrorEnvelope states."
+      ],
+      "expected": "Zero async/tokio/reqwest leaks in public boundary; job panic/timeout/cancel produce job_panicked/job_timed_out/job_cancelled without crashing host.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-12; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-13",
+      "title": "S-04 Windows Credential Manager cross-process write/read/delete verification",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01"
+      ],
+      "requirements": [
+        "FR-DATA-04",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-17"
+      ],
+      "precondition": "Windows Credential Manager accessible via keyring crate.",
+      "steps": [
+        "Write a test credential under delta-test-<run_id>:tiingo in parent process.",
+        "Spawn child process (__internal-keyring-read) to read back the credential from Windows Credential Manager.",
+        "Delete the test credential and verify subsequent read returns NotFound."
+      ],
+      "expected": "Child process reads exact secret; credential entry is deleted and leaves 0 residual test credentials.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-13; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-14",
+      "title": "S-10 Foreground quietness: CREATE_NO_WINDOW, SetErrorMode crash test, non-TTY immediate exit, control-char escaping, and 0 visible windows",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-OPS-03",
+        "NFR-05",
+        "NFR-07"
+      ],
+      "acceptance": [
+        "AC-16",
+        "AC-20"
+      ],
+      "precondition": "Windows quiet process guards and EnumWindows sentinel active.",
+      "steps": [
+        "Scan source code for forbidden non-loopback address literals, excluding comment lines; the actual test listener only accepts the loopback address.",
+        "Timeout a temporary parent/descendant lock process tree and reacquire both locks, proving both processes exited without retaining stdout/stderr pipes.",
+        "Spawn __internal-crash-test child process that aborts, verifying SetErrorMode prevents WER popup.",
+        "Invoke 'delta library delete' in non-TTY mode without --yes, verifying immediate non-zero exit (< 1 s) without stdin hang.",
+        "Check EnumWindows visible_window_count == 0.",
+        "Initialize a real temporary library; verify exact confirmation_required_non_tty, then add one nested 22-byte synthetic file and verify preview/delete agree on file count and bytes."
+      ],
+      "expected": "visible_window_count == 0; timed-out process tree releases both locks; crash child exits quietly; initialized non-TTY delete refuses in under 1 second; explicit synthetic delete matches its preview.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-14; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-15",
+      "title": "S-11 Cross-process LockFileEx delta.lock contention and recovery",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01"
+      ],
+      "requirements": [
+        "FR-BASE-01",
+        "NFR-05"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-16"
+      ],
+      "precondition": "Temporary data directory with delta.lock.",
+      "steps": [
+        "Spawn child process holding InstanceLock on delta.lock.",
+        "Attempt InstanceLock::acquire in parent process and measure failure latency.",
+        "Wait for child process exit and re-acquire lock."
+      ],
+      "expected": "Contending lock attempt fails in < 200 ms with InstanceLocked; lock succeeds immediately after holder exits.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-15; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-16",
+      "title": "S-11 Channel path isolation (release/dev/source), SHGetKnownFolderPath, and non-writable no-fallback",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W01"
+      ],
+      "requirements": [
+        "FR-BASE-01",
+        "FR-OPS-01",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-20"
+      ],
+      "precondition": "Channel resolver and %LOCALAPPDATA%\\delta baseline snapshot.",
+      "steps": [
+        "Verify source/dev channels resolve to delta-dev and never touch %LOCALAPPDATA%\\delta.",
+        "Pass a regular file path as --data-dir and verify immediate DataDirNotWritable error without fallback.",
+        "Verify temp_residual_dirs == 0 and release_data_dir_touched == false after verify-stage."
+      ],
+      "expected": "Zero directories created outside temp root; %LOCALAPPDATA%\\delta untouched.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-16; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-17",
+      "title": "M1-EXT Alpaca corporate actions connector and 5 additional broker statement presets",
+      "mode": "automated",
+      "work_packages": [
+        "M1-W04",
+        "M1-W05"
+      ],
+      "requirements": [
+        "FR-DATA-01",
+        "FR-DATA-03"
+      ],
+      "acceptance": [
+        "AC-05",
+        "AC-21"
+      ],
+      "precondition": "Alpaca corporate action fixture and Tiger, Longbridge, Schwab, EastMoney, IBKR Activity CSV fixtures.",
+      "steps": [
+        "Parse and cross-validate Alpaca /v1/corporate-actions forward_splits and cash_dividends.",
+        "Preview and commit statement fixtures for Tiger, Longbridge, Schwab, EastMoney, and IBKR Activity CSV."
+      ],
+      "expected": "Declared normalized extension templates and Alpaca action structure parse/commit; raw native platform coverage and Alpaca bars remain LOOP-03.",
+      "evidence": ".local/reports/m1/verify-stage-report.json#case_results/M1-A-17; captured M1-G-05 test results/logs"
+    },
+    {
+      "id": "M1-A-18",
+      "title": "M1-EXT POC-D06 ccxt crate evaluation vs pure Rust connectors",
+      "mode": "manual",
+      "work_packages": [
+        "M1-EXT"
+      ],
+      "requirements": [
+        "FR-DATA-03"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "precondition": "Official ccxt =4.5.91 isolated Windows MSVC POC; native product sources remain independent.",
+      "steps": [
+        "Build with only okx/kraken features and save exact resolver versions.",
+        "Run fetch_ohlcv under default stack and 64MiB worker+boxed future; distinguish stack failure and network successes.",
+        "Inspect typed f64 OHLCV precision boundary and record general adapter deferral as LOOP-03."
+      ],
+      "expected": "Manual evidence recorded separately; this gate reports not-run for POC-D06 because it does not rerun the experiment. Canonical Decimal adapter remains LOOP-03.",
+      "evidence": "docs/evidence/2026-11-08-ccxt-rust-poc.md"
+    },
+    {
+      "id": "M1-L-01",
+      "title": "Live probe: US Equity raw bars & splits (Yahoo Chart v8 & EastMoney push2his fqt=0)",
+      "mode": "live",
+      "work_packages": [
+        "M1-W04",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-MKT-04"
+      ],
+      "acceptance": [
+        "AC-05",
+        "AC-11"
+      ],
+      "precondition": "Explicit --live flag passed to verify-stage.",
+      "steps": [
+        "Query Yahoo Chart v8 and EastMoney push2his for AAPL 2020-08-27..2020-09-01 over live HTTPS.",
+        "Record actual HTTP status codes, bar counts, and restored 2020-08-28 close.",
+        "Fetch NVDA 10:1 split and SPY cash dividend; require observed expected action and nonempty bars."
+      ],
+      "expected": "Live probe results and HTTP status codes recorded truthfully in verify-stage-live-report.json.",
+      "evidence": ".local/reports/m1/verify-stage-live-report.json#live_probes"
+    },
+    {
+      "id": "M1-L-02",
+      "title": "Live probe: Crypto Spot UTC daily candles (OKX 1Dutc & Binance Vision mirror)",
+      "mode": "live",
+      "work_packages": [
+        "M1-W03",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-MKT-01"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "precondition": "Explicit --live flag passed to verify-stage.",
+      "steps": [
+        "Query OKX /api/v5/market/history-candles (bar=1Dutc) and Binance Vision /api/v3/klines for BTC-USDT / BTCUSDT.",
+        "Record actual HTTP status codes and finalized bar counts.",
+        "Fetch and verify BTCUSDT March 2025 monthly ZIP and CHECKSUM over live HTTPS."
+      ],
+      "expected": "Live probe results and HTTP status codes recorded truthfully in verify-stage-live-report.json.",
+      "evidence": ".local/reports/m1/verify-stage-live-report.json#live_probes"
+    },
+    {
+      "id": "M1-L-03",
+      "title": "Live probe: Stablecoin FX (Coinbase, Bitstamp, Kraken) & Fiat FX (Frankfurter)",
+      "mode": "live",
+      "work_packages": [
+        "M1-W02",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-DATA-03",
+        "FR-LED-02"
+      ],
+      "acceptance": [
+        "AC-06"
+      ],
+      "precondition": "Explicit --live flag passed to verify-stage.",
+      "steps": [
+        "Query Coinbase USDT-USD, Bitstamp USDC-USD, Kraken USDCUSD, and Frankfurter USD->HKD,CNY,EUR.",
+        "Record actual HTTP status codes and fetched rate counts.",
+        "Fetch Bitstamp USDT/USD cross-check separately from USDC/USD."
+      ],
+      "expected": "Live probe results and HTTP status codes recorded truthfully in verify-stage-live-report.json.",
+      "evidence": ".local/reports/m1/verify-stage-live-report.json#live_probes"
+    },
+    {
+      "id": "M1-L-04",
+      "title": "Live probe: Optional private services (Tiingo, Alpaca, Longport per ACT-03)",
+      "mode": "live",
+      "work_packages": [
+        "M1-W04",
+        "M1-W06"
+      ],
+      "requirements": [
+        "FR-DATA-04"
+      ],
+      "acceptance": [
+        "AC-17"
+      ],
+      "precondition": "ACT-03 private-service verification and financial-data use not requested for this run.",
+      "steps": [
+        "Keep Tiingo, Alpaca, and Longport online verification not-run without accessing private credentials or samples."
+      ],
+      "expected": "Recorded as not-run per ACT-03 without fabricating online pass.",
+      "evidence": ".local/reports/m1/verify-stage-live-report.json#live_probes"
+    }
+  ]
+}

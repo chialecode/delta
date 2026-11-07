@@ -1,0 +1,114 @@
+{
+  "queried_on": "2026-09-26",
+  "repository": "https://github.com/openai/codex",
+  "ref_kind": "main HEAD snapshot; not a DELTA dependency",
+  "commit": "c7e80f873f67dbef58206b9d4f3c60e9d556eb16",
+  "purpose": "Read-only source reference for a Rust model client, not full harness adoption",
+  "files": [
+    {
+      "path": "LICENSE",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/LICENSE",
+      "status": "retrieved",
+      "sha256": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+      "lines": 201
+    },
+    {
+      "path": "NOTICE",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/NOTICE",
+      "status": "retrieved",
+      "sha256": "9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915",
+      "lines": 6
+    },
+    {
+      "path": "codex-rs/README.md",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/README.md",
+      "status": "retrieved",
+      "sha256": "5b059ff5ce6c2252ddaeb52d466ef41f331e0e3abcad6f7ce204314b92be9294",
+      "lines": 3
+    },
+    {
+      "path": "codex-rs/codex-client/Cargo.toml",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-client/Cargo.toml",
+      "status": "retrieved",
+      "sha256": "76e3da92b54ed0c96b14be755fe8d072559d2a9ac6f11e82c1979487edb55b25",
+      "lines": 22
+    },
+    {
+      "path": "codex-rs/codex-client/src/lib.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-client/src/lib.rs",
+      "status": "retrieved",
+      "sha256": "e9ca23e97ed1ee775b201e54944dab3828acbdd9ddccb1b0374bc40b135724bf",
+      "lines": 17
+    },
+    {
+      "path": "codex-rs/codex-client/src/retry.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-client/src/retry.rs",
+      "status": "retrieved",
+      "sha256": "4e61c0e5e5037866706863c32780748ec82e114160ec759a582621de0aad4c06",
+      "lines": 118
+    },
+    {
+      "path": "codex-rs/codex-client/src/sse.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-client/src/sse.rs",
+      "status": "retrieved",
+      "sha256": "4f9ca5f421afc1e2d5d8c537e8ed4371bbcd7e7b1a03acf887d6c56f0bb3758a",
+      "lines": 48
+    },
+    {
+      "path": "codex-rs/codex-api/Cargo.toml",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-api/Cargo.toml",
+      "status": "retrieved",
+      "sha256": "41fa3554b49fcfa0bfe7473e20fc41bff9a672bb3fc3da9aa4c1f3835c7e1266",
+      "lines": 48
+    },
+    {
+      "path": "codex-rs/codex-api/src/endpoint/responses.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-api/src/endpoint/responses.rs",
+      "status": "retrieved",
+      "sha256": "4f2fff3da4ca3ca9fcfa40ada8e98a0229af296094e03febb4d823f32ef932c8",
+      "lines": 159
+    },
+    {
+      "path": "codex-rs/codex-api/src/sse/responses.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-api/src/sse/responses.rs",
+      "status": "retrieved",
+      "sha256": "d81ff4bd44bf076196b0a0a46608d4c9531684fd625b8142ee7281ee559a4422",
+      "lines": 2153
+    },
+    {
+      "path": "codex-rs/codex-api/src/provider.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/codex-api/src/provider.rs",
+      "status": "retrieved",
+      "sha256": "d2dc59b0872b40d60eaed12322e14490f582c03ca92347f1b0cbdd1842744154",
+      "lines": 67
+    },
+    {
+      "path": "codex-rs/core/src/client.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/core/src/client.rs",
+      "status": "retrieved",
+      "sha256": "0a144d63053a4af70fc40e77a342d9c2b9d60a6b5ab3ddb6af8f00a761681fd5",
+      "lines": 2947
+    },
+    {
+      "path": "codex-rs/core/src/compact.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/core/src/compact.rs",
+      "status": "retrieved",
+      "sha256": "ad5c3d2ebae26fa43a991e758d6faeb87cabc6a6dbf79fc16fa83a361be06944",
+      "lines": 831
+    },
+    {
+      "path": "codex-rs/core/src/context_manager/history.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/core/src/context_manager/history.rs",
+      "status": "retrieved",
+      "sha256": "3d1f3c2b05fabcb25eaeb3a61843d0e195de3c1e5aa716fabb11d6e8909eafb8",
+      "lines": 1307
+    },
+    {
+      "path": "codex-rs/core/src/context_manager/normalize.rs",
+      "url": "https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/core/src/context_manager/normalize.rs",
+      "status": "retrieved",
+      "sha256": "4340c30ef792ac40fe64aa1acebf076eafb44ed65cdcf1bab5a09239c5b73881",
+      "lines": 420
+    }
+  ]
+}

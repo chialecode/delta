@@ -1,0 +1,3 @@
+account,datetime,symbol,action,quantity,price,currency,fee,tradeid
+ACC-IBCSV,2024-06-01 09:00:00,USD,deposit,20000,1.0,USD,0,IBCSV-8000
+ACC-IBCSV,2024-06-05 14:00:00,AAPL,buy,15,195.00,USD,1.00,IBCSV-8001

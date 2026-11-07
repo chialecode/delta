@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexQueryResponse queryName="DELTA_M1_SAMPLE" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="U1234567" fromDate="2020-08-01" toDate="2020-09-30">
+      <CashTransactions>
+        <CashTransaction transactionID="IB-CASH-9000" dateTime="2020-08-01 09:00:00" type="Deposits/Withdrawals" symbol="USD" amount="100000.00" currency="USD" />
+      </CashTransactions>
+      <Trades>
+        <Trade tradeID="IB-TRD-9001" dateTime="2020-08-27 14:30:00" symbol="AAPL" buySell="BUY" quantity="100" tradePrice="500.00" proceeds="-50000.00" ibCommission="-2.50" ibCommissionCurrency="USD" currency="USD" />
+      </Trades>
+      <CorporateActions>
+        <CorporateAction actionID="IB-CA-9002" dateTime="2020-08-31 09:30:00" type="FS" symbol="AAPL" ratio="4" currency="USD" />
+      </CorporateActions>
+      <Trades>
+        <Trade tradeID="IB-TRD-9003" dateTime="2020-09-02 15:00:00" symbol="AAPL" buySell="SELL" quantity="-50" tradePrice="130.00" proceeds="6500.00" ibCommission="-1.25" ibCommissionCurrency="USD" currency="USD" />
+      </Trades>
+      <CashTransactions>
+        <CashTransaction transactionID="IB-DIV-9004" dateTime="2020-09-10 09:00:00" type="Dividends" symbol="AAPL" amount="205.00" currency="USD" />
+      </CashTransactions>
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

@@ -1,0 +1,4 @@
+account,side,symbol,name,tradetime,quantity,price,currency,commission,platformfee,settlementfee,regulatoryfee,activityfee,tradeid
+ACC-FUTU,deposit,USD,US Dollar,2020-08-01 09:00:00,100000,1,USD,0,0,0,0,0,FUTU-EN-1000
+ACC-FUTU,buy,AAPL.US,Apple Inc,2020-08-27 14:30:00,100,500.00,USD,1.99,1.00,0.30,0.01,0.01,FUTU-EN-1001
+ACC-FUTU,sell,AAPL.US,Apple Inc,2020-09-02 15:00:00,50,130.00,USD,0.99,1.00,0.15,0.01,0.01,FUTU-EN-1002

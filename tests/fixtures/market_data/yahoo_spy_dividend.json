@@ -1,0 +1,53 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "SPY",
+          "exchangeName": "PCX",
+          "instrumentType": "ETF"
+        },
+        "timestamp": [
+          1710941400,
+          1711027800
+        ],
+        "events": {
+          "dividends": {
+            "1710941400": {
+              "amount": 1.5955,
+              "date": 1710941400
+            }
+          }
+        },
+        "indicators": {
+          "quote": [
+            {
+              "open": [
+                519.10,
+                521.25
+              ],
+              "high": [
+                520.95,
+                522.40
+              ],
+              "low": [
+                518.20,
+                519.80
+              ],
+              "close": [
+                520.48,
+                521.84
+              ],
+              "volume": [
+                68500000,
+                64200000
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}

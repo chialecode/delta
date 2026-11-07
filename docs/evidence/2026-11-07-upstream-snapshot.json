@@ -1,0 +1,411 @@
+{
+  "schemaVersion": 1,
+  "queriedAt": "2026-11-07T03:54:32Z",
+  "purpose": "D-20 rebuild from the documentation governance baseline: GPUI stack reassessment and US stock/ETF + Crypto spot financial data source ecosystem research",
+  "localReferenceInspection": {
+    "gpui_kit": {
+      "repository": "https://github.com/longbridge/gpui-kit",
+      "headSha": "56e9153c4e80775cb6e29d5ef6f6b350bbab71b1",
+      "headDate": "2026-11-01T21:39:30+08:00",
+      "workspaceVersion": "0.8.1",
+      "gpuiDependency": "gpui-pre =0.3.10 (exact snapshot pin required due to breaking weekly Zed snapshots, issue #3156)",
+      "candlestickChartLines": 497,
+      "candlestickChartLimitations": [
+        "Categorical ScaleBand over full Vec<T> without viewport windowing",
+        "No wheel zoom or drag pan",
+        "No volume, MACD, or RSI sub-panes",
+        "No trade execution or journal markers",
+        "No bar-by-bar replay cursor"
+      ]
+    },
+    "akshare": {
+      "repository": "https://github.com/akfamily/akshare",
+      "headSha": "1b88b68356bebf1fd32461d74a8aaaa66588d2d5",
+      "headDate": "2026-11-01T19:16:12+08:00",
+      "packageVersion": "1.20.22",
+      "usEquitiesModules": [
+        "akshare/stock/quote/stock_hist_em.py (stock_us_spot_em, stock_us_hist, stock_us_hist_min_em)",
+        "akshare/stock/quote/stock_us_sina.py (get_us_stock_name, stock_us_spot, stock_us_daily)"
+      ],
+      "observedLimitations": [
+        "stock_us_hist requires EastMoney internal secid prefix (105./106./107.) and provides raw/qfq/hfq series without discrete split/dividend corporate action tables",
+        "stock_us_daily relies on py_mini_racer (V8 JS engine) and documents broken adjustment factors for symbols like CIEN and AI",
+        "crypto_js_spot only returns a point-in-time Jin10 snapshot, no historical OHLCV bars or exchange-specific pairs",
+        "tool_trade_date_hist_sina only covers Shanghai A-share trading dates, no NYSE/NASDAQ calendars or US half-days"
+      ]
+    }
+  },
+  "cratesIo": {
+    "gpui-kit": {
+      "max_version": "0.9.0",
+      "latest_created_at": "2026-11-02T13:43:39.679537Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/gpui-kit"
+    },
+    "gpui-component": {
+      "max_version": "0.9.0",
+      "latest_created_at": "2026-11-02T13:41:55.226219Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/gpui-component"
+    },
+    "gpui": {
+      "max_version": "0.2.2",
+      "latest_created_at": "2025-10-22T03:56:29.835700Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/gpui"
+    },
+    "gpui-pre": {
+      "max_version": "0.3.11",
+      "latest_created_at": "2026-11-02T00:29:15.785448Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/gpui-pre"
+    },
+    "gpui-fast": {
+      "max_version": "0.1.13",
+      "latest_created_at": "2026-11-02T09:10:12.309697Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/gpui-fast"
+    },
+    "tauri": {
+      "max_version": "3.0.0-alpha.6",
+      "max_stable_version": "2.12.5",
+      "latest_created_at": "2026-11-06T11:54:50.754884Z",
+      "license": "Apache-2.0 OR MIT",
+      "source": "https://crates.io/api/v1/crates/tauri"
+    },
+    "wry": {
+      "max_version": "0.57.1",
+      "latest_created_at": "2026-10-23T11:20:42.551207Z",
+      "license": "Apache-2.0 OR MIT",
+      "source": "https://crates.io/api/v1/crates/wry"
+    },
+    "iced": {
+      "max_version": "0.14.0",
+      "latest_created_at": "2025-12-07T20:51:51.386769Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/iced"
+    },
+    "eframe": {
+      "max_version": "0.37.0",
+      "latest_created_at": "2026-10-15T15:28:53.621684Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/eframe"
+    },
+    "dioxus": {
+      "max_version": "0.8.0-alpha.3",
+      "latest_created_at": "2026-10-16T19:45:08.258349Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/dioxus"
+    },
+    "ratatui": {
+      "max_version": "0.30.2",
+      "latest_created_at": "2026-06-19T08:56:46.628604Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/ratatui"
+    },
+    "axum": {
+      "max_version": "0.8.9",
+      "latest_created_at": "2026-04-14T07:55:20.258398Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/axum"
+    },
+    "rusqlite": {
+      "max_version": "0.41.1",
+      "latest_created_at": "2026-10-28T17:58:27.732969Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/rusqlite"
+    },
+    "duckdb": {
+      "max_version": "1.20000.1",
+      "latest_created_at": "2026-10-28T19:20:44.959466Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/duckdb"
+    },
+    "parquet": {
+      "max_version": "60.1.0",
+      "latest_created_at": "2026-10-28T08:51:14.605722Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/parquet"
+    },
+    "polars": {
+      "max_version": "0.55.2",
+      "latest_created_at": "2026-08-06T09:11:43.305236Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/polars"
+    },
+    "rust_decimal": {
+      "max_version": "1.43.0",
+      "latest_created_at": "2026-09-02T00:43:11.457502Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/rust_decimal"
+    },
+    "tokio": {
+      "max_version": "1.54.1",
+      "latest_created_at": "2026-10-21T21:05:43.950213Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/tokio"
+    },
+    "reqwest": {
+      "max_version": "0.13.5",
+      "latest_created_at": "2026-09-08T20:55:26.479356Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/reqwest"
+    },
+    "chrono": {
+      "max_version": "0.4.45",
+      "latest_created_at": "2026-06-04T12:16:42.063037Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/chrono"
+    },
+    "chrono-tz": {
+      "max_version": "0.10.4",
+      "latest_created_at": "2025-07-11T19:08:33.700056Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/chrono-tz"
+    },
+    "csv": {
+      "max_version": "1.4.0",
+      "latest_created_at": "2025-10-17T13:56:07.013801Z",
+      "license": "Unlicense/MIT",
+      "source": "https://crates.io/api/v1/crates/csv"
+    },
+    "longport": {
+      "max_version": "4.3.7",
+      "latest_created_at": "2026-08-12T04:54:33.728906Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/longport"
+    },
+    "ccxt": {
+      "max_version": "4.5.92",
+      "latest_created_at": "2026-11-04T15:31:32.247647Z",
+      "license": "MIT",
+      "source": "https://crates.io/api/v1/crates/ccxt"
+    },
+    "databento": {
+      "max_version": "0.64.0",
+      "latest_created_at": "2026-10-27T19:19:53.448133Z",
+      "license": "Apache-2.0",
+      "source": "https://crates.io/api/v1/crates/databento"
+    }
+  },
+  "pypi": {
+    "akshare": {
+      "version": "1.20.35",
+      "upload_time": "2026-11-06T02:26:38.693305Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/akshare/json"
+    },
+    "yfinance": {
+      "version": "1.8.0",
+      "upload_time": "2026-11-03T19:53:16.680124Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/yfinance/json"
+    },
+    "ccxt": {
+      "version": "4.5.92",
+      "upload_time": "2026-11-04T15:41:04.010897Z",
+      "license": "MIT (verified upstream LICENSE)",
+      "source": "https://pypi.org/pypi/ccxt/json"
+    },
+    "openbb": {
+      "version": "5.0.0",
+      "upload_time": "2026-09-29T08:08:17.518967Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/openbb/json"
+    },
+    "databento": {
+      "version": "0.90.0",
+      "upload_time": "2026-11-03T19:24:18.644654Z",
+      "license": "Apache-2.0 (verified upstream)",
+      "source": "https://pypi.org/pypi/databento/json"
+    },
+    "alpaca-py": {
+      "version": "0.45.0",
+      "upload_time": "2026-11-05T09:12:30.821835Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/alpaca-py/json"
+    },
+    "polygon-api-client": {
+      "version": "1.16.3",
+      "upload_time": "2025-10-30T14:39:24.134992Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/polygon-api-client/json"
+    },
+    "tiingo": {
+      "version": "0.16.1",
+      "upload_time": "2025-04-05T14:36:14.957616Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/tiingo/json"
+    },
+    "finnhub-python": {
+      "version": "2.4.30",
+      "upload_time": "2026-11-05T14:38:06.135994Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/finnhub-python/json"
+    },
+    "twelvedata": {
+      "version": "1.4.0",
+      "upload_time": "2026-04-27T16:15:00.724452Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/twelvedata/json"
+    },
+    "exchange_calendars": {
+      "version": "4.13.2",
+      "upload_time": "2026-03-10T03:24:37.055242Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/exchange_calendars/json"
+    },
+    "pandas_market_calendars": {
+      "version": "5.6.0",
+      "upload_time": "2026-10-31T17:35:26.054899Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/pandas_market_calendars/json"
+    },
+    "TA-Lib": {
+      "version": "0.8.3",
+      "upload_time": "2026-10-28T22:43:01.480843Z",
+      "license": "BSD-2-Clause (Python wrapper) / BSD-3-Clause (native)",
+      "source": "https://pypi.org/pypi/TA-Lib/json"
+    },
+    "polars": {
+      "version": "2.1.0",
+      "upload_time": "2026-10-25T17:58:26.863145Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/polars/json"
+    },
+    "duckdb": {
+      "version": "2.0.0",
+      "upload_time": "2026-10-21T12:50:38.611878Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/duckdb/json"
+    },
+    "pyarrow": {
+      "version": "26.0.1",
+      "upload_time": "2026-11-03T09:54:01.046378Z",
+      "license": "Apache-2.0",
+      "source": "https://pypi.org/pypi/pyarrow/json"
+    },
+    "pydantic": {
+      "version": "2.14.3",
+      "upload_time": "2026-11-05T09:17:02.426672Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/pydantic/json"
+    },
+    "uv": {
+      "version": "0.13.7",
+      "upload_time": "2026-11-03T02:41:43.776511Z",
+      "license": "MIT OR Apache-2.0",
+      "source": "https://pypi.org/pypi/uv/json"
+    },
+    "ibflex": {
+      "version": "1.1",
+      "upload_time": "2026-05-23T15:06:39.352186Z",
+      "license": "MIT",
+      "source": "https://pypi.org/pypi/ibflex/json"
+    }
+  },
+  "npm": {
+    "lightweight-charts": {
+      "version": "5.2.1",
+      "license": "Apache-2.0",
+      "source": "https://registry.npmjs.org/lightweight-charts/latest"
+    }
+  },
+  "liveProbes2026_11_07": {
+    "performedBy": "Agent A (plan v2.1/v2.2 self-review, D-22 pure Rust)",
+    "queriedAt": "2026-11-07T05:48:00Z",
+    "egress": "US/California via user TUN proxy",
+    "note": "One-off HTTP probes for research; not connector acceptance.",
+    "results": [
+      {
+        "endpoint": "https://api.binance.com/api/v3/klines",
+        "status": 451
+      },
+      {
+        "endpoint": "https://data-api.binance.vision/api/v3/klines",
+        "status": 200
+      },
+      {
+        "endpoint": "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/BTCUSDT-1d-2026-11-01.zip.CHECKSUM",
+        "status": 200
+      },
+      {
+        "endpoint": "https://api.exchange.coinbase.com/products/USDT-USD",
+        "status": 200,
+        "detail": "status=online; candles 2022-01-01..05 returned 5 bars"
+      },
+      {
+        "endpoint": "https://api.exchange.coinbase.com/products/USDC-USD",
+        "status": 404
+      },
+      {
+        "endpoint": "https://www.bitstamp.net/api/v2/ohlc/usdcusd/",
+        "status": 200,
+        "detail": "daily bars from 2022-01-01"
+      },
+      {
+        "endpoint": "https://www.bitstamp.net/api/v2/ohlc/usdtusd/",
+        "status": 200,
+        "detail": "daily bars from 2022-01-01"
+      },
+      {
+        "endpoint": "https://api.kraken.com/0/public/OHLC?pair=USDCUSD&interval=1440",
+        "status": 200,
+        "detail": "since=2017 still returned only 721 bars, first 2024-11-17"
+      },
+      {
+        "endpoint": "https://api.frankfurter.dev/v1/latest",
+        "status": 200
+      },
+      {
+        "endpoint": "https://api.frankfurter.dev/v1/2000-01-03",
+        "status": 200,
+        "detail": "HKD present, CNY absent (ECB CNY starts 2005)"
+      },
+      {
+        "endpoint": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+        "status": 200,
+        "detail": "period1=1596240000&period2=1599200000&events=div,split returned 24 bars + dividends(0.205) + splits(4:1) in pure JSON"
+      },
+      {
+        "endpoint": "https://push2his.eastmoney.com/api/qt/stock/kline/get (secid=105.AAPL)",
+        "status": 200
+      },
+      {
+        "endpoint": "https://www.okx.com/api/v5/market/history-candles",
+        "status": 200
+      },
+      {
+        "endpoint": "https://api.tiingo.com/tiingo/daily/aapl (no token)",
+        "status": 403
+      }
+    ],
+    "registryChecks": {
+      "ccxt_crate": {
+        "version": "4.5.92",
+        "created_at": "2026-11-04T15:31:32Z",
+        "repository": "https://github.com/ccxt/ccxt",
+        "license": "MIT",
+        "deps": [
+          "async-trait ^0.1",
+          "ccxt-base ^4.5.92"
+        ],
+        "features_sample": [
+          "all",
+          "binance",
+          "okx",
+          "kraken"
+        ]
+      },
+      "gpui_kit_0_9_0": {
+        "created_at": "2026-11-02T13:43:39Z",
+        "gpui_pre_pin": "=0.3.11"
+      },
+      "gpui_kit_0_8_1": {
+        "created_at": "2026-10-26T08:36:31Z",
+        "gpui_pre_pin": "=0.3.10"
+      },
+      "alpaca_corporate_actions": "GET https://data.alpaca.markets/v1/corporate-actions (stable); /v2/corporate_actions/announcements deprecated"
+    }
+  }
+}

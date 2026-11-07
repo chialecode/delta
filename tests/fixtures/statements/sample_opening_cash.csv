@@ -1,0 +1,2 @@
+account,event_type,occurred_at,timezone,symbol,side,quantity,price,quote_currency,fee_amount,fee_currency,source_id
+SYNTHETIC,deposit,1990-01-02 00:00:00,UTC,USD,buy,1000000,1,USD,0,USD,EXPLICIT-OPENING-CASH
