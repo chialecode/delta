@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "crates/delta-core",
     "crates/delta-data",
+    "crates/delta-model",
     "crates/delta-app",
+    "crates/delta-desktop",
     "crates/delta-cli",
 ]
 
@@ -26,7 +28,11 @@ csv = "1.4.0"
 quick-xml = { version = "0.37", features = ["serialize"] }
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "gzip"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "gzip", "stream"] }
+eventsource-stream = "0.2.3"
+futures-util = "0.3.34"
+bytes = "1.12.1"
+gpui-kit = "=0.9.0"
 keyring = { version = "3.6", features = ["windows-native"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 thiserror = "2.0"

@@ -1,173 +1,109 @@
-# M1 v2.6 实现复查与交付报告
+# M2 v1.0 阶段验证与交付报告
 
-更新：2026-11-08；角色：Agent B（第 1～5 节）/ Agent A 集中复核（第 6 节）；唯一计划：[M1 v2.6](stage-plan.md)。分支 `codex/m1-data-foundation`；固定父提交 `8329f638536e4f303764045a2f10a2c1ab31fcd3`。交付完整 SHA 在 amend 后的交接消息给出，报告用父提交与源码指纹避免自引用。既有未跟踪 `workers/agent/` 保持原样，未读取、修改或暂存；没有远端动作。
+更新：2026-11-09；角色：Agent B（实现）/ Agent A（集中审核）；唯一计划：[M2 v1.0](stage-plan.md)，用例见 [m2-stage-cases.json](m2-stage-cases.json)。分支 `codex/m2-desktop-workbench`；固定父提交 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`；复核基点 `6dfa28c69c11d2764bc2233e407eb4827dd4812d`。最终被测源码指纹为 `e2ba2bdc3bc070f3620cd2fb1beb92f2620495a708d04b9ad91c7b5cf4857a71`；amend 后完整 SHA 以实际 B→A 交接与 `git rev-parse HEAD` 为准。未跟踪 `workers/agent/` 未读取、构建、修改或暂存；未执行远端操作。
 
-本报告替代此前缺少实际断言支撑的“全部通过”表述。B 自检、A 技术审核和产品真实样本验收分别判断。测试夹具的真实性见 [PROVENANCE](../../tests/fixtures/PROVENANCE.md)，官方 ccxt 的实际观察见 [POC-D06](../evidence/2026-11-08-ccxt-rust-poc.md)。
+## 当前判断
 
-## 1. 复查问题与修复
+**B 实现与自检：完成；A 技术审核：通过（见 [A 集中技术审核](#a-集中技术审核2026-11-09)）；产品验收：未完成。** M2-W01～W08 的可执行工作与 F-01～F-07 修复已完成，最终静态 CRT 包、M2 全门禁和 M1 v2.6 回归在相同源码指纹下通过；当前无工程阻断。原测试不足以支持实际界面、帧性能、安装通道和权限隔离的结论，已由本轮真实证据替换。真实模型、个人账单和人工检查仍按下文保持 not-run。
 
-| ID | 原问题 | 实际修复与主要位置 |
+## 复核发现与修复
+
+| 编号 / 严重度 | 触发、实际与预期 | 修复与复验入口 |
 | --- | --- | --- |
-| F-01 | CLI 的自动同步未形成完整真实网络闭环，标的身份可能与库中身份不同 | `delta-app/src/sync.rs` 实现注册表驱动的真实分页同步、持久订阅、实际来源水位线、稳定币主/核验/降级、币安月归档 CHECKSUM、行情与 FX 同事务封存；`registry.rs` 按供应商 wire 格式选择别名，重载后仍发送 `BTCUSDT` |
-| F-02 | 取消/超时可能与提交竞态，已提交作业仍报取消，或 worker 丢失锁 | 发布事务与作业状态共用锁；取消先于发布则回滚，发布完成则成功；worker 继承同一 `InstanceLock` lease，公开会话必须持锁 |
-| F-03 | 缺 FX 或缺期初现金时可能按 1 入账或生成负现金 | 缺可靠事件 FX 拒绝入账；应用导入可先同步缺失 FX 再做 authoritative commit；现金 FIFO 验证余额及历史成本，支持 USD 中间币换算 |
-| F-04 | 行情 FX 修订会改变已提交交易的记账成本 | schema 3 增加 `event_book_fx`，导入、更正与疑似重复确认固定实际采用的事件汇率；新增迁移前一致性备份、未来 schema 拒绝、旧报告失效和旧 source ID 分类迁移 |
-| F-05 | 同秒交易、重导和预览篡改可能重复入账；更正丢失历史分录 | 文件哈希和宿主重建预览验证；可靠业务 ID 与内容分类去重，无 ID 使用 batch+行并标疑似重复；保留 journal revision、原分录、冲销与替换，重建派生批次 |
-| F-06 | 富途/欧易/币安独立资金表不足，空 ID 和重复列被误处理 | v2 严格资金模板转换到同一 CSV 引擎，覆盖入金/出金/收入/独立费用；币安交易导出允许无 account/tradeid；重复列、未知时区/交易方向/成本标志和负费用 rebate 显式拒绝；Flex 检查 XML 属性、多账户和转账方向 |
-| F-07 | BTC 充提可能记成 USDT 现金；未知成本卖出后恢复了虚假的损益数值 | 加密外部入库建未知成本 opening lot，外部转出搬移 lot；资产费用只扣一次 FIFO slice；未知历史成本贯穿后续处置，数值损益保持 unavailable，显式更正 opening 单位成本后重算 |
-| F-08 | 外部银行/钱包被无条件视为组合成员；不同到账日的在途金额可能丢失或重复 | 整库 scope 使用实际事件账户与登记的 active 账户；外部 counterparty 不自动入组；内部现金继承 FIFO 成本，持仓继承原日期和成本，只在两端属于范围时计在途资产，小范围转账按边界市值计资金流 |
-| F-09 | 估值收益率使用固定结果，外币资金流采用期末 FX，报告身份缺少 cutoff | 实际逐日历史重放生成日频近似 TWR / XIRR / 可比回撤；资金流按发生日折算；报告绑定范围、币种、cutoff、来源与 `m1-ledger-3`，增加范围/币种转换差额；历史输入只加载一次 |
-| F-10 | 多来源/多版本公司行动可能重复复权，总回报序列缺少乘法股息因子 | 同逻辑行动选一个版本/来源；从原始 OHLC 派生 split/total-return，非法因子或缺前收盘拒绝；估值使用 raw，指标使用明示复权序列 |
-| F-11 | 导出吞错、恢复漏文件、删除只认文件名、开发写入正式根 | 导出 coherent read snapshot 的 8 CSV，staging 与哈希成功才发布；递归备份 raw/imports/attachments/settings；恢复验证库身份/哈希/外键；删除先验证链接与数据库/manifest 身份，持锁执行，递归枚举/计数任何错误拒绝执行；打开、备份、恢复、导出、删除均验证通道边界 |
-| F-12 | native 账户录制边界仅有余额，指标缺少独立手算 | `FixtureAccountProvider` 解析 OKX/Binance 提取的原生余额/成交/已完成充提数组，保持 Decimal、账户与时点边界；六类指标手算与未来哨兵测试，XNYS/XNAS 全范围对照 |
-| F-13 | 门禁固定写 pass、旧 ccxt 结论错误、无失败日志和源码绑定、命令超时仅杀直接子进程 | `delta-cli/src/verify.rs` 保存命令 stdout/stderr/退出码/是否超时，按实际测试名称映射验收，失败也生成报告；每条命令独立 Job 收口整棵 Windows 进程树后再回收输出管道；保存源码 SHA-256、实际进程优先级、窗口 PID/标题及有限范围目录观测；初始化真实临时库再测非 TTY 删除，核对新增嵌套文件的 1 文件/22 字节；结果统一 passed/failed/blocked/not-run，POC-D06 当前 gate 标 not-run 并引用独立实测 |
+| F-01 / P1 / resolved | 导航无事件，各页同内容；导入/笔记/AI 只存在直接调用的状态方法；同步是计时任务。预期实际控件使用后台宿主并展示真实状态 | `controller.rs`、`ui_forms.rs` 建立实际工作流；保存期间保留新输入、失败保留缓冲与旧范围；真实同步 phase/记录数与在途取消。M2-A-07～12/16、实际点击/输入/导入提交与阻塞回环 HTTP 取消回归通过 |
+| F-02 / P1 / resolved | 冒烟没有 GPUI 窗口；格式化/切片计时当帧时间，p99 复制 p95；默认 AC-26 宣称 passed | `ui_verification.rs` 创建真实隐藏 HWND，显式初始化尺寸并执行 WM_PAINT；100k 图表/表格 20 预热＋300 实测帧各有原始样本和绘制计数；5 个新进程首屏及 300 次工作台交互。门禁重算 p50/p95/p99，缺显式验证保持 not-run；最终 release 包 M2-K02/K06/A20 通过 |
+| F-03 / P0 / resolved | 冒烟/基准递归删除调用方 data-dir；找不到桌面二进制时复制 CLI，两个通道复制同一 source 构建 | 验证只创建并清理随机子目录，核对父目录/身份/链接；真实 `DELTA_CHANNEL=release/dev` 独立构建、build-info 与完整文件哈希，安装随机 staging 校验后切换；卸载先核对全部所有权、哈希和 Windows lease，自卸载在删文件前拒绝。M2-K04、M2-A-17、两包 ZIP 全文件哈希与未知文件/数据保留通过 |
+| F-04 / P1 / resolved | 中文数字/正负匹配失真，keyring 只用进程缓存；同连接 ID 跨库密钥覆盖；历史与预算守卫不完整 | 宿主结构化报告＋显式引用校验、规范化保留正负；工具投影重算 result_id/证据；一致内存快照、完整连接/journal 指纹、累计预算和原子压缩；keyring account 绑定资料库身份，设置恢复/空密钥/失败回滚/丢失条目重配。M2-A-01/13～16 与跨库凭据回归通过 |
+| F-05 / P1 / resolved | 图表缺账户 scope，笔记无期间/保存截止；复权和缓存可能使用未来数据 | 冻结零版本/空账户；逐项校验 note owner、review_date、事件/图表锚点及真实保存 cutoff；复权过滤未来公司行动，缓存绑定内容/指标/版本/截止，恢复日期窗口与锚点。M2-A-01/10～12 与范围/截止/缓存回归通过 |
+| F-06 / P1 / resolved | 日志依赖调用方提供已知 secret 和完整正文，未列密钥/正文片段可落盘，泄露诊断会回显命中秘密 | 审计改为白名单 action 和时间/版本/大小元数据，舍弃调用方正文；扫描只返回命中位置序号。M2-A-17 中未知 secret、正文片段和诊断回显回归通过 |
+| F-07 / P1 / resolved | 真实两通道包的 desktop/CLI 均导入 `VCRUNTIME140.dll`，包未带运行库，开发机已有安装掩盖干净机器失败 | 显式 MSVC target＋静态 CRT，覆盖 Cargo 编码 flags 优先级；构建/安装有界检查普通及延迟 PE 导入并纳入包内哈希清单。实际 PE、截断/无效 RVA/延迟依赖回归和 M2-K04 通过；两个包的 desktop/CLI 均无外部 MSVC 运行库导入，包内 CLI 安装与外部卸载实跑通过 |
 
-这些是 M1 当前必须解决的金融金额、身份、质量、恢复和证据缺陷，未转为后续优化。旧错误结果不是本次交付的验收依据。
+普通实现修复无需新增 ADR；金融、范围、状态、恢复、接口与打包行为已回写职责正本。S-23 使用计划内便携 ZIP＋Rust 按用户安装备选，M2 v1.0 的范围和版本不变；Git 规则中遗留的 M1 固定父提交说明已改为按当前唯一计划核对。
 
-## 2. 工作包与可复验入口
+## A 集中技术审核（2026-11-09）
 
-| 工作包 | 实现入口 | 实际验证入口 / 边界 |
+角色：Agent A；待审提交 `6a388c92f1bc684b243b53f2c4f7bceadf912db2`（父 `0370b7e`）。A 独立重算待审源码指纹，与 B 声明的 `e2ba2bdc…5a71` 一致，跟踪树干净；`workers/agent/` 未读取、构建、修改或暂存。按风险抽查 AI 工具范围/冻结版本、证据与数值校验、`CashExchange` 记账、范围解析、卸载所有权和删除计划，并以隐藏原生窗口实际截图复核界面。审核修正与用户要求的界面重设计已 amend 进同一阶段提交，最终被测源码指纹 `3c6a16dceea9515b5deb4942d26ae7bfa1181af1f4c4621b2064dc3cb34293d9`。
+
+| 编号 / 严重度 | 触发、实际与预期 | 修复与复验 |
 | --- | --- | --- |
-| M1-W01 | `storage.rs`、`paths.rs`、`process.rs`、`service.rs` | 迁移/版本/恢复测试；POC-D01 101 万行；跨进程 keyring、锁竞争；静音崩溃/删除；开发通道保护 |
-| M1-W02 | `registry.rs`、`calendar.rs`、FX providers、`valuation.rs` | XNYS/XNAS 1990～2027 对照；法币 carry ≤4 日、逆向/跨币种、稳定币实际价；缺 FX 拒绝 |
-| M1-W03 | `providers.rs`、`sync.rs` | 回环多页/429/取消/归档校验；公开 OKX、币安 REST/归档、稳定币在线探针；真实账户 API 未接入 |
-| M1-W04 | equity providers、公司行动与调整函数 | AAPL 原始价/分红还原、缺拆股告警、重复行动；NVDA 拆股/SPY 分红公共在线探针；Tiingo/Alpaca 仅离线结构验证 |
-| M1-W05 | `importers.rs`、`ledger.rs`、`valuation.rs`、应用报告 | authoritative import、Futu/OKX/Binance trade/funding、Flex、FIFO/更正、现金汇兑、转账范围、未知成本、事件 FX 固定；真实个人样本 not-run |
-| M1-W06 | `sync.rs`、`export.rs`、`verify.rs`、指标 | 实际 import→回环 HTTP→封存版本→报告→导出；六类指标手算与 cutoff；一致性备份/恢复、诊断脱敏 |
-| M1-EXT | 扩展模板、Alpaca parser、ATR/Bollinger、ccxt POC | 通用规范化扩展模板/Alpaca 结构回放通过；实际平台全部原生导出差异、Alpaca bars、Longport SDK、通用 ccxt adapter 见 LOOP-03 |
+| F-08 / P1 / resolved | 摘要数字提取把前缀含字母的数字一律当标识符跳过：模型写 `总损益 PnL:99999 USD`、`SGD99999` 等虚构数值仍判 `verified`，违反 S-20“正文数值须在工具回执中找到” | `ai.rs`：`键:值`/`键=值` 与 3～5 位大写货币/代码前缀按金融数值校验；只有本次有效或已拦截的引用 ID 先作为标识符剔除，内联有效引用仍可 `verified`。新增 3 个绕过用例与内联引用用例，修复前绕过用例会判为已验证；AI 设计正本同步 |
+| F-09 / P2 / resolved | 实际截图显示：应用未注册图标资源，所有 `Icon`（状态横幅、下钻箭头）为空白；Dock 面板以裸实体加入，标题栏显示内部类型名 `CenterWorkspacePanel` 等 | 主窗口与冒烟/基准/截图均 `with_assets(gpui_kit::assets::Assets)`；面板经 `panel_handle` 加入并自绘标题。截图复核图标与标题正确 |
 
-`M1-A-02`～`M1-A-12`、`M1-A-16` 和 `M1-A-17` 由 `verify.rs` 捕获的命名测试映射生成；`M1-A-01` 实跑百万行 POC，`M1-A-13`～`M1-A-15` 实跑跨进程验证。`M1-A-18` / POC-D06 有单独实测文档，本次 gate 不重跑则标 not-run。每个实际测试结果和对应 gate 日志都保存在 JSON。
+**用户要求的界面重设计（行为不变）**：参照长桥桌面客户端的布局与信息密度（不复制其品牌资产）：新增 `delta-desktop::theme` 浅色主题；顶部工具栏（标识、当前页、账户、紧凑范围输入、AI/任务开关）、左侧图标导航栏、底部状态栏；市场页改为自选列表＋报价头＋图表工具条＋K 线，涨跌额/涨跌幅由新的 `KlineWindowSliceDto::last_close_change`（`delta-app`，Decimal）计算，UI 只格式化；总览为净资产主值＋卡片网格；资产页批次/对账改为表格。原有元素 ID、测试文本和交互契约全部保留；规则回写 [DESIGN](../design-rules/DESIGN.md)。显式截图测试 `capture_workbench_pages`（`#[ignore]`，隐藏窗口、不激活）输出六页 PNG 到 `.local/reports/m2/a-review/ui-capture/`（`before/` 为原界面，`v2/` 为重设计后）。
 
-## 3. 实际验证
+**A 复验（最终源码指纹）**：`verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` overall passed（日志 `.local/reports/m2/logs-12160-1794157036210/`，控制台 `.local/reports/m2/a-review/verify-stage-m2.log`），0 可见窗口、未抢焦点、正式数据根未触碰；工作区 95 passed、0 failed、2 ignored（live 探针与显式截图）；fmt/clippy 零警告。M1 v2.6 回归 overall passed：22 passed、5 项 extension/live not-run（日志 `.local/reports/m1/logs-28164-1794157361857/`，控制台 `.local/reports/m2/a-review/verify-stage-m1.log`）。release 原生基准（同机 RTX 4070 SUPER、缩放 1.5、逻辑窗口约 918.7×596）：
 
-工具链：Rust / Cargo 1.99.1，Windows MSVC；产品运行期只有 Rust。Python 只运行开发期文档门禁。
+| 项目 | 次数 | p50 | p95 | p99 | p95 门槛 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AC-02 首屏 | 5 个新进程 | 318 ms | 339 ms | 339 ms | ≤3000 ms |
+| 工作台导航/持久化/绘制 | 300 | 31.008 ms | 33.530 ms | 35.134 ms | ≤100 ms |
+| 100k 日线、1000 可见图表帧 | 300（另 20 预热） | 11.920 ms | 17.789 ms | 18.963 ms | ≤20 ms |
+| 100k 行 DataTable 滚动帧 | 300（另 20 预热） | 5.672 ms | 7.238 ms | 7.591 ms | ≤20 ms |
 
-> 本节是 B 交付输入（指纹 `2820f9ba…`）的证据，A 已独立复算该指纹一致；A 修正后源码指纹改变，当前有效 gate 证据见 [第 6 节](#6-agent-a-集中复核)。
+图表帧 p95 余量约 2.2 ms，较 B 轮无实质退化；结论只适用于记录的机器与口径。本轮重新构建的两通道静态 CRT 包：release `delta-0.1.0-windows-x86_64-5b192dd5-0290-4d8c-a6af-ec2bd8eb6e23.zip`（36448773 字节，SHA-256 `30c8d6020eaa5c284dff8ec20cf936db6baefb11b3c236c21f940fc96b022500`），dev `delta-dev-0.1.0-windows-x86_64-11308079-6aa4-45ef-8519-efd9c76c399c.zip`（36468341 字节，SHA-256 `1db0013e4f2b3176a28b4252232dfa2113636e7895a721e58d5e12f971b961b3`），M2-K04 安装/卸载与导入检查随门禁通过；H-01～H-03 以这两个包为准，下文 B 轮包表仅为历史。
 
-2026-11-08 B 交付版本的静音完整 `verify-stage` 与公共 `--live` 均 **passed**，两次执行前后源码指纹一致：
+**结论**：B 实现与自检：完成。**A 技术审核：通过**，F-08/F-09 已在同一阶段提交修复并复验，无剩余工程阻断，无需交回 B。产品阶段验收：未完成——真实模型 ACT-01、个人账单 ACT-03、人工 H-01～H-03 保持 not-run，界面重设计尚待你在实际窗口中确认。下一步为 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-09` 推送与创建 PR 的授权。
+
+## 工作包与验证入口
+
+| 工作包 | 实现与重点入口 |
+| --- | --- |
+| M2-W01 | `delta-app/host.rs`、`delta-data/m2_schema.rs` / `storage.rs`：一致快照、AnalysisScope、ResultEnvelope、CapabilityCatalog、schema 3→4 备份/故障回滚；M2-A-01/02，冻结空 scope/零行情回归 |
+| M2-W02 | `delta-core/ledger.rs` / `valuation.rs`、导入/报告服务：账户/组合去重、期间损益、缺价/FX/成本、手工估值、对账、更正 stale、现金换汇；M2-A-04～06 与 M1 金额回归 |
+| M2-W03/04 | DockArea/DockSkin/Panel/DataTable、六页导航、账户/组合、预设导入、总览下钻、真实同步状态；M2-A-03/07～09 与实际点击/输入回归 |
+| M2-W05 | KlineViewport、批量 GPUI quads/path、滚轮/拖拽/光标/键盘、日期/指标/复权、交易/笔记标记；M2-A-10/11，同日指标窗口不变、未来哨兵、缓存内容指纹 |
+| M2-W06 | 笔记模板/正文/标签、owner/复盘日期、乐观修订、诚实自动保存、搜索/附件、图表双向恢复；M2-A-11/12，保存失败/范围切换和期间/截止回归 |
+| M2-W07 | `delta-model` 两协议真实 HTTP/SSE 回环、`delta-app/ai.rs` 工具/报告/历史/压缩，设置与 AI 控件；M2-A-13～16，中文/符号/伪造引用/权限/跨库凭据回归 |
+| M2-W08 | 一致备份/恢复/导出/删除、白名单日志、真实两通道静态 CRT 包/PE 校验/安装/外部卸载、逐包许可与全门禁；M2-A-17～20 与 M1 v2.6 回归 |
+
+AC-02 手算固定：初始 2000，买 10×100 费 1，卖 4×110 费 1，期末价 105 → 现金 1438、持仓 6、成本 600.6、已实现 38.6、未实现 29.4、NAV 2068、总损益 68 USD。金融数值由 core/app 产生，UI 与 AI 不另算。
+
+## 本轮实际验证
+
+最终命令均退出 0，源码指纹相同：
 
 ```text
-2820f9bae2a78649df453e892f80c80df83b06212243892ee1a360d1828b3b17
+cargo run -p delta-cli --locked -- verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench
+cargo run -p delta-cli --locked -- verify-stage --stage M1 --plan-version 2.6
 ```
 
-| 验证 | 实际结果 | 证据 |
-| --- | --- | --- |
-| docs / diff / fmt / Clippy | 两轮均 passed；Clippy 为 workspace/all-targets `-D warnings` | 各轮 `M1-G-01`～`M1-G-04` 原始命令日志 |
-| workspace tests | 每轮 **47 passed / 1 ignored**：app 38、core 4、data 5；忽略项是独立 online 测试 | `M1-G-05` stdout/stderr/退出码与 48 个命名结果 |
-| M1 必做用例 | `M1-A-01`～`M1-A-16` 全部 passed；M1-A-17 的规范化扩展回放 passed | 实际百万行 POC、命名测试映射、跨进程断言 |
-| Windows 隔离 | 实际 `below_normal` / jobs=4；可见窗口 **0**，临时目录残留 **0**，观测范围外新目录 **0**，正式数据根目录元数据未变化 | 进程树超时后父/子锁均可重获；keyring、锁竞争、静音 crash 与非 TTY 删除证据 |
-| 公共网络 | **12 passed / HTTP 200**；私有服务 **3 not-run** | 独立 `live_probes`，见下表 |
-| POC-D06 / M1-A-18 | 当前 gate **not-run**；单独实测的成功/栈失败分别记录 | [官方 ccxt POC](../evidence/2026-11-08-ccxt-rust-poc.md) |
-| README 示例 | 临时隔离根中 init→Futu 导入→fixture sync→explain，4 条命令 exit 0，提交 3 个合成事件，临时根清理；报告如实 partial | `.local/reports/m1/readme-example-report.json` |
+| 验证 | 实际结果与原始证据 |
+| --- | --- |
+| M2 全门禁 | overall passed；M2-G-01～06 与 M2-A-01～20 共 26 项 passed；M2-K01～06 全 passed；3 项人工与 2 项 live not-run。报告 `.local/reports/m2/verify-stage-report.json`，日志 `.local/reports/m2/logs-16112-1794143708105/`，控制台日志 `.local/reports/m2/b-review/verify-stage-static-crt-final.log` |
+| 静态与测试 | docs/diff/fmt/clippy/test 均通过，Clippy 零警告；工作区 94 passed、0 failed、1 ignored（`test_m1_live_network_probes`）。其中 app 56、desktop 14、CLI 5，含实际表单/导航/保存失败/导入/AI 无模型/图表输入和包 PE 回归 |
+| 模型协议 | `openai-responses` 与 `openai-chat-completions` 的受控 HTTP/SSE 回环、工具配对、reasoning、预算、认证/限流/取消/截断恢复通过；M2-K03/A13～16。真实模型保持 not-run |
+| M1 v2.6 回归 | overall passed；22 项 passed、5 项 extension/live not-run；百万行 SQLite POC passed，独立 ccxt POC-D06 本轮 not-run。报告 `.local/reports/m1/verify-stage-report.json`，日志 `.local/reports/m1/logs-4832-1794143844223/` 和 `.local/reports/m2/b-review/m1-regression-static-crt-final.log` |
+| 许可 | M2-G-06 与 3 项 Python 回归通过，885/885、0 errors；48 包明确标准正文＋完整锁定源码回退，4 种 AND 义务全部保留。MPL 包源码零修改，公开逐包清单见 [依赖许可](../evidence/2026-11-08-dependency-licenses.md) |
+| 安装与卸载 | 两通道分别编译，包内 CLI 实际安装；并存、dev 和 release 外部卸载、安装目录内自卸载拒绝、两个数据根和未知文件保留均通过。命令日志见 M2 日志目录的 `package-*.json` 与 `installed-self-uninstall.json` |
+| ZIP 分发内容 | 两包各 2443 个清单文件＋1 个 manifest；2444 个 ZIP 条目全部 CRC/哈希校验，无重名/越界/链接条目。原始结果 `.local/reports/m2/b-review/archive-verification.json` |
+| 静音与隔离 | M2/M1 均为 below_normal、并发 4、0 可见窗口、0 临时残留、0 观测范围外新建目录、正式数据根未触碰；原生冒烟/基准未抢焦点。观测范围为目录元数据，非全系统写入追踪 |
 
-最终离线报告开始时间 `2026-11-08 00:54:10 +08:00`，日志目录 `.local/reports/m1/logs-26028-1794070450596/`；最终在线报告开始时间 `2026-11-08 00:54:44 +08:00`，日志目录 `.local/reports/m1/logs-19868-1794070484904/`。此前不同源码指纹的结果不作为本次交付证据。运行结果状态均校验为 passed/failed/blocked/not-run。
+## 原生 release 性能与包
 
-| POC-D01（实际 1,010,000 行） | 最终离线 | 最终在线 |
-| --- | ---: | ---: |
-| 批量写入 | 9,245 ms | 7,537 ms |
-| 5,000 bar 版本区间查询（目标 <50 ms） | **14 ms** | **12 ms** |
-| 一致性备份 + 恢复及校验 | 12,303 ms | 12,381 ms |
+Windows 11；20 逻辑核（Intel Family 6 Model 183）；RTX 4070 SUPER，driver 621.14；缩放 1.5，逻辑窗口约 918.7×596 px。以下均为最终静态 CRT release 包实测，原始样本在 `.local/reports/m2/ui-bench-report.json`，门禁独立重算分位数。
 
-POC 还断言旧/新版本可见区间和 cutoff 查询；这些是本机两次测量，未扩展为所有硬件的性能保证。
+| 项目 | 实测次数 | p50 | p95 | p99 | p95 门槛 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AC-02 首屏 | 5 个新进程 | 233 ms | 244 ms | 244 ms | ≤3000 ms |
+| 工作台导航/设置持久化/绘制 | 300 | 30.820 ms | 32.068 ms | 32.765 ms | ≤100 ms |
+| 100k 日线、1000 根可见图表帧 | 300（另 20 预热） | 7.743 ms | 18.171 ms | 21.725 ms | ≤20 ms |
+| 100k 行 DataTable 滚动帧 | 300（另 20 预热） | 5.501 ms | 7.765 ms | 13.360 ms | ≤20 ms |
 
-| 公共 probe | 实际 HTTP / 状态 | 返回与关键断言 |
-| --- | --- | --- |
-| OKX | 200 / passed | 99 根已完成 `1Dutc` 日线 |
-| Binance Vision | 200 / passed | 99 根已完成 UTC 日线 |
-| Binance 月归档 | 200 / passed | 2025-03 ZIP 与 SHA-256 CHECKSUM 校验；31 根，微秒时间戳 |
-| Coinbase USDT/USD | 200 / passed | 349 个日度汇率值 |
-| Bitstamp USDC/USD | 200 / passed | 4 个日度汇率值 |
-| Bitstamp USDT/USD | 200 / passed | 4 个独立核验汇率值 |
-| Kraken USDC/USD | 200 / passed | 720 个日度汇率值，保留公开接口回溯上限边界 |
-| Frankfurter | 200 / passed | 9 个法币汇率值，USD→HKD/CNY/EUR |
-| Yahoo AAPL | 200 / passed | 4 根 / 1 个行动，2020-08-28 raw close 还原为 **499.23** |
-| 东方财富 AAPL | 200 / passed | 4 根 raw 日线，同日 close **499.23** |
-| Yahoo NVDA | 200 / passed | 4 根 / 2 个行动，2024-06-10 **10:1** 拆股断言通过 |
-| Yahoo SPY | 200 / passed | 6 根 / 1 个行动，2025-03-21 现金分红断言通过 |
+实际图表绘制 320 次、表格 cell 绘制 49,600 次；取消接受 <1 ms（整毫秒记录 0）、worker 释放 5 ms，在途 provider 取消另有阻塞 HTTP 回归。图表 p99 超过 20 ms，当前 p95 满足门槛；性能结论只适用于记录的机器和测量口径。
 
-这些是实际公共服务请求，不是回环/fixture 结果；Tiingo、Alpaca、Longport 在线请求及真实个人账单均未执行，未读取私人样本或私有凭据。
+| 通道 | 最终 ZIP（位于 `.local/reports/m2/packages/`） | 字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| release | `delta-0.1.0-windows-x86_64-61ec907d-5d81-478d-a783-6548d1e7600b.zip` | 36392374 | `a58afa432977dbe279bb4db5069315e4097a7c9c9de08eb5bfcd76c294adb566` |
+| dev | `delta-dev-0.1.0-windows-x86_64-3b91a692-ff4a-4ccd-aa28-712937e20008.zip` | 36411929 | `74227965db3dc9ffd6769c9a0014c40ebff8a463434451f6ca53b2f1bbf2b072` |
 
-可运行命令：
+产物索引为 `.local/reports/m2/packages/package-artifacts.json`；每包带 `README.txt`、`package-manifest.json`、`binary-imports.json`、项目通知及完整第三方许可/归档。两个 desktop 与两个 CLI 的普通/延迟导入均无 `vcruntime` / `msvcp` / `msvcr` / `concrt`；仍依赖 Windows 系统 DLL。两通道及四个二进制 SHA 不同，具体可执行文件 SHA 见 archive-verification 原始结果。包未签名，H-03 干净机器仍 not-run。
 
-```powershell
-$env:DELTA_GATE_JOBS='4'
-$env:CARGO_BUILD_JOBS='4'
-$env:CARGO_INCREMENTAL='0'
-cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6
-cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 --live
-```
+## 验证边界与接续
 
-入口设置静音子进程、低优先级、Job 收口和受限并发，内部实际运行 docs/diff/fmt/clippy/tests。报告位于 `.local/reports/m1/verify-stage[-live]-report.json`，日志位于同目录 `logs-<run-id>/`。源码指纹包含工作区 Rust/Cargo、锁文件、工具链、金融夹具和文档检查器，不包含 `workers/` 或本地 POC/个人数据；执行结束验证源码未变。
+默认 `verify-stage --stage M2 --plan-version 1.0` 执行静音离线/无头检查；没有 `--ui-smoke --ui-bench` 时，K02/K06/A20 与 overall 保持 not-run，成功退出仅表示已执行检查无失败。阶段完整 B 自检需显式运行两项 UI 验证。隐藏窗口帧包含 GPUI 更新/布局/绘制与 DirectX render/present 调用，排除等待定时器；FPS 为帧预算倒数，不能当作可见桌面的持续显示采样。首屏为 AC-02 本地库、5 个新进程，包含夹具初始化，排除 OS loader 且不清空系统文件缓存；100k 图表/表格规模分别测试。
 
-重点手算证据：AC-02 应用闭环现金 **1438**、剩余数量 **6**、成本 **600.6**、已实现 **38.6**、未实现 **29.4**、NAV **2068**、总损益 **68**，日频近似 TWR **0.034**。外币现金在途例保留成本 **99.8**、费用汇兑收益 **0.04**、NAV **119.76** / 损益 **19.76**；独立资金表例现金 **95**、净投入 **90**、损益 **5**；EUR 记账的 100 HKD 在显式 USD/HKD=10 与 USD/EUR=0.8 的合成报价下固定为 **8 EUR**。
+本轮只使用合成数据、回环服务、测试 keyring 命名空间和隔离根。真实模型 ACT-01、真实个人账单 ACT-03、中文输入法/缩放/干净机器安装 H-01～H-03 保持 not-run；公共行情本轮未运行时同样标 not-run，历史 live 记录不冒充本次通过。机器为 Windows 11、20 逻辑核、RTX 4070 SUPER，性能外推限于实际记录的硬件/缩放。
 
-目录观测仅检查真实 `LOCALAPPDATA/delta` / `delta-dev` 的目录元数据及本次临时根，窗口哨兵覆盖本次 Job 内的可见顶层窗口；这不等于全系统写入追踪或桌面上所有进程的窗口证明。
+集中待处理项为 OSS-07（用户配置的真实兼容端点）、OSS-10（M4 存储扩展）、LOOP-01～03（后续训练/策略及扩展连接器），见 [工程台账](../decisions/open-questions.md)。OSS-08/09/11 已按本轮证据关闭；F-01～07 全部修复并复验，没有本轮必做工程缺陷延期给用户。
 
-## 4. 依赖与数据条款
-
-项目 Apache-2.0；实际 `cargo metadata --locked --format-version 1` 盘点 **221 个第三方包 + 4 个工作区包**，每个第三方包均有许可表达式，选择宽松许可分支并保留通知义务，详见 [逐包清单与边界](../evidence/2026-11-08-dependency-licenses.md)。其他目标平台的 3 个发布包未附顶层许可原文，不能把表达式盘点称为全平台分发通知已完备；本阶段未生成安装包。数据类别只采用 `public_open` / `official_free_personal` / `unofficial_personal`；封存版本记录实际来源、条款、能力与端点，导出携带该类别。代码许可不授予行情再分发权。
-
-官方 `ccxt =4.5.91` 独立构建成功，默认 Windows 栈溢出；64 MiB worker + boxed future 后 OKX/Kraken 真实请求成功。其 typed OHLCV 为 f64，因此没有作为 Decimal 入口；扩展 adapter 延期归属 LOOP-03，不能声称官方 ccxt 停更。
-
-## 5. 限制、当前判断与交接
-
-M1 提供已声明规范化模板和合成/公开结构回放；Futu 默认纽约时区、OKX/Binance UTC，费用模板采用非负支出，rebate 需显式收入。未知列/格式拒绝并给诊断。扩展平台当前共享规范化模板，不能宣称兼容所有原生账单。`ACT-03` 真实去标识样本及 Tiingo/Alpaca/Longport 私有服务未测，不访问私人样本或凭据来替代授权；后续 native 模板/通用 adapter/SDK 的范围、归属和触发只维护在 [LOOP-03](../decisions/open-questions.md)。
-
-报告目前为整库 inception→as-of 视图，收益率明确为日频近似，缺行情/汇率/未知成本使相关损益/收益率 unavailable；没有 M2 桌面 UI、AI 网关、训练或策略执行。未知 opening 成本只能由明确更正填入，不能用当前市场价猜历史成本。
-
-- B 实现与自检：**passed，可交 Agent A 集中复核**；M1 必做没有已知工程阻断，扩展未完成部分按计划第 3.1 / 6 节登记 LOOP-03。
-- A 技术审核：见第 6 节（2026-11-08 已执行，含 A 局部修正）。
-- 产品验收：M1 自动证据与公共服务结果单列；ACT-03 真实样本/私有服务 not-run；M2 完整 FR/AC 未验收。
-- 首选下一步：Agent A 集中复核唯一 M1 v2.6 计划、本报告和本次本地提交，复用源码指纹一致的实际证据；未自动启动会话，也未执行远端动作。
-
-可复制 B→A prompt（交付时附完整 SHA）：
-
-```text
-请作为 Agent A 集中复核 M1 v2.6。唯一计划 docs/delivery/stage-plan.md，结果与 F-01～F-13 见 docs/delivery/stage-report.md。分支 codex/m1-data-foundation，固定父提交 8329f638536e4f303764045a2f10a2c1ab31fcd3；交付完整 SHA 见本次交接消息，源码指纹与实际 gate 日志见报告。
-先核对 git status、父提交与指纹，保留未跟踪 workers/agent/。重点复核事件 FX 固定、authoritative 导入/去重/冲销、第三资产费用、未知成本、转账在途与 scope、收益率的日频近似、版本封存、恢复/删除/通道隔离以及门禁是否由实际命名测试支撑。
-复用指纹一致的证据，局部确定问题直接修复并验证；大缺口整批返工。分列 B 自检、A 技术审核与产品验收。必做收敛后转用户具体远端授权；ACT-03/LOOP-03 非阻塞部分独立推进。不 push、不操作 PR、不自动创建其他 Agent 会话。
-```
-
-## 6. Agent A 集中复核
-
-2026-11-08，Agent A。输入：分支 `codex/m1-data-foundation`，B 交付提交（指纹 `2820f9ba…`），父提交 `8329f638536e4f303764045a2f10a2c1ab31fcd3`。工作区仅有未跟踪 `workers/agent/`，保持未读取、未修改、未暂存。A 用独立脚本按 `verify.rs` 规则复算源码指纹为 `2820f9ba…b3b17`，与第 3 节一致；B 的两份 gate JSON 绑定同一指纹、`overall_status=passed`，命名测试映射要求全部列名测试 passed，失败测试会使 G-05 与映射失败，未发现固定写 pass。
-
-### 6.1 复核范围与结论
-
-逐项阅读 F-01～F-13 对应实现：账本重放与现金 FIFO 二次处理、第三资产费用与 FeeOnly、未知成本传递、现金/持仓转账在途与 scope、估值与日频近似 TWR / XIRR、`event_book_fx` 的导入/更正/复制、authoritative 预览重建与文件哈希、更正冲销分录、版本发布哈希与 cutoff、备份恢复校验、删除前身份/链接/锁、通道保护和 gate 映射。F-01～F-13 的修复方向成立；另发现下列确定问题，均为局部修正，A 直接修复并补测试，无需整批返工。
-
-| ID | 问题与失败场景 | A 修正 | 回归测试 |
-| --- | --- | --- | --- |
-| A-01 | 期初现金只按报价币事件 FX 入账：通用 CSV `opening_balance`，`symbol=HKD`、`quote_currency=USD` 时 1000 HKD 记为 1000 USD 投入与成本（实测复现）；现金判定只认 USD/HKD/CNY/EUR 四个币种，JPY 等会走持仓分支 | 现金判定改用 `is_fiat_currency`；期初现金币种与报价币不一致时拒绝 | `regression::opening_cash_requires_its_own_currency_and_known_openings_need_unit_cost` |
-| A-02 | 标记成本已知但无单位成本的期初持仓，仅在已登记标的时拒绝；未登记标的会以 0 成本入账 | 非现金期初持仓 `cost_known && price=None` 一律拒绝 | 同上 |
-| A-03 | 买入报价腿双重扣减：同账户既有 USDT 现金又有 USDT 买入批次时，花 100 USDT 买 BTC 会同时扣现金与批次，剩余 USDT 由 100 变 0（实测复现） | 报价腿只经现金 FIFO 结算并校验余额；现金不足时拒绝，不再消耗批次 | `regression::stablecoin_quote_leg_is_settled_once_from_cash` |
-| A-04 | 通道保护只覆盖 `%LOCALAPPDATA%\delta`，源码/开发构建仍可把导出、备份、恢复目标指向正式版用户文件根 `<文档>\delta`（D-26） | 守卫同时覆盖两个正式根；文档根取系统登记位置，不受测试覆盖变量影响 | `regression::source_channel_cannot_target_release_user_file_root` |
-| A-06 | gate 源码指纹按工作区原始字节计算；Git 在 `eol=lf` 下把 CRLF 工作副本视为未修改，导致指纹与实际提交内容不一致（B 交付 `2820f9ba…` 的提交树实为 `bc97dd90…`），证据绑定不精确 | 指纹对文本输入按 LF 规范化，与提交内容一致；A 独立脚本验证 CRLF/LF 结果相同 | 两轮 gate 实跑（下表） |
-| A-05 | 报表估值读取 `fx_rate` 只按版本号过滤，未像记账 FX 一样要求已发布（现有同步均在同一 savepoint 内发布，属纵深防护） | 报表 FX 查询联结 `dataset_publication` | 由既有版本/FX 修订测试覆盖 |
-
-新测试已加入 `M1-A-06` / `M1-A-16` 的命名映射；行为变化同步到 [金融规则](../design/financial-engine.md)。买入稳定币/法币作为批次后无法再作报价腿结算，现为显式拒绝，建模为现金换汇的后续项登记为 `LEDGER-01`（[集中台账](../decisions/open-questions.md)）。
-
-### 6.2 A 修正后的实际验证
-
-A 修正后源码指纹（LF 规范化；A 独立脚本、gate 与提交树三者一致）：
-
-```text
-ae2f8960e406fd44c43e9ef81bc83e13084ac503dbbe65bebcdf24a8fe7a447b
-```
-
-| 验证 | 结果 | 证据 |
-| --- | --- | --- |
-| 离线 `verify-stage`（开始 `2026-11-08 05:17:18 +08:00`） | **passed**；G-01～G-05 passed；workspace **50 passed / 1 ignored**（app 41、core 4、data 5；忽略项为独立 online 测试）；`M1-A-01`～`M1-A-17` passed；`M1-A-18` not-run；`below_normal` / jobs=18（默认 CPU−2）；可见窗口 0、临时残留 0、范围外新目录 0、正式数据根未变化 | `.local/reports/m1/verify-stage-report.json`，日志 `logs-21320-1794086238325/` |
-| 公共 `--live`（开始 `2026-11-08 05:17:51 +08:00`） | **passed**；12 个公共 probe 均 HTTP 200 且关键断言通过（与第 3 节同一组断言）；Tiingo / Alpaca / Longport **not-run** | `.local/reports/m1/verify-stage-live-report.json`，日志 `logs-20584-1794086271772/` |
-| POC-D01（1,010,000 行） | 离线：写入 4,105 ms，5,000 bar 版本查询 **6 ms**，备份+恢复 9,660 ms；在线轮：4,140 / **7** / 9,707 ms | 同上报告 `poc_results` |
-| 文档门禁 | 报告/状态/台账回写后另行运行 `python scripts/check_docs.py` 与 `git diff --check` 均 exit 0 | 本节回写后的命令结果 |
-
-gate 内 G-01 运行于文档回写前；文档回写不改变源码指纹，回写后已单独重跑文档门禁。
-
-### 6.3 判断与接续
-
-- **B 自检**：passed（第 1～5 节），A 未以其替代审核。
-- **A 技术审核**：**passed with A fixes**。A-01～A-06 已修复并通过上述实跑；无剩余 M1 必做工程阻断。非阻塞项：`LEDGER-01`、`LOOP-03`。
-- **产品验收**：未完成。自动证据与公共服务证据如上；`ACT-03` 真实去标识样本与 Tiingo / Alpaca / Longport 私有服务 not-run；M2 FR/AC 未验收。人工/私有项可独立推进，不阻塞远端授权请求。
-- 修正按 D-09 amend 进同一阶段提交（带 `Signed-off-by`，D-27），实跑在提交内容上执行。完整 SHA 见交接消息与 `git rev-parse HEAD`。
-- **首选下一步**：用户按 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-08` 授权具体远端动作。未执行 push / PR，未创建其他 Agent 会话。
+首选下一步：Agent A 对同一 M2 v1.0 计划与本轮提交集中技术审核，核对源码指纹并复用充分的未变更证据，重点复验金融、权限、恢复、实际 UI 和包的边界。A 收敛后才在 USER-ACTIONS 登记具体远端授权事项；独立人工检查不等于技术审核或产品验收通过。

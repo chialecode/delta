@@ -1,4 +1,6 @@
+mod packaging;
 mod verify;
+mod verify_m2;
 use chrono::{NaiveDate, Utc};
 use delta_app::{
     apply_process_quiet_guards, resolve_app_paths, sanitize_terminal_output, AppService,
@@ -14,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 use verify::run_verify_stage_m1;
+use verify_m2::{install_per_user_channel, run_verify_stage_m2, uninstall_per_user_channel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PocResultRecord {
@@ -86,7 +89,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "delta (M1 v2.6) - local-first financial data & ledger foundation\n\
+        "delta-cli (M2 v1.0) - financial data, ledger and desktop package operations\n\
          Subcommands:\n\
          - init [--data-dir <dir>]\n\
          - register --venue <NASDAQ|NYSE|OKX|BINANCE> --symbol <symbol> [--etf] [--data-dir <dir>]\n\
@@ -101,7 +104,11 @@ fn print_usage() {
          - export --dir <path> [--data-dir <dir>]\n\
          - library delete [--yes] [--data-dir <dir>]\n\
          - credential set|get|delete --provider <p> --user <u> --stdin [--prefix <pfx>]\n\
-         - verify-stage --stage M1 --plan-version 2.6 [--live]"
+         - package-build [--out-dir <dir>]\n\
+         - package-install --channel release|dev --package-dir <dir> [--local-app-data <dir>]\n\
+         - package-uninstall --channel release|dev [--local-app-data <dir>]\n\
+         - verify-stage --stage M1 --plan-version 2.6 [--live]\n\
+         - verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]"
     );
 }
 
@@ -119,6 +126,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
     let channel_override = parse_flag(args, "--channel").and_then(|s| BuildChannel::parse(&s));
     if BuildChannel::current() != BuildChannel::Release
         && channel_override == Some(BuildChannel::Release)
+        && !matches!(sub, "package-install" | "package-uninstall")
     {
         return Err(delta_app::ErrorEnvelope::new(
             "channel_isolation",
@@ -128,6 +136,28 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
     }
 
     match sub {
+        "--build-info" => {
+            println!(
+                "{}",
+                serde_json::json!({"product":"delta-cli", "version":env!("CARGO_PKG_VERSION"), "channel":BuildChannel::current().as_str()})
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        "package-build" => {
+            let root = env::current_dir()
+                .map_err(|e| delta_app::ErrorEnvelope::new("cwd", e.to_string(), false))?;
+            let output = parse_flag(args, "--out-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(".local/reports/m2/packages"));
+            let artifacts = packaging::build_packages(&root, &output)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&artifacts).map_err(|e| {
+                    delta_app::ErrorEnvelope::new("package_json", e.to_string(), false)
+                })?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         "--help" | "-h" | "help" => {
             print_usage();
             Ok(ExitCode::SUCCESS)
@@ -288,9 +318,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                         .unwrap_or(Ok(default))
                 };
                 let end = parse_date("--until", Utc::now().date_naive())?;
-                let events = delta_data::load_all_ledger_events(svc.store()).map_err(|e| {
-                    delta_app::ErrorEnvelope::new("load_events", e.to_string(), false)
-                })?;
+                let events = svc.load_all_ledger_events()?;
                 let start_default = events
                     .iter()
                     .map(|e| e.occurred_at.date_naive())
@@ -330,16 +358,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 .map_err(|e| delta_app::ErrorEnvelope::new("invalid_date", e.to_string(), false))?;
             let version: i64 = parse_flag(args, "--version")
                 .and_then(|s| s.parse().ok())
-                .unwrap_or_else(|| {
-                    svc.store()
-                        .conn()
-                        .query_row(
-                            "SELECT COALESCE(MAX(version_num),0) FROM dataset_version",
-                            [],
-                            |r| r.get(0),
-                        )
-                        .unwrap_or(0)
-                });
+                .unwrap_or_else(|| svc.latest_dataset_version());
             let summary = svc.evaluate_and_explain(as_of, version, None)?;
             println!(
                 "{}",
@@ -376,9 +395,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
             let paths = resolve_app_paths(channel_override, cli_data_dir.as_deref())
                 .map_err(|e| delta_app::ErrorEnvelope::new("path_error", e.to_string(), false))?;
             let svc = AppService::open(paths, "USD", "USD", "UTC", true)?;
-            let issues = svc.store().list_quality_issues().map_err(|e| {
-                delta_app::ErrorEnvelope::new("quality_query_failed", e.to_string(), false)
-            })?;
+            let issues = svc.list_quality_issues()?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&issues).unwrap_or_default()
@@ -517,20 +534,72 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 )),
             }
         }
+        "package-install" => {
+            let root = parse_flag(args, "--package-dir")
+                .map(PathBuf::from)
+                .map(Ok)
+                .unwrap_or_else(env::current_dir)
+                .map_err(|e| delta_app::ErrorEnvelope::new("cwd", e.to_string(), false))?;
+            let local_app_data = parse_flag(args, "--local-app-data")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("LOCALAPPDATA").map(PathBuf::from))
+                .ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new(
+                        "missing_localappdata",
+                        "LOCALAPPDATA is not set",
+                        false,
+                    )
+                })?;
+            let ch = parse_flag(args, "--channel").unwrap_or_else(|| "dev".to_string());
+            let out_dir = parse_flag(args, "--out-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(".local/reports/m2/packages"));
+            let receipt = install_per_user_channel(&root, &local_app_data, &ch, &out_dir)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&receipt).unwrap_or_default()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        "package-uninstall" => {
+            let local_app_data = parse_flag(args, "--local-app-data")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("LOCALAPPDATA").map(PathBuf::from))
+                .ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new(
+                        "missing_localappdata",
+                        "LOCALAPPDATA is not set",
+                        false,
+                    )
+                })?;
+            let ch = parse_flag(args, "--channel").unwrap_or_else(|| "dev".to_string());
+            uninstall_per_user_channel(&local_app_data, &ch)?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"uninstalled","channel":ch,"data_preserved":true})
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         "verify-stage" => {
             let stage = parse_flag(args, "--stage").unwrap_or_default();
             let plan_ver = parse_flag(args, "--plan-version").unwrap_or_default();
-            if stage != "M1" || plan_ver != "2.6" {
-                return Err(delta_app::ErrorEnvelope::new(
+            let live_mode = has_flag(args, "--live");
+            // D-30: stage labels are uppercase in documents; the CLI accepts either case.
+            if stage.eq_ignore_ascii_case("M1") && plan_ver == "2.6" {
+                run_verify_stage_m1(live_mode)
+            } else if stage.eq_ignore_ascii_case("M2") && plan_ver == "1.0" {
+                let ui_smoke = has_flag(args, "--ui-smoke");
+                let ui_bench = has_flag(args, "--ui-bench");
+                run_verify_stage_m2(live_mode, ui_smoke, ui_bench)
+            } else {
+                Err(delta_app::ErrorEnvelope::new(
                     "invalid_verify_args",
                     format!(
-                        "expected '--stage M1 --plan-version 2.6', got stage='{stage}' plan_version='{plan_ver}'"
+                        "expected '--stage M1 --plan-version 2.6' or '--stage M2 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
                     ),
                     false,
-                ));
+                ))
             }
-            let live_mode = has_flag(args, "--live");
-            run_verify_stage_m1(live_mode)
         }
         other => Err(delta_app::ErrorEnvelope::new(
             "unknown_subcommand",

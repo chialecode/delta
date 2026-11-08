@@ -15,20 +15,53 @@ pub struct SyncRequest {
 }
 
 impl AppService {
+    /// Dropping an in-flight provider future closes its request; cancellation is
+    /// checked during socket waits and retry backoff, not just between pages.
+    fn sync_await<F, T>(&self, future: F) -> Result<T, delta_data::ProviderError>
+    where
+        F: std::future::Future<Output = Result<T, delta_data::ProviderError>>,
+    {
+        let Some((cancel, deadline, _, _)) = &self.sync_control else {
+            return self.runtime.block_on(future);
+        };
+        let cancel = Arc::clone(cancel);
+        let deadline = *deadline;
+        self.runtime.block_on(async move {
+            tokio::pin!(future);
+            loop {
+                if cancel.load(Ordering::SeqCst) || Instant::now() >= deadline {
+                    return Err(delta_data::ProviderError::Http {
+                        provider: "sync-control".into(),
+                        status: None,
+                        message: "sync cancelled before publication".into(),
+                        retryable: false,
+                    });
+                }
+                tokio::select! {
+                    result = &mut future => return result,
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        })
+    }
+
     /// The worker holds the same directory lock for its entire lifetime.
     pub fn start_market_sync(&self, request: SyncRequest, timeout: Duration) -> JobId {
         let paths = self.paths.clone();
         let lease = self._lock.clone();
-        self.jobs
-            .spawn_controlled_job("market_sync", timeout, move |cancel, state, deadline| {
+        self.jobs.spawn_controlled_job(
+            "market_sync",
+            timeout,
+            move |cancel, state, deadline, progress| {
                 let mut worker = AppService::open_with_lease(paths, "USD", "USD", "UTC", lease)?;
-                worker.sync_control = Some((cancel, deadline, state));
+                worker.sync_control = Some((cancel, deadline, state, progress));
                 worker.sync_market_data(&request).map(|_| ())
-            })
+            },
+        )
     }
 
     fn check_sync_control(&self) -> Result<(), ErrorEnvelope> {
-        if let Some((cancel, deadline, _)) = &self.sync_control {
+        if let Some((cancel, deadline, _, _)) = &self.sync_control {
             if cancel.load(Ordering::SeqCst) || Instant::now() >= *deadline {
                 return Err(ErrorEnvelope::new(
                     "sync_cancelled",
@@ -39,12 +72,30 @@ impl AppService {
         }
         Ok(())
     }
+
+    fn sync_progress(&self, phase: String, summary: Option<&SyncSummaryDto>, published: bool) {
+        if let Some((_, _, _, progress)) = &self.sync_control {
+            let mut progress = progress.lock().unwrap();
+            progress.phase = phase;
+            if let Some(summary) = summary {
+                progress.records_prepared = summary.bars_committed
+                    + summary.corporate_actions_committed
+                    + summary.fx_rates_committed;
+                progress.records_published = if published {
+                    progress.records_prepared
+                } else {
+                    0
+                };
+            }
+        }
+    }
     /// Synchronize subscriptions through the same service used by all consumers.
     /// Failure rolls back data, version publication and every cursor together.
     pub fn sync_market_data(
         &mut self,
         request: &SyncRequest,
     ) -> Result<SyncSummaryDto, ErrorEnvelope> {
+        self.sync_progress("准备数据资源".into(), None, false);
         if request.start >= request.end {
             return Err(ErrorEnvelope::new(
                 "invalid_range",
@@ -80,9 +131,10 @@ impl AppService {
         let state = self
             .sync_control
             .as_ref()
-            .map(|(_, _, state)| Arc::clone(state));
+            .map(|(_, _, state, _)| Arc::clone(state));
         let mut publication_guard = state.as_ref().map(|state| state.lock().unwrap());
         if result.is_ok() {
+            self.sync_progress("正在原子提交".into(), result.as_ref().ok(), false);
             if let Err(error) = self.check_sync_control() {
                 result = Err(error);
             }
@@ -100,6 +152,9 @@ impl AppService {
             if let Some(state) = publication_guard.as_mut() {
                 **state = JobState::Succeeded;
             }
+            self.sync_progress("已发布数据，正在收尾".into(), result.as_ref().ok(), true);
+        } else {
+            self.sync_progress("已停止，未发布本次数据".into(), None, false);
         }
         result
     }
@@ -206,6 +261,7 @@ impl AppService {
         };
         for instrument_id in &subscribed {
             self.check_sync_control()?;
+            self.sync_progress(format!("读取标的 {instrument_id}"), Some(&summary), false);
             let inst = registry
                 .instruments
                 .get(instrument_id)
@@ -243,8 +299,7 @@ impl AppService {
                 loop {
                     self.check_sync_control()?;
                     let (page, body) = self
-                        .runtime
-                        .block_on(p.fetch_daily_candles(
+                        .sync_await(p.fetch_daily_candles(
                             &client,
                             instrument_id,
                             &symbol,
@@ -287,7 +342,7 @@ impl AppService {
                     let current_month = now.date_naive().with_day(1).unwrap();
                     while month < request.end && month < current_month {
                         self.check_sync_control()?;
-                        match self.runtime.block_on(p.fetch_monthly_archive(
+                        match self.sync_await(p.fetch_monthly_archive(
                             &client,
                             instrument_id,
                             &symbol,
@@ -344,8 +399,7 @@ impl AppService {
                     }
                     self.check_sync_control()?;
                     let (page, body) = self
-                        .runtime
-                        .block_on(p.fetch_daily_klines(
+                        .sync_await(p.fetch_daily_klines(
                             &client,
                             instrument_id,
                             &symbol,
@@ -388,7 +442,7 @@ impl AppService {
                 };
                 // Yahoo adjusts against all subsequent splits: fetch through acquisition time,
                 // then bound publication to the requested historical interval.
-                let fetched = self.runtime.block_on(p.fetch_chart_v8(
+                let fetched = self.sync_await(p.fetch_chart_v8(
                     &client,
                     instrument_id,
                     venue,
@@ -403,7 +457,7 @@ impl AppService {
                 let secid = registry
                     .external_symbol_for("eastmoney", instrument_id)
                     .unwrap();
-                let alternate = self.runtime.block_on(em.fetch_kline_raw(
+                let alternate = self.sync_await(em.fetch_kline_raw(
                     &client,
                     instrument_id,
                     venue,
@@ -465,7 +519,7 @@ impl AppService {
                     let p = TiingoEquityProvider {
                         base_url: base_url("tiingo", TiingoEquityProvider::default().base_url),
                     };
-                    match self.runtime.block_on(p.fetch_daily(
+                    match self.sync_await(p.fetch_daily(
                         &client,
                         token,
                         instrument_id,
@@ -554,6 +608,7 @@ impl AppService {
                 .store
                 .upsert_corporate_actions(&actions)
                 .map_err(sync_error)?;
+            self.sync_progress(format!("核对标的 {instrument_id}"), Some(&summary), false);
             let venue = if inst.venue == "NASDAQ" {
                 "XNAS"
             } else if inst.venue == "NYSE" {
@@ -620,6 +675,7 @@ impl AppService {
         }
         for currency in currencies {
             self.check_sync_control()?;
+            self.sync_progress(format!("读取汇率 {currency}/USD"), Some(&summary), false);
             if currency == "USD" {
                 continue;
             }
@@ -669,8 +725,7 @@ impl AppService {
                             ),
                         };
                         let (rates, body) = self
-                            .runtime
-                            .block_on(p.fetch_range(
+                            .sync_await(p.fetch_range(
                                 &client,
                                 "USD",
                                 &[&currency],
@@ -840,8 +895,7 @@ impl AppService {
          -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
             self.check_sync_control()?;
             let body = self
-                .runtime
-                .block_on(get_text_with_retry(&client, provider, endpoint, &[], 2))
+                .sync_await(get_text_with_retry(&client, provider, endpoint, &[], 2))
                 .map_err(sync_error)?;
             self.store
                 .store_raw_payload(provider, "application/json", &body)

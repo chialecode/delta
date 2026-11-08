@@ -38,6 +38,7 @@ pub enum EconomicEventType {
     OpeningBalance,
     Buy,
     Sell,
+    CashExchange,
     Deposit,
     Withdrawal,
     TransferOut,
@@ -57,6 +58,7 @@ impl EconomicEventType {
             Self::OpeningBalance => "opening_balance",
             Self::Buy => "buy",
             Self::Sell => "sell",
+            Self::CashExchange => "cash_exchange",
             Self::Deposit => "deposit",
             Self::Withdrawal => "withdrawal",
             Self::TransferOut => "transfer_out",
@@ -249,6 +251,7 @@ pub struct LedgerProjectionResult {
     pub allocations: Vec<LotAllocation>,
     pub transactions: Vec<JournalTransaction>,
     pub realized_pnl_by_account: BTreeMap<String, Decimal>,
+    pub realized_fx_pnl_by_account: BTreeMap<String, Decimal>,
     pub dividend_income_by_account: BTreeMap<String, Decimal>,
     pub fee_expense_by_account: BTreeMap<String, Decimal>,
     pub external_inflows_by_account: BTreeMap<String, Decimal>,
@@ -355,6 +358,7 @@ fn replay_ledger_events_inner(
     let mut allocations: Vec<LotAllocation> = Vec::new();
     let mut transactions: Vec<JournalTransaction> = Vec::new();
     let mut realized_pnl_by_account: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut realized_fx_pnl_by_account: BTreeMap<String, Decimal> = BTreeMap::new();
     let mut dividend_income_by_account: BTreeMap<String, Decimal> = BTreeMap::new();
     let mut fee_expense_by_account: BTreeMap<String, Decimal> = BTreeMap::new();
     let mut external_inflows_by_account: BTreeMap<String, Decimal> = BTreeMap::new();
@@ -481,7 +485,7 @@ fn replay_ledger_events_inner(
             && !ev.fee_currency.eq_ignore_ascii_case(&ev.quote_currency)
             && !matches!(
                 ev.event_type,
-                EconomicEventType::Buy | EconomicEventType::Sell
+                EconomicEventType::Buy | EconomicEventType::Sell | EconomicEventType::CashExchange
             )
         {
             return Err(LedgerError::InvalidAmount(
@@ -1443,6 +1447,114 @@ fn replay_ledger_events_inner(
                     ],
                 });
             }
+            EconomicEventType::CashExchange => {
+                // LEDGER-01: Cash / stablecoin exchange (e.g. USD -> USDT or USDT -> USD).
+                // Acquires `ev.quantity` of `target_ccy` (`ev.asset_id`) at `price` units of
+                // `source_ccy` (`ev.quote_currency`) per 1 unit of `target_ccy`.
+                let price = ev.price.ok_or_else(|| {
+                    LedgerError::InvalidAmount("CashExchange requires exchange rate/price".into())
+                })?;
+                if price <= Decimal::ZERO {
+                    return Err(LedgerError::InvalidAmount(
+                        "CashExchange rate must be positive".into(),
+                    ));
+                }
+                let target_ccy = crate::valuation::normalize_cash_currency_code(&ev.asset_id);
+                let source_ccy = crate::valuation::normalize_cash_currency_code(&ev.quote_currency);
+                if target_ccy == source_ccy {
+                    return Err(LedgerError::InvalidAmount(
+                        "CashExchange source and target currencies must differ".into(),
+                    ));
+                }
+                let fee_ccy = crate::valuation::normalize_cash_currency_code(&ev.fee_currency);
+                let source_principal = (ev.quantity * price).normalize();
+
+                let fee_in_book = if ev.fee_amount.is_zero() {
+                    Decimal::ZERO
+                } else if fee_ccy == source_ccy {
+                    *cash_balances
+                        .entry((ev.account_id.clone(), source_ccy.clone()))
+                        .or_insert(Decimal::ZERO) -= ev.fee_amount;
+                    (ev.fee_amount * quote_fx).normalize()
+                } else if fee_ccy == target_ccy {
+                    let target_fx = event_fx(&target_ccy, ev_date).ok_or_else(|| {
+                        LedgerError::MissingBookFx {
+                            currency: target_ccy.clone(),
+                            occurred_at: ev.occurred_at.to_rfc3339(),
+                        }
+                    })?;
+                    *cash_balances
+                        .entry((ev.account_id.clone(), target_ccy.clone()))
+                        .or_insert(Decimal::ZERO) -= ev.fee_amount;
+                    (ev.fee_amount * target_fx).normalize()
+                } else {
+                    return Err(LedgerError::InvalidAmount(
+                        "CashExchange fee currency must match source or target currency".into(),
+                    ));
+                };
+
+                *cash_balances
+                    .entry((ev.account_id.clone(), source_ccy.clone()))
+                    .or_insert(Decimal::ZERO) -= source_principal;
+                *cash_balances
+                    .entry((ev.account_id.clone(), target_ccy.clone()))
+                    .or_insert(Decimal::ZERO) += ev.quantity;
+
+                let principal_book = (source_principal * quote_fx).normalize();
+                let total_cost_book = (principal_book + fee_in_book).normalize();
+                if !fee_in_book.is_zero() {
+                    *fee_expense_by_account
+                        .entry(ev.account_id.clone())
+                        .or_insert(Decimal::ZERO) += fee_in_book;
+                }
+
+                let source_out_qty = source_principal
+                    + if fee_ccy == source_ccy {
+                        ev.fee_amount
+                    } else {
+                        Decimal::ZERO
+                    };
+                let target_in_qty = ev.quantity
+                    - if fee_ccy == target_ccy {
+                        ev.fee_amount
+                    } else {
+                        Decimal::ZERO
+                    };
+
+                // Outflow posting comes FIRST so the cash FIFO pass disposes source_ccy first
+                // and records any FX gain/loss on source_ccy, then credits target_ccy cash_lots
+                // with `total_cost_book` (retaining the exchange cost!).
+                let tx_id = format!("TX:{}", ev.event_id);
+                let tx = JournalTransaction {
+                    id: tx_id.clone(),
+                    event_id: ev.event_id.clone(),
+                    book_currency: book_currency.to_string(),
+                    posting_rule_version: "v3".to_string(),
+                    reversal_of: None,
+                    postings: vec![
+                        Posting {
+                            id: format!("P:{}:1", ev.event_id),
+                            transaction_id: tx_id.clone(),
+                            ledger_account_id: format!("L:{}:CASH:{}", ev.account_id, source_ccy),
+                            category: LedgerCategory::Cash,
+                            native_asset_id: source_ccy,
+                            native_quantity: -source_out_qty,
+                            book_amount: -total_cost_book,
+                        },
+                        Posting {
+                            id: format!("P:{}:2", ev.event_id),
+                            transaction_id: tx_id,
+                            ledger_account_id: format!("L:{}:CASH:{}", ev.account_id, target_ccy),
+                            category: LedgerCategory::Cash,
+                            native_asset_id: target_ccy,
+                            native_quantity: target_in_qty,
+                            book_amount: total_cost_book,
+                        },
+                    ],
+                };
+                tx.verify_balanced()?;
+                transactions.push(tx);
+            }
             EconomicEventType::Reversal => {}
         }
         let after_capital = external_inflows_by_account
@@ -1690,6 +1802,7 @@ fn replay_ledger_events_inner(
             }
             if !gain.is_zero() {
                 *realized_pnl_by_account.entry(owner.clone()).or_default() += gain;
+                *realized_fx_pnl_by_account.entry(owner.clone()).or_default() += gain;
                 gains.push(Posting {
                     id: format!("{}:FX", posting.id),
                     transaction_id: tx.id.clone(),
@@ -1755,6 +1868,7 @@ fn replay_ledger_events_inner(
         allocations,
         transactions,
         realized_pnl_by_account,
+        realized_fx_pnl_by_account,
         dividend_income_by_account,
         fee_expense_by_account,
         external_inflows_by_account,

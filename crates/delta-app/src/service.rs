@@ -18,7 +18,7 @@ use delta_data::{
     LibraryManifest, OkxSpotProvider, ReconciliationIssueRecord, SqliteStore, StablecoinFxProvider,
     StatementPreset, SyncCheckpointRecord, TiingoEquityProvider, YahooChartV8Provider,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension as _};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -79,6 +79,17 @@ pub struct JobSnapshot {
     pub name: String,
     pub state: JobState,
     pub elapsed_ms: u64,
+    #[serde(default)]
+    pub worker_finished: bool,
+    #[serde(default)]
+    pub progress: JobProgressDto,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JobProgressDto {
+    pub phase: String,
+    pub records_prepared: usize,
+    pub records_published: usize,
 }
 
 struct ManagedJob {
@@ -87,6 +98,8 @@ struct ManagedJob {
     cancel_flag: Arc<AtomicBool>,
     state: Arc<Mutex<JobState>>,
     started_at: Instant,
+    finished: Arc<AtomicBool>,
+    progress: Arc<Mutex<JobProgressDto>>,
 }
 
 /// Background job controller isolating panics, timeouts, and cancellation (S-02 / AC-16).
@@ -122,12 +135,21 @@ impl JobController {
     where
         F: FnOnce(Arc<AtomicBool>) -> Result<(), ErrorEnvelope> + Send + 'static,
     {
-        self.spawn_controlled_job(name, timeout, move |cancel, _state, _deadline| task(cancel))
+        self.spawn_controlled_job(
+            name,
+            timeout,
+            move |cancel, _state, _deadline, _progress| task(cancel),
+        )
     }
 
     fn spawn_controlled_job<F>(&self, name: impl Into<String>, timeout: Duration, task: F) -> JobId
     where
-        F: FnOnce(Arc<AtomicBool>, Arc<Mutex<JobState>>, Instant) -> Result<(), ErrorEnvelope>
+        F: FnOnce(
+                Arc<AtomicBool>,
+                Arc<Mutex<JobState>>,
+                Instant,
+                Arc<Mutex<JobProgressDto>>,
+            ) -> Result<(), ErrorEnvelope>
             + Send
             + 'static,
     {
@@ -137,6 +159,13 @@ impl JobController {
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let state = Arc::new(Mutex::new(JobState::Running));
         let started_at = Instant::now();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_worker = Arc::clone(&finished);
+        let progress = Arc::new(Mutex::new(JobProgressDto {
+            phase: "启动中".into(),
+            ..Default::default()
+        }));
+        let progress_worker = Arc::clone(&progress);
 
         let cancel_clone = Arc::clone(&cancel_flag);
         let state_clone = Arc::clone(&state);
@@ -166,23 +195,20 @@ impl JobController {
                     Arc::clone(&cancel_clone),
                     Arc::clone(&state_clone),
                     started_at + timeout,
+                    progress_worker,
                 )
             }));
             ISOLATED_WORKER.with(|flag| flag.set(false));
-            let _ = completion_sender.send(());
             let mut guard = state_clone.lock().unwrap();
             if !matches!(*guard, JobState::Running) {
-                return;
-            }
-            if cancel_clone.load(Ordering::SeqCst) {
+                // Cancellation/deadline may have published a terminal state already.
+            } else if cancel_clone.load(Ordering::SeqCst) {
                 *guard = JobState::Cancelled(ErrorEnvelope::new(
                     "job_cancelled",
                     format!("background job '{name_clone}' was cancelled"),
                     true,
                 ));
-                return;
-            }
-            if started_at.elapsed() > timeout {
+            } else if started_at.elapsed() > timeout {
                 *guard = JobState::TimedOut(ErrorEnvelope::new(
                     "job_timed_out",
                     format!(
@@ -191,23 +217,27 @@ impl JobController {
                     ),
                     true,
                 ));
-                return;
+            } else {
+                match result {
+                    Ok(Ok(())) => {
+                        *guard = JobState::Succeeded;
+                    }
+                    Ok(Err(env)) => {
+                        *guard = JobState::Failed(env);
+                    }
+                    Err(_) => {
+                        *guard = JobState::Failed(ErrorEnvelope::new(
+                            "job_panicked",
+                            format!("background job '{name_clone}' panicked; see trace ID"),
+                            false,
+                        ));
+                    }
+                }
             }
-            match result {
-                Ok(Ok(())) => {
-                    *guard = JobState::Succeeded;
-                }
-                Ok(Err(env)) => {
-                    *guard = JobState::Failed(env);
-                }
-                Err(_) => {
-                    *guard = JobState::Failed(ErrorEnvelope::new(
-                        "job_panicked",
-                        format!("background job '{name_clone}' panicked; see trace ID"),
-                        false,
-                    ));
-                }
-            }
+            // A terminal state and released task resources must precede completion.
+            finished_worker.store(true, Ordering::SeqCst);
+            drop(guard);
+            let _ = completion_sender.send(());
         });
 
         self.jobs.lock().unwrap().insert(
@@ -218,6 +248,8 @@ impl JobController {
                 cancel_flag,
                 state,
                 started_at,
+                finished,
+                progress,
             },
         );
         job_id
@@ -237,23 +269,32 @@ impl JobController {
                 true,
             ));
         }
+        let progress = job.progress.lock().unwrap().clone();
         Ok(JobSnapshot {
             id: job.id,
             name: job.name.clone(),
             state: st.clone(),
             elapsed_ms: job.started_at.elapsed().as_millis() as u64,
+            worker_finished: job.finished.load(Ordering::SeqCst),
+            progress,
         })
     }
 
     pub fn wait_job(&self, id: JobId, max_wait: Duration) -> Result<JobSnapshot, ErrorEnvelope> {
         let start = Instant::now();
         loop {
-            let (name, state_arc, started_at) = {
+            let (name, state_arc, started_at, finished, progress) = {
                 let jobs = self.jobs.lock().unwrap();
                 let job = jobs.get(&id.0).ok_or_else(|| {
                     ErrorEnvelope::new("job_not_found", format!("no job {}", id.0), false)
                 })?;
-                (job.name.clone(), Arc::clone(&job.state), job.started_at)
+                (
+                    job.name.clone(),
+                    Arc::clone(&job.state),
+                    job.started_at,
+                    Arc::clone(&job.finished),
+                    Arc::clone(&job.progress),
+                )
             };
             {
                 let st = state_arc.lock().unwrap();
@@ -263,6 +304,8 @@ impl JobController {
                         name,
                         state: st.clone(),
                         elapsed_ms: started_at.elapsed().as_millis() as u64,
+                        worker_finished: finished.load(Ordering::SeqCst),
+                        progress: progress.lock().unwrap().clone(),
                     });
                 }
                 if start.elapsed() > max_wait {
@@ -275,6 +318,64 @@ impl JobController {
             }
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    pub fn snapshot(&self, id: JobId) -> Result<JobSnapshot, ErrorEnvelope> {
+        let jobs = self.jobs.lock().unwrap();
+        let job = jobs
+            .get(&id.0)
+            .ok_or_else(|| ErrorEnvelope::new("job_not_found", "unknown background job", false))?;
+        let state = job.state.lock().unwrap().clone();
+        let progress = job.progress.lock().unwrap().clone();
+        Ok(JobSnapshot {
+            id,
+            name: job.name.clone(),
+            state,
+            elapsed_ms: job.started_at.elapsed().as_millis() as u64,
+            worker_finished: job.finished.load(Ordering::SeqCst),
+            progress,
+        })
+    }
+
+    pub fn wait_finished(
+        &self,
+        id: JobId,
+        timeout: Duration,
+    ) -> Result<JobSnapshot, ErrorEnvelope> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snapshot = self.snapshot(id)?;
+            if snapshot.worker_finished {
+                return Ok(snapshot);
+            }
+            if Instant::now() >= deadline {
+                return Err(ErrorEnvelope::new(
+                    "wait_timeout",
+                    "worker has not released its resources yet",
+                    true,
+                ));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    pub fn cancel_all_and_wait(&self, timeout: Duration) -> Result<(), ErrorEnvelope> {
+        let ids: Vec<_> = self
+            .jobs
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|job| !job.finished.load(Ordering::SeqCst))
+            .map(|job| job.id)
+            .collect();
+        for &id in &ids {
+            self.cancel_job(id)?;
+        }
+        let deadline = Instant::now() + timeout;
+        for id in ids {
+            self.wait_finished(id, deadline.saturating_duration_since(Instant::now()))?;
+        }
+        Ok(())
     }
 }
 
@@ -326,6 +427,18 @@ pub struct DeleteLibraryResultDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteLibraryPreviewDto {
+    pub library_id: String,
+    pub target_data_dir: PathBuf,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub accounts: i64,
+    pub notes: i64,
+    pub attachments: i64,
+    pub ai_sessions: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveProbeResult {
     pub provider: String,
     pub endpoint: String,
@@ -334,6 +447,13 @@ pub struct LiveProbeResult {
     pub detail: String,
 }
 
+type SyncControl = (
+    Arc<AtomicBool>,
+    Instant,
+    Arc<Mutex<JobState>>,
+    Arc<Mutex<JobProgressDto>>,
+);
+
 /// Synchronous application facade (S-02).
 /// Holds a private Tokio runtime internally; exposes ZERO async functions or Tokio/Reqwest types.
 pub struct AppService {
@@ -341,9 +461,9 @@ pub struct AppService {
     _lock: Option<Arc<InstanceLock>>,
     store: SqliteStore,
     credentials: CredentialStore,
-    jobs: JobController,
+    jobs: Arc<JobController>,
     runtime: tokio::runtime::Runtime,
-    sync_control: Option<(Arc<AtomicBool>, Instant, Arc<Mutex<JobState>>)>,
+    sync_control: Option<SyncControl>,
 }
 
 /// One immutable input snapshot per report. Daily returns replay in memory rather
@@ -441,6 +561,26 @@ impl HistoricalValuationInputs {
 }
 
 impl AppService {
+    pub(crate) fn query_snapshot(&self) -> Result<Self, ErrorEnvelope> {
+        let store = self
+            .store
+            .query_snapshot()
+            .map_err(|e| ErrorEnvelope::new("SNAPSHOT_FAILED", e.to_string(), true))?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ErrorEnvelope::new("SNAPSHOT_FAILED", e.to_string(), true))?;
+        Ok(Self {
+            paths: self.paths.clone(),
+            _lock: self._lock.clone(),
+            store,
+            credentials: CredentialStore::for_channel(self.paths.channel),
+            jobs: Arc::new(JobController::new()),
+            runtime,
+            sync_control: None,
+        })
+    }
+
     pub fn open(
         paths: ResolvedAppPaths,
         book_currency: &str,
@@ -492,7 +632,11 @@ impl AppService {
         let store =
             SqliteStore::open_or_init(&paths.data_dir, book_currency, report_currency, timezone)
                 .map_err(|e| ErrorEnvelope::new("storage_open_failed", e.to_string(), false))?;
-        let credentials = CredentialStore::for_channel(paths.channel);
+        let credentials = if paths.credential_prefix.starts_with("delta-test-") {
+            CredentialStore::with_custom_prefix(&paths.credential_prefix)
+        } else {
+            CredentialStore::for_channel(paths.channel)
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -503,7 +647,7 @@ impl AppService {
             _lock: Some(lock),
             store,
             credentials,
-            jobs: JobController::new(),
+            jobs: Arc::new(JobController::new()),
             runtime,
             sync_control: None,
         })
@@ -511,6 +655,16 @@ impl AppService {
 
     pub fn paths(&self) -> &ResolvedAppPaths {
         &self.paths
+    }
+
+    pub fn validate_display_timezone(&self, timezone: &str) -> Result<(), ErrorEnvelope> {
+        timezone.parse::<chrono_tz::Tz>().map(|_| ()).map_err(|_| {
+            ErrorEnvelope::new(
+                "INVALID_TIMEZONE",
+                "请选择有效的 IANA 时区，如 UTC 或 Asia/Shanghai",
+                false,
+            )
+        })
     }
 
     pub fn register_market_instrument(
@@ -532,12 +686,156 @@ impl AppService {
             .ok_or_else(|| ErrorEnvelope::new("unknown_symbol", symbol, false))
     }
 
-    pub fn store(&self) -> &SqliteStore {
+    pub(crate) fn store(&self) -> &SqliteStore {
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut SqliteStore {
+    pub(crate) fn store_mut(&mut self) -> &mut SqliteStore {
         &mut self.store
+    }
+
+    pub fn latest_dataset_version(&self) -> i64 {
+        self.store
+            .conn()
+            .query_row(
+                "SELECT COALESCE(MAX(version_num),0) FROM dataset_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+    }
+
+    pub fn list_quality_issues(&self) -> Result<Vec<DataQualityIssue>, ErrorEnvelope> {
+        self.store
+            .list_quality_issues()
+            .map_err(|e| ErrorEnvelope::new("quality_query_failed", e.to_string(), false))
+    }
+
+    pub fn load_all_ledger_events(&self) -> Result<Vec<LedgerEventInput>, ErrorEnvelope> {
+        load_all_ledger_events(&self.store)
+            .map_err(|e| ErrorEnvelope::new("load_events", e.to_string(), false))
+    }
+
+    pub fn search_notes(
+        &self,
+        query: &str,
+        only_model_accessible: bool,
+    ) -> Result<(Vec<delta_data::NoteDto>, String), ErrorEnvelope> {
+        self.store
+            .search_notes(query, only_model_accessible)
+            .map_err(|e| ErrorEnvelope::new("search_notes_failed", e.to_string(), false))
+    }
+
+    pub fn flush_note_editor_autosave(
+        &mut self,
+        editor: &mut delta_data::NoteEditorSession,
+    ) -> Result<i64, ErrorEnvelope> {
+        let current: Option<i64> = self
+            .store
+            .conn()
+            .query_row(
+                "SELECT current_revision FROM note WHERE id = ?1",
+                params![editor.note_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                editor.status = delta_data::AutosaveStatus::SaveFailed {
+                    error: error.to_string(),
+                    retryable: true,
+                };
+                ErrorEnvelope::new("NOTE_SAVE_FAILED", error.to_string(), true)
+            })?;
+        if current != editor.last_persisted_revision {
+            let error = ErrorEnvelope::new(
+                "REVISION_CONFLICT",
+                "笔记已有更新，编辑缓冲已保留；请载入最新版本后比较",
+                false,
+            );
+            editor.status = delta_data::AutosaveStatus::SaveFailed {
+                error: error.message.clone(),
+                retryable: false,
+            };
+            return Err(error);
+        }
+        editor
+            .flush_autosave(&mut self.store)
+            .map_err(|e| ErrorEnvelope::new("autosave_failed", e.to_string(), true))
+    }
+
+    pub fn flush_scoped_note_editor_autosave(
+        &mut self,
+        scope: &crate::host::AnalysisScope,
+        editor: &mut delta_data::NoteEditorSession,
+    ) -> Result<i64, ErrorEnvelope> {
+        let previous_revision = editor.last_persisted_revision;
+        let creating = previous_revision.is_none();
+        let resolved = self.resolve_and_validate_scope(scope)?;
+        if !creating {
+            if let Err(error) = self.get_scoped_note(&resolved, &editor.note_id) {
+                editor.status = delta_data::AutosaveStatus::SaveFailed {
+                    error: error.message.clone(),
+                    retryable: error.retryable,
+                };
+                return Err(error);
+            }
+        }
+        self.store
+            .conn()
+            .execute_batch("SAVEPOINT scoped_note_save")
+            .map_err(|e| ErrorEnvelope::new("NOTE_SAVE_FAILED", e.to_string(), true))?;
+        let mut result: Result<i64, ErrorEnvelope> = (|| {
+            let revision = self.flush_note_editor_autosave(editor)?;
+            if creating {
+                self.store
+                    .add_note_link(
+                        &editor.note_id,
+                        "review_date",
+                        &resolved.as_of_date.to_string(),
+                        1,
+                        None,
+                        "scope",
+                    )
+                    .map_err(|e| ErrorEnvelope::new("NOTE_SAVE_FAILED", e.to_string(), true))?;
+                for account in resolved.resolved_accounts {
+                    self.store
+                        .add_note_link(&editor.note_id, "account", &account, 1, None, "owner")
+                        .map_err(|e| ErrorEnvelope::new("NOTE_SAVE_FAILED", e.to_string(), true))?;
+                }
+            }
+            Ok(revision)
+        })();
+        if result.is_ok() {
+            if let Err(error) = self.store.conn().execute_batch("RELEASE scoped_note_save") {
+                let _ = self
+                    .store
+                    .conn()
+                    .execute_batch("ROLLBACK TO scoped_note_save; RELEASE scoped_note_save");
+                result = Err(ErrorEnvelope::new(
+                    "NOTE_SAVE_FAILED",
+                    error.to_string(),
+                    true,
+                ));
+            }
+        } else if let Err(error) = self
+            .store
+            .conn()
+            .execute_batch("ROLLBACK TO scoped_note_save; RELEASE scoped_note_save")
+        {
+            result = Err(ErrorEnvelope::new(
+                "NOTE_SAVE_FAILED",
+                error.to_string(),
+                true,
+            ));
+        }
+        if let Err(error) = &result {
+            editor.status = delta_data::AutosaveStatus::SaveFailed {
+                error: error.message.clone(),
+                retryable: error.retryable,
+            };
+            editor.last_persisted_revision = previous_revision;
+        }
+        result
     }
 
     pub fn credentials(&self) -> &CredentialStore {
@@ -546,6 +844,10 @@ impl AppService {
 
     pub fn jobs(&self) -> &JobController {
         &self.jobs
+    }
+
+    pub(crate) fn job_controller(&self) -> Arc<JobController> {
+        Arc::clone(&self.jobs)
     }
 
     pub fn import_statement(
@@ -1408,9 +1710,152 @@ impl AppService {
         .map_err(|e| ErrorEnvelope::new("channel_isolation", e.to_string(), false))?;
         let restored = SqliteStore::restore_consistent_backup(backup_dir, target_dir)
             .map_err(|e| ErrorEnvelope::new("restore_failed", e.to_string(), false))?;
+        // Verify ledger, note, and attachment references on restore (`M2-W08`, `M2-A-17`)
+        let _ = load_all_ledger_events(&restored).map_err(|e| {
+            ErrorEnvelope::new("restore_ledger_verify_failed", e.to_string(), false)
+        })?;
+        if let Ok(notes) = restored.list_notes(false) {
+            for note in &notes {
+                for att in &note.attachments {
+                    let disk_path = restored.root_dir().join(&att.relative_path);
+                    let valid = att.exists_on_disk
+                        && sha256_file(&disk_path)
+                            .map(|h| h == att.sha256_hash)
+                            .unwrap_or(false);
+                    if !valid {
+                        return Err(ErrorEnvelope::new(
+                            "restore_attachment_corrupted",
+                            format!(
+                                "restored attachment '{}' for note '{}' failed SHA-256 or existence check",
+                                att.id, note.id
+                            ),
+                            false,
+                        ));
+                    }
+                }
+                for link in &note.links {
+                    if link.target_type == "economic_event" || link.target_type == "event" {
+                        let exists: bool = restored
+                            .conn()
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM economic_event WHERE id = ?1)",
+                                params![link.target_id],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or(false);
+                        if !exists {
+                            return Err(ErrorEnvelope::new(
+                                "restore_dangling_note_link",
+                                format!(
+                                    "restored note '{}' links to missing economic_event '{}'",
+                                    note.id, link.target_id
+                                ),
+                                false,
+                            ));
+                        }
+                    } else if link.target_type == "chart_context" {
+                        let exists: bool = restored
+                            .conn()
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM chart_context WHERE id = ?1)",
+                                params![link.target_id],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or(false);
+                        if !exists {
+                            return Err(ErrorEnvelope::new(
+                                "restore_dangling_chart_context",
+                                format!(
+                                    "restored note '{}' links to missing chart_context '{}'",
+                                    note.id, link.target_id
+                                ),
+                                false,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         restored
             .sync_manifest()
             .map_err(|e| ErrorEnvelope::new("manifest_sync_failed", e.to_string(), false))
+    }
+
+    /// Write allowlisted diagnostic metadata to `<data_dir>/logs/delta.log`.
+    /// Caller messages and secret values are never persisted, including values not known
+    /// to a redaction list (`M2-W08`, `M2-A-17`).
+    pub fn write_audit_log(
+        &self,
+        action: &str,
+        raw_message: &str,
+        extra_secrets: &[&str],
+    ) -> Result<PathBuf, ErrorEnvelope> {
+        let action = match action {
+            "ai_review_and_sync"
+            | "sync"
+            | "import"
+            | "backup"
+            | "restore"
+            | "export"
+            | "delete_library"
+            | "model_configuration" => action,
+            _ => "unclassified",
+        };
+        let log_dir = self.paths.data_dir.join("logs");
+        fs::create_dir_all(&log_dir)
+            .map_err(|e| ErrorEnvelope::new("log_write_failed", e.to_string(), false))?;
+        let log_path = log_dir.join("delta.log");
+        let entry = serde_json::json!({
+            "timestamp": Utc::now().to_rfc3339(),
+            "action": action,
+            "message_bytes": raw_message.len(),
+            "supplied_secret_count": extra_secrets.len(),
+            "dataset_version": self.latest_dataset_version(),
+        });
+        let mut line = serde_json::to_string(&entry).unwrap_or_default();
+        line.push('\n');
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|e| ErrorEnvelope::new("log_write_failed", e.to_string(), false))?;
+        file.write_all(line.as_bytes())
+            .map_err(|e| ErrorEnvelope::new("log_write_failed", e.to_string(), false))?;
+        Ok(log_path)
+    }
+
+    /// Scan `<data_dir>/logs` for any forbidden substrings (secrets, full account numbers, note bodies).
+    pub fn scan_logs_for_sensitive_leaks(
+        &self,
+        forbidden_substrings: &[&str],
+    ) -> Result<Vec<String>, ErrorEnvelope> {
+        let log_dir = self.paths.data_dir.join("logs");
+        if !log_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut leaks = Vec::new();
+        for (file_index, entry) in fs::read_dir(&log_dir)
+            .map_err(|e| ErrorEnvelope::new("log_scan_failed", e.to_string(), false))?
+            .enumerate()
+        {
+            let path = entry
+                .map_err(|e| ErrorEnvelope::new("log_scan_failed", e.to_string(), false))?
+                .path();
+            if path.is_file() {
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                for (needle_index, &needle) in forbidden_substrings.iter().enumerate() {
+                    if !needle.is_empty() && text.contains(needle) {
+                        leaks.push(format!(
+                            "sensitive value #{} in log file #{}",
+                            needle_index + 1,
+                            file_index + 1,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(leaks)
     }
 
     /// Delete library data directory (`delta library delete`), supporting dry-run preview and
@@ -1420,6 +1865,74 @@ impl AppService {
         confirm_yes: bool,
         is_interactive_tty: bool,
     ) -> Result<DeleteLibraryResultDto, ErrorEnvelope> {
+        Self::delete_library_checked(data_dir, confirm_yes, is_interactive_tty, None)
+    }
+
+    pub fn preview_library_deletion(&self) -> Result<DeleteLibraryPreviewDto, ErrorEnvelope> {
+        let root = fs::canonicalize(&self.paths.data_dir)
+            .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
+        let count = |table: &str| {
+            self.store
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))
+        };
+        let files = walk_files(&root)
+            .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
+        let mut bytes = 0u64;
+        for file in &files {
+            bytes = bytes
+                .checked_add(
+                    fs::metadata(file)
+                        .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?
+                        .len(),
+                )
+                .ok_or_else(|| ErrorEnvelope::new("delete_preview", "file size overflow", false))?;
+        }
+        let library_id = self
+            .store
+            .conn()
+            .query_row("SELECT id FROM library", [], |row| row.get(0))
+            .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
+        Ok(DeleteLibraryPreviewDto {
+            library_id,
+            target_data_dir: root,
+            file_count: files.len(),
+            total_bytes: bytes,
+            accounts: count("account")?,
+            notes: count("note")?,
+            attachments: count("attachment")?,
+            ai_sessions: count("ai_session")?,
+        })
+    }
+
+    pub fn delete_library_from_preview(
+        preview: &DeleteLibraryPreviewDto,
+        typed_id: &str,
+    ) -> Result<DeleteLibraryResultDto, ErrorEnvelope> {
+        if typed_id.trim() != preview.library_id {
+            return Err(ErrorEnvelope::new(
+                "DELETE_CONFIRMATION",
+                "请输入预览中完整的资料库编号",
+                false,
+            ));
+        }
+        Self::delete_library_checked(
+            &preview.target_data_dir,
+            true,
+            false,
+            Some(&preview.library_id),
+        )
+    }
+
+    fn delete_library_checked(
+        data_dir: &Path,
+        confirm_yes: bool,
+        is_interactive_tty: bool,
+        expected_id: Option<&str>,
+    ) -> Result<DeleteLibraryResultDto, ErrorEnvelope> {
         crate::paths::ensure_channel_data_isolation(
             data_dir,
             crate::paths::BuildChannel::current(),
@@ -1427,6 +1940,22 @@ impl AppService {
         .map_err(|e| ErrorEnvelope::new("channel_isolation", e.to_string(), false))?;
         let root = fs::canonicalize(data_dir)
             .map_err(|e| ErrorEnvelope::new("invalid_library", e.to_string(), false))?;
+        let metadata = fs::symlink_metadata(data_dir)
+            .map_err(|e| ErrorEnvelope::new("invalid_library", e.to_string(), false))?;
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt as _;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let linked = metadata.file_type().is_symlink();
+        if linked {
+            return Err(ErrorEnvelope::new(
+                "delete_link",
+                "library root is a link; deletion refused",
+                false,
+            ));
+        }
         if !root.join("delta.sqlite").is_file() || !root.join("manifest.json").is_file() {
             return Err(ErrorEnvelope::new(
                 "invalid_library",
@@ -1445,7 +1974,14 @@ impl AppService {
                     .path();
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
-                if metadata.file_type().is_symlink()
+                #[cfg(windows)]
+                let linked = {
+                    use std::os::windows::fs::MetadataExt as _;
+                    metadata.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let linked = metadata.file_type().is_symlink();
+                if linked
                     || !fs::canonicalize(&path)
                         .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?
                         .starts_with(directory)
@@ -1490,6 +2026,13 @@ impl AppService {
             return Err(ErrorEnvelope::new(
                 "invalid_library",
                 "manifest and database identity differ",
+                false,
+            ));
+        }
+        if expected_id.is_some_and(|expected| identity.0 != expected) {
+            return Err(ErrorEnvelope::new(
+                "DELETE_PREVIEW_CHANGED",
+                "资料库身份与预览不一致，未删除任何文件",
                 false,
             ));
         }
@@ -1989,7 +2532,14 @@ fn walk_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         let entry = entry?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt as _;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let linked = metadata.file_type().is_symlink();
+        if linked {
             return Err(std::io::Error::other("library contains a link"));
         }
         if metadata.is_dir() {

@@ -1,9 +1,33 @@
+pub mod ai;
 pub mod credentials;
+pub mod host;
+pub mod kline;
 pub mod paths;
 pub mod process;
 pub mod service;
 
+pub use ai::*;
 pub use credentials::*;
+pub use delta_core::{
+    parse_decimal_lossless, to_canonical_text, AdjustmentKind, BarRecord, CostLot,
+    DataQualityIssue, EconomicEventType, HoldingProjection, ManualValuation, PeriodBreakdownReport,
+    QualityStatus, ValuationReport,
+};
+pub use delta_data::{
+    set_ai_compaction_fault_injection_for_test, set_migration_fault_injection_for_test,
+    set_note_save_fault_injection_for_test, AccountBalanceSnapshotDto, AccountRecord,
+    AttachmentDto, AutosaveStatus, ChartContextDto, CommitImportReceipt, DatasetVersionRecord,
+    ImportPreview, InstrumentSearchHit, LibraryManifest, ModelConnectionRecord, NoteDto,
+    NoteEditorSession, NoteLinkDto, NoteTemplateKind, PortfolioRecord, ReconciliationIssueRecord,
+    StatementPreset, StructuredNoteFields, SyncCheckpointRecord, TradePlanDto, WatchlistGroupDto,
+};
+pub use delta_model::{
+    ModelBudget, ModelCapabilities, ModelClient, ModelConnection, ModelError, ModelErrorCode,
+    ModelEvent, ModelEventKind, ModelLoopbackServer, ModelProtocol, ModelRequest, ModelTimeouts,
+    RetryPolicy,
+};
+pub use host::*;
+pub use kline::*;
 pub use paths::*;
 pub use process::*;
 pub use service::*;

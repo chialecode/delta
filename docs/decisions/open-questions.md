@@ -6,7 +6,7 @@
 
 ## 用户事项入口
 
-用户事项统一在根 [USER-ACTIONS.md](../../USER-ACTIONS.md) 维护（`Q-01` 已由 D-23 确认关闭、`Q-03` 已由 D-21 确认关闭、`ACT-07` 本机 Rust/MSVC 环境已复核关闭、`Q-02` 已由 D-24 确认 Apache-2.0 关闭；可选样本/Token `ACT-03` 仍在用户待办，远端推送需另行授权）。本表只维护 Agent 工程任务。
+用户事项统一在根 [USER-ACTIONS.md](../../USER-ACTIONS.md) 维护（`Q-01` 已由 D-23 确认关闭、`Q-03` 已由 D-21 确认关闭、`ACT-07` 本机 Rust/MSVC 环境已复核关闭、`Q-02` 已由 D-24 确认 Apache-2.0 关闭；可选样本/Token `ACT-03`、M2 模型连接 `ACT-01` 与人工检查 `H-01`～`H-03` 在用户待办，远端推送需另行授权）。本表只维护 Agent 工程任务。
 
 ## 开源风险与适配缺口
 
@@ -15,13 +15,14 @@
 | OSS-01 / resolved | GPUI Kit 旧 `0.6.6` 缺少最新面板能力，且内置 `CandlestickChart` 默认仅面向 40 根日线静态卡片展示 | 已由 D-20 / D-21 解决方向问题：① M1 完全解耦 GUI，先完成金融数据底座与账本核心；② M2 升级至长桥最新 `gpui-kit`（`0.8.x` / `0.9.x`），直接使用官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系，主 K 线面板外包视口滑动窗口（`visible_range` 缩放/平移切片）（见 [ADR-0003](0003-first-round-stack.md)）。集成实测风险转 `OSS-09` | A 已完成源码核查并经用户 D-21 确认关闭 |
 | OSS-02 / resolved | 旧模型运行时的资源发现/隔离验证 | D-08 撤回旧候选，关闭该候选专属验证；工具白名单/状态验证转入 OSS-08 与有效合同 | A；2026-09-26；不表示旧候选实测通过 |
 | OSS-03 / resolved | 原 Python 数据连接器/指标工作进程的离线锁定与跨进程隔离负担 | 已由用户 2026-11-07 **D-22** 解决：全项目彻底采用 100% 纯 Rust 实现，移除 `workers/python` 与运行期 Python 依赖；免 Key 美股行情由 Rust 直连 Yahoo Chart v8 与东财 `push2his` JSON 接口，日历与指标均由纯 Rust 实现 | A 已更新架构与 M1 计划 v2.2 关闭 |
-| OSS-04 / resolved | `chrono-tz 0.10.4` / IANA 时区与美股（`XNYS`/`XNAS`）半日市、节假日、夏令时覆盖 | M1 纯 Rust 基于 `chrono` + `chrono-tz`（`America/New_York`）实现 NYSE/NASDAQ 法定节假日与半日市规则（1993 年前 14:00 ET、1993 年起 13:00 ET）+ 仓库内置版本化特殊闭市表 `calendar_special_xnys.json`，写入 SQLite `calendar_session` 并校验加密 `24×7` UTC 切分 | B 已在 M1-W02 完成实现并通过 `POC-D02` 实测：`1990-01-02`～`2027-12-31` 全量 13,878 个自然日（9,569 个交易日、80 个提前收盘日）与 `exchange_calendars` `xnys.csv` 及 NYSE 2023～2027 官方表逐日核对 `0` 差异，越界年份返回 `calendar_unknown`（见 [M1 阶段报告](../delivery/stage-report.md)） |
+| OSS-04 / resolved | `chrono-tz 0.10.4` / IANA 时区与美股（`XNYS`/`XNAS`）半日市、节假日、夏令时覆盖 | M1 纯 Rust 基于 `chrono` + `chrono-tz`（`America/New_York`）实现 NYSE/NASDAQ 法定节假日与半日市规则（1993 年前 14:00 ET、1993 年起 13:00 ET）+ 仓库内置版本化特殊闭市表 `calendar_special_xnys.json`，写入 SQLite `calendar_session` 并校验加密 `24×7` UTC 切分 | B 已在 M1-W02 完成实现并通过 `POC-D02` 实测：`1990-01-02`～`2027-12-31` 全量 13,878 个自然日（9,569 个交易日、80 个提前收盘日）与 `exchange_calendars` `xnys.csv` 及 NYSE 2023～2027 官方表逐日核对 `0` 差异，越界年份返回 `calendar_unknown`（见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)） |
 | OSS-05 / resolved | 必做公共数据源的字段、复权、限流、版本与 Decimal 边界 | M1 原生 REST/ZIP 完成真实编排、核验和缺失诊断；实际结果只采用本轮阶段报告 | B；官方 ccxt =4.5.91 实测构建成功，默认 Windows 栈溢出，64MiB worker 后 OKX/Kraken 成功；typed f64 边界使通用 adapter 转 LOOP-03，见 [POC-D06](../evidence/2026-11-08-ccxt-rust-poc.md) |
 | OSS-06 / resolved | 锁文件传递依赖许可与数据来源条款 | 基于 Cargo.lock 的 metadata 清单重新核验；数量、表达式与选择的宽松许可分支见阶段报告 | B；不把代码许可当作行情再分发权；封存版本/导出使用 public_open / official_free_personal / unofficial_personal |
-| OSS-07 / deferred | 兼容端点工具/SSE/用量能力差异 | M1 聚焦金融数据底座；模型双协议适配移至 M2 应用整合阶段验证 | A+B；M2 阶段执行，不阻塞 M1 数据底座 |
-| OSS-08 / deferred | 自研 Rust 模型客户端需持续维护双协议/SSE/工具配对、取消和上下文恢复 | 保持 D-08 与 [模型客户端设计](../design/rust-model-client.md) 契约不变，在 M2 阶段接入 M1 已验证的数据与账本服务 | A+B；M2 阶段执行 |
-| OSS-09 / deferred | M2 GPUI 集成风险（D-21 已确认方向，风险仍需实测）：`gpui-kit 0.9.0` 精确锁定 Zed 快照 `gpui-pre =0.3.11`（0.8.1 为 `=0.3.10`），升级伴随快照破坏；GPUI 执行器与 `tokio` 并存；前序构建在 Windows MSVC 曾需加大主线程栈；桌面层传递依赖规模大（许可盘点成本） | M1 已通过 `delta-app` 同步命令/作业句柄边界规避运行时耦合（[M1 计划 S-02](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)）；M2 计划首个 spike 在 Windows 11 实际构建 `gpui-kit` 最小 Dock 工作台，记录构建时长、栈需求、依赖与许可清单 | A；M2 计划开始时触发，不阻塞 M1 |
-| OSS-10 / deferred | Parquet/DuckDB 行情仓 | M1 只用 SQLite 单库，`dataset_partition.location_kind` 预留扩展；引入时保持上层查询契约并扩展一致性备份清单 | A+B；触发条件：M4 批量扫描需求，或 POC-D01/实测查询性能不达标 |
+| OSS-07 / open | 兼容端点工具/SSE/用量能力差异 | M2 已执行受控回环全套验证：`delta-model` 对 `openai-responses` 与 `openai-chat-completions` 独立通过 9 类回环用例（`M2-K03` / `M2-A-13`）；真实在线模型服务只对用户 `ACT-01` 配置的协议/模型声明（见 [M2 阶段报告](../delivery/stage-report.md)） | A+B；缺 `ACT-01` 时真实服务保持 not-run，不阻塞工程收敛 |
+| OSS-08 / resolved | 自研 Rust 模型客户端需持续维护双协议/SSE/工具配对、取消和上下文恢复 | 本轮修复 wire 名称、并行请求成组历史、reasoning、SSE/累计预算、显式证据/数字、连接与 journal 指纹和跨库 keyring；锁定 `reqwest 0.13.5` + `eventsource-stream 0.2.3`，M2-K03/A13～16 回环和权限/恢复回归通过 | B；2026-11-08 按 [阶段报告](../delivery/stage-report.md) 关闭 M2 工程适配，真实兼容端点仍归 OSS-07 |
+| OSS-09 / resolved | M2 GPUI 集成风险：`gpui-kit 0.9.0` 精确锁定 `gpui-pre =0.3.11`，升级伴随快照破坏；宿主后台边界、Windows 栈和真实性能 | 实际六页/表单/图表交互、隐藏原生 HWND 与 8 MiB 栈实跑；最终静态 CRT release 包完成 100k 图表/表格各 300 实测帧、5 次首屏和 300 次交互，p95 均满足门槛，原始分位数与限制见阶段报告 | B；2026-11-08 M2-K01/K02/K06 与 M2-A-20 通过关闭；后续升级重新验证锁定快照 |
+| OSS-10 / deferred | Parquet/DuckDB 行情仓 | M1–M2 只用 SQLite 单库，`dataset_partition.location_kind` 预留扩展；引入时保持上层查询契约并扩展一致性备份清单 | A+B；触发条件：M4 批量扫描需求，或 POC-D01/实测查询性能不达标 |
+| OSS-11 / resolved | M2 MPL-2.0 与多许可分发；原收集漏掉 AND 义务且只核声明不足以支持分发 | 本轮收集 885/885、0 errors；完整保留 4 种 AND 义务、原始 notices/哈希；48 包明确标准正文＋完整锁定源码回退，SPDX 数据固定 commit，见 [逐包清单](../evidence/2026-11-08-dependency-licenses.md) | B；2026-11-08 M2-G-06、3 项收集回归与真实两通道 ZIP 全文件哈希/随附正文归档验证通过关闭；MPL 包零源码修改 |
 
 ## 后续循环
 
@@ -30,7 +31,7 @@
 | LOOP-01 / deferred | 在 M1 数据底座与 M2 资产复盘应用贯通后，推进 M3 K 线训练与 M4 策略研究 | A；M2 完成后按用户指示启动 | M1 数据版本、`dataset_partition` 存储抽象与回放截止时间（`visible_until`）已为 M3/M4 预留原生接口 |
 | LOOP-02 / deferred | MCP 对外适配、嵌入检索、多模型路由/长期记忆 | A；有真实第二消费者或检索不足证据时 | 统一能力接口可扩展，不作为 M1/M2 依赖 |
 | LOOP-03 / deferred | 扩展通用 ccxt 无损 adapter、Alpaca bars、Longport SDK、平台原生 CSV 差异与真实只读账户 API | A+B；通用 adapter 在第二真实消费者/新交易所需求触发；平台样本或私有 SDK/API 在 ACT-03 实际可用且有数据使用授权后触发 | M1 必做模板/资金语义/原生公共源已补齐；扩展平台当前只验证共享规范化模板，真实原生覆盖未完成；私有服务、真实个人账单 not-run。不得以本项延期当前金额/隔离/恢复缺陷 |
-| LEDGER-01 / open | 买入稳定币/法币（如 USD→USDT 入金兑换）当前形成持仓批次，之后不能作为报价腿结算（A-03 修正后显式拒绝，不再双重扣减）；应建模为现金换汇，保留兑换成本与汇兑收益 | A+B；触发：`ACT-03` 样本或用户流程出现入金兑换，或 M2 账本扩展前 | 当前不产生错误金额（拒绝并提示）；不承接 A-01～A-05 已修复的缺陷 |
+| LEDGER-01 / resolved | 买入稳定币/法币（如 USD→USDT 入金兑换）在 M1 形成持仓批次，之后不能作为报价腿结算；应建模为现金换汇，保留兑换成本与汇兑收益 | M2-W02 已在 `delta-core` 与 `delta-data::importers` 实现 `EconomicEventType::CashExchange`（`cash_exchange`）：源币种按现金 FIFO 处置并记录已实现汇兑损益，目标币种（含 USDT/USDC）进入现金 FIFO 账本并保留兑换手续费成本，后续买入加密资产（如 `USD → USDT → BTC`）只从报价现金结算一次 | B 已在 M2-W02 完成实现并通过 `M2-A-06` 与 M1 `M1-A-06` 回归关闭 |
 | DOC-01 / resolved | 部分 M3+/AI 正文（`ai-design.md`、`interaction-and-workflows.md`、`financial-engine.md` 模拟章节、需求 P1/P2 行等）曾使用重建前的 `S0`–`S3`/`R1` 阶段名 | A；2026-11-07 已统一为 `M1`–`M5`，并在 `scripts/check_docs.py` 增加旧阶段标签门禁防止回流 | 已完成，全仓 `active`/`draft` 文档无旧 `S0`–`S4` 或 `R1`–`R2` 阶段名 |
 
 ### LOOP-03 分项接续

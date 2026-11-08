@@ -35,3 +35,8 @@
 - **M1 存储收敛为 SQLite 单库**：个人组合日线规模下单库即可满足查询，且使 AC-09 一致性备份由 SQLite Backup API 原子完成；Parquet/DuckDB 保留为 `dataset_partition` 背后的后续存储选项（`OSS-10`）。
 - **`delta-app` 异步边界**：`gpui-kit 0.9.0` 精确锁定 `gpui-pre =0.3.11` 并使用 GPUI 自带执行器，M1 的 `delta-app` 对外只提供同步命令/查询与作业句柄，不暴露 `tokio` 类型，避免 M2 运行时桥接返工。快照锁定、Windows 构建与依赖规模风险登记 `OSS-09`，在 M2 计划开始时以实际构建验证。
 - 调研中“Longbridge Pro 交易 K 线容器未开源”系 A 依据公开仓库内容的推断，非上游声明；M2 K 线面板按自研视口切片规划，不依赖该推断。
+
+## 5. 2026-11-08 M2 开始时 A 核实（不改变 D-21）
+
+- `gpui-kit 0.9.0` 在本机 Rust 1.99.1 / MSVC 下构建通过，官方无头 Dock UI 测试不创建可见窗口（[spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)），`OSS-09` 的构建与静音风险部分已验证。
+- 0.9.0 **没有导出官方 `Card` 组件**（官方 story 的图表卡片是私有组合写法）。决定中的 `Card` 按该模式自建 `MetricCard`，其余 `DockArea` / `DockLayout` / `DockSkin` / `Panel` / `DataTable` 均直接使用官方实现（[M2 计划 S-15](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)）。

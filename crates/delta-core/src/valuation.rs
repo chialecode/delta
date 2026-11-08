@@ -50,6 +50,18 @@ pub fn is_fiat_currency(currency: &str) -> bool {
     )
 }
 
+pub fn normalize_cash_currency_code(symbol_or_asset_id: &str) -> String {
+    symbol_or_asset_id
+        .trim_start_matches("ASSET:FIAT:")
+        .trim_start_matches("ASSET:STABLE:")
+        .to_ascii_uppercase()
+}
+
+pub fn is_cash_or_stablecoin_currency(symbol_or_asset_id: &str) -> bool {
+    let code = normalize_cash_currency_code(symbol_or_asset_id);
+    is_fiat_currency(&code) || matches!(code.as_str(), "USDT" | "USDC")
+}
+
 /// Resolve an FX rate on `target_date` following S-07 / A-07:
 /// - Exact match on `target_date` -> `QualityStatus::Exact`
 /// - Fiat reference rate (ECB/Frankfurter) non-publication day -> use most recent published rate
@@ -699,4 +711,289 @@ pub fn compute_max_drawdown(comparable_nav_series: &[Decimal]) -> Option<Decimal
             .round_dp_with_strategy(6, RoundingStrategy::MidpointAwayFromZero)
             .normalize(),
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualValuation {
+    pub id: String,
+    pub account_id: String,
+    pub asset_or_liability_id: String,
+    pub is_liability: bool,
+    pub value: Decimal,
+    pub currency: String,
+    pub as_of: NaiveDate,
+    pub method: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodBreakdownReport {
+    pub account_scope: Vec<String>,
+    pub start_date: NaiveDate,
+    pub end_date: NaiveDate,
+    pub report_currency: String,
+    pub calculation_version: String,
+    pub opening_net_worth: Option<Decimal>,
+    pub net_external_cash_flow: Option<Decimal>,
+    pub investment_pnl: Option<Decimal>,
+    pub ending_net_worth: Option<Decimal>,
+    pub known_partial_net_worth: Decimal,
+    pub excluded_items: Vec<String>,
+    pub realized_pnl: Option<Decimal>,
+    pub unrealized_pnl: Option<Decimal>,
+    pub dividend_and_interest_income: Option<Decimal>,
+    pub fee_expense: Option<Decimal>,
+    pub explanatory_total_fees: Decimal,
+    pub fx_impact: Option<Decimal>,
+    pub unattributed_pnl: Option<Decimal>,
+    pub unattributed_reasons: Vec<String>,
+    pub max_drawdown: Option<Decimal>,
+    pub drawdown_status: String,
+    pub manual_valuations: Vec<ManualValuation>,
+    pub quality: QualityStatus,
+    pub missing_inputs: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Build a scoped period P&L breakdown from `start_report` (opening before `start_date`) and `end_report` (`end_date`),
+/// incorporating manual asset/liability valuations (`val.as_of <= date`) and comparable NAV drawdown series (`M2-W02`).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_period_breakdown(
+    account_scope: &[String],
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+    report_currency: &str,
+    start_valuation: &ValuationReport,
+    end_valuation: &ValuationReport,
+    start_projection: &LedgerProjectionResult,
+    end_projection: &LedgerProjectionResult,
+    fx_rates: &HashMap<(String, String, NaiveDate), Decimal>,
+    manual_valuations: &[ManualValuation],
+    comparable_nav_series: &[Decimal],
+) -> PeriodBreakdownReport {
+    let scope_set: BTreeSet<String> = account_scope.iter().cloned().collect();
+    let scope_vec: Vec<String> = scope_set.iter().cloned().collect();
+    let is_stable = |ccy: &str| matches!(ccy.to_ascii_uppercase().as_str(), "USDT" | "USDC");
+
+    let mut missing_inputs = end_valuation.missing_inputs.clone();
+    for m in &start_valuation.missing_inputs {
+        if !missing_inputs.contains(m) {
+            missing_inputs.push(m.clone());
+        }
+    }
+    let warnings = end_valuation.warnings.clone();
+    let mut quality = end_valuation.quality;
+    if start_valuation.quality == QualityStatus::Partial {
+        quality = QualityStatus::Partial;
+    }
+
+    // Apply latest manual valuations per (account_id, asset_or_liability_id) whose as_of <= target_date
+    let resolve_manual_net = |target_date: NaiveDate,
+                              missing: &mut Vec<String>,
+                              qual: &mut QualityStatus|
+     -> (Decimal, Vec<ManualValuation>) {
+        let mut latest_by_key: BTreeMap<(String, String), &ManualValuation> = BTreeMap::new();
+        for mv in manual_valuations {
+            if !scope_set.contains(&mv.account_id) || mv.as_of > target_date {
+                continue;
+            }
+            let key = (mv.account_id.clone(), mv.asset_or_liability_id.clone());
+            if latest_by_key
+                .get(&key)
+                .is_none_or(|prev| mv.as_of >= prev.as_of)
+            {
+                latest_by_key.insert(key, mv);
+            }
+        }
+        let mut net = Decimal::ZERO;
+        let mut used = Vec::new();
+        for mv in latest_by_key.values() {
+            let stable = is_stable(&mv.currency) || is_stable(report_currency);
+            match resolve_fx_rate_s07(&mv.currency, report_currency, target_date, stable, fx_rates)
+            {
+                Some(found) => {
+                    let converted = (mv.value.abs() * found.rate).normalize();
+                    if mv.is_liability {
+                        net -= converted;
+                    } else {
+                        net += converted;
+                    }
+                    used.push((*mv).clone());
+                }
+                None => {
+                    *qual = QualityStatus::Partial;
+                    let item = format!(
+                        "manual_valuation_fx:{}:{}/{}@{}",
+                        mv.asset_or_liability_id, mv.currency, report_currency, target_date
+                    );
+                    if !missing.contains(&item) {
+                        missing.push(item);
+                    }
+                }
+            }
+        }
+        (net.normalize(), used)
+    };
+
+    let opening_date = start_date.pred_opt().unwrap_or(start_date);
+    let (start_manual_net, _) = resolve_manual_net(opening_date, &mut missing_inputs, &mut quality);
+    let (end_manual_net, used_manual) =
+        resolve_manual_net(end_date, &mut missing_inputs, &mut quality);
+
+    let known_opening = (start_valuation.net_worth + start_manual_net).normalize();
+    let known_ending = (end_valuation.net_worth + end_manual_net).normalize();
+    let excluded_items = missing_inputs.clone();
+
+    let explanatory_total_fees = (end_valuation.fee_summary_explanatory
+        - start_valuation.fee_summary_explanatory)
+        .max(Decimal::ZERO)
+        .normalize();
+
+    if !missing_inputs.is_empty() {
+        return PeriodBreakdownReport {
+            account_scope: scope_vec,
+            start_date,
+            end_date,
+            report_currency: report_currency.to_string(),
+            calculation_version: "m2-ledger-1".to_string(),
+            opening_net_worth: None,
+            net_external_cash_flow: None,
+            investment_pnl: None,
+            ending_net_worth: None,
+            known_partial_net_worth: known_ending,
+            excluded_items,
+            realized_pnl: None,
+            unrealized_pnl: None,
+            dividend_and_interest_income: None,
+            fee_expense: None,
+            explanatory_total_fees,
+            fx_impact: None,
+            unattributed_pnl: None,
+            unattributed_reasons: vec![
+                "incomplete valuation inputs or unknown cost basis".to_string()
+            ],
+            max_drawdown: None,
+            drawdown_status: "unavailable: missing valuation or cost inputs".to_string(),
+            manual_valuations: used_manual,
+            quality: QualityStatus::Partial,
+            missing_inputs,
+            warnings,
+        };
+    }
+
+    let net_flow =
+        (end_valuation.net_external_cash_flow - start_valuation.net_external_cash_flow).normalize();
+    let inv_pnl = (known_ending - known_opening - net_flow).normalize();
+
+    let book_fx_end = resolve_fx_rate_s07(
+        &end_projection.book_currency,
+        report_currency,
+        end_date,
+        is_stable(&end_projection.book_currency) || is_stable(report_currency),
+        fx_rates,
+    )
+    .map(|r| r.rate)
+    .unwrap_or(Decimal::ONE);
+
+    let realized_fx_start: Decimal = start_projection
+        .realized_fx_pnl_by_account
+        .iter()
+        .filter(|(a, _)| scope_set.contains(*a))
+        .map(|(_, v)| *v * book_fx_end)
+        .sum();
+    let realized_fx_end: Decimal = end_projection
+        .realized_fx_pnl_by_account
+        .iter()
+        .filter(|(a, _)| scope_set.contains(*a))
+        .map(|(_, v)| *v * book_fx_end)
+        .sum();
+    let period_realized_fx = (realized_fx_end - realized_fx_start).normalize();
+
+    let total_realized_delta = (end_valuation.realized_pnl.unwrap_or_default()
+        - start_valuation.realized_pnl.unwrap_or_default())
+    .normalize();
+    let trading_realized = (total_realized_delta - period_realized_fx).normalize();
+
+    let unrealized_delta = (end_valuation.unrealized_pnl.unwrap_or_default()
+        - start_valuation.unrealized_pnl.unwrap_or_default()
+        + (end_manual_net - start_manual_net))
+        .normalize();
+
+    let div_delta = (end_valuation.dividend_income - start_valuation.dividend_income).normalize();
+
+    let standalone_fees = |proj: &LedgerProjectionResult| -> Decimal {
+        proj.transactions
+            .iter()
+            .flat_map(|tx| &tx.postings)
+            .filter(|p| {
+                p.category == LedgerCategory::FeeExpense
+                    && scope_set
+                        .iter()
+                        .any(|acct| p.ledger_account_id.starts_with(&format!("L:{acct}:")))
+            })
+            .map(|p| p.book_amount * book_fx_end)
+            .sum()
+    };
+    let fee_delta =
+        (standalone_fees(end_projection) - standalone_fees(start_projection)).normalize();
+
+    let translation_delta = (end_valuation
+        .scope_and_currency_effect_pnl
+        .unwrap_or_default()
+        - start_valuation
+            .scope_and_currency_effect_pnl
+            .unwrap_or_default())
+    .normalize();
+    let fx_impact = (period_realized_fx + translation_delta).normalize();
+
+    let attributed =
+        (trading_realized + unrealized_delta + div_delta - fee_delta + fx_impact).normalize();
+    let residual = (inv_pnl - attributed).normalize();
+    let mut unattributed_reasons = Vec::new();
+    if !residual.is_zero() {
+        unattributed_reasons
+            .push("cross-period multi-currency flow timing or manual valuation shift".to_string());
+    }
+
+    let (max_drawdown, drawdown_status) = if comparable_nav_series.is_empty() {
+        (
+            None,
+            "daily_approximation: single-point or flat period".to_string(),
+        )
+    } else {
+        match compute_max_drawdown(comparable_nav_series) {
+            Some(dd) => (Some(dd), "daily_approximation".to_string()),
+            None => (
+                None,
+                "unavailable: non-positive comparable NAV in period".to_string(),
+            ),
+        }
+    };
+
+    PeriodBreakdownReport {
+        account_scope: scope_vec,
+        start_date,
+        end_date,
+        report_currency: report_currency.to_string(),
+        calculation_version: "m2-ledger-1".to_string(),
+        opening_net_worth: Some(known_opening),
+        net_external_cash_flow: Some(net_flow),
+        investment_pnl: Some(inv_pnl),
+        ending_net_worth: Some(known_ending),
+        known_partial_net_worth: known_ending,
+        excluded_items,
+        realized_pnl: Some(trading_realized),
+        unrealized_pnl: Some(unrealized_delta),
+        dividend_and_interest_income: Some(div_delta),
+        fee_expense: Some(-fee_delta),
+        explanatory_total_fees,
+        fx_impact: Some(fx_impact),
+        unattributed_pnl: Some(residual),
+        unattributed_reasons,
+        max_drawdown,
+        drawdown_status,
+        manual_valuations: used_manual,
+        quality,
+        missing_inputs,
+        warnings,
+    }
 }

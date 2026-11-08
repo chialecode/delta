@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M1",
+  "currentStage": "M2",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -54,7 +54,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 v1.0 B ready-for-review: final M2/M1 gates, real workflows, static-CRT packages and explicit product/manual limits"
     },
     {
       "path": "REVIEW.md",
@@ -80,8 +80,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "用户决定、配置、人工检查和授权的唯一入口",
-      "reviewed": "2026-11-07",
-      "basis": "D-10、D-14、D-18、D-20～D-23；维护 Q-01～03 与 ACT-01/03/06/07"
+      "reviewed": "2026-11-08",
+      "basis": "M2 H-01..03: exact native controls, evidence-bound packages, IME/scaling, clean machine without VC redistributable and external CLI uninstall"
     },
     {
       "path": "docs/README.md",
@@ -144,27 +144,36 @@
       "owner": "Agent A / 维护者",
       "scope": "集中事项台账",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 v1.0 final evidence resolves OSS-08/09/11; real endpoints and deferred extensions retain their existing ownership and triggers"
     },
     {
       "path": "docs/delivery/stage-plan.md",
       "kind": "plan",
       "status": "active",
       "owner": "Agent A",
-      "scope": "M1 v2.6 金融数据来源底座、自动化增量同步与账本核对实施计划（100% 纯 Rust）",
-      "reviewed": "2026-11-07",
-      "basis": "D-20～D-23；2026-11-07 技术与数据源调研及 A 自审在线实测；100% 纯 Rust S-01～S-11 阶段定案（v2.4 A 复审补价格口径与版本存储；v2.5 前台无干扰；v2.6 安装与数据位置）与主力平台分层；61 项需求与 29 项 AC 映射",
-      "retireAfter": "M1"
+      "scope": "M2 v1.0 资产复盘桌面工作台、证据化 AI 复盘与 Windows 打包实施计划（100% 纯 Rust，gpui-kit 0.9.0）",
+      "reviewed": "2026-11-08",
+      "basis": "M2 v1.0: existing checks, static-CRT package command and explicit UI completion semantics; scope/version unchanged",
+      "retireAfter": "M2"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
       "owner": "Agent B",
-      "scope": "M1 v2.6 阶段验证与交付报告（100% 纯 Rust 数据底座与账本核心）",
+      "scope": "M2 v1.0 阶段验证与交付报告（工作包 M2-W01～W08、技术门槛 M2-K01～K06、25 项阶段用例与门禁实测）",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13",
-      "retireAfter": "M1"
+      "basis": "M2 v1.0 B final evidence: F-01..07 resolved, 94 passing tests, real native raw percentiles, static-CRT packages and archive hashes",
+      "retireAfter": "M2"
+    },
+    {
+      "path": "docs/evidence/2026-11-08-m1-stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B / Agent A",
+      "scope": "M1 v2.6 阶段验证与交付报告（已经 PR #1 集成；M2 开始时从 docs/delivery/stage-report.md 迁入证据）",
+      "reviewed": "2026-11-08",
+      "basis": "M1 v2.6 B 复查 F-01～F-13、A 集中复核 A-01～A-06、源码指纹 ae2f8960… 的离线与公共 live gate；ACT-08 合并为 main 0370b7e"
     },
     {
       "path": "docs/delivery/status.md",
@@ -173,7 +182,7 @@
       "owner": "Agent A / Agent B",
       "scope": "当前执行状态",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 v1.0 ready-for-review; F-01..07 fixed, final M2/M1 source fingerprint and B/A/product judgments kept separate"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -199,8 +208,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "AI 上下文、会话与运行状态",
-      "reviewed": "2026-11-07",
-      "basis": "D-08、D-20；Rust/SQLite 会话转录、原子压缩检查点与代次恢复契约"
+      "reviewed": "2026-11-08",
+      "basis": "M2 B review F-04: full connection/journal fingerprints, model/keyring isolation, cumulative budgets, history/compaction guards"
     },
     {
       "path": "docs/design/data-model.md",
@@ -209,7 +218,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA 数据模型设计",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 B review F-04/05: library credential identity, owner/review_date, optimistic revision, bounded search and frozen evidence"
     },
     {
       "path": "docs/design/financial-engine.md",
@@ -227,7 +236,7 @@
       "owner": "Agent A / 维护者",
       "scope": "统一能力与适配接口",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 B review F-01/04/05: frozen zero/empty scopes, journal revision, consistent snapshot, tool projections and worker_finished semantics"
     },
     {
       "path": "docs/design/interaction-and-workflows.md",
@@ -235,8 +244,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 交互与工作流设计",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～07；导入、对账、图表复盘、训练与策略工作流设计"
+      "reviewed": "2026-11-08",
+      "basis": "M2 B review F-01/05: actual six-page controls, background queue, save/scope transition, input preservation, marker and AI scope flows"
     },
     {
       "path": "docs/design/rust-model-client.md",
@@ -244,8 +253,8 @@
       "status": "draft",
       "owner": "Agent A",
       "scope": "Rust 模型客户端、双协议、流式与自研边界",
-      "reviewed": "2026-11-07",
-      "basis": "D-08；Responses 与 Chat Completions 双协议及受控流式契约"
+      "reviewed": "2026-11-08",
+      "basis": "M2 B review: actual delta-model/delta-app split, dual-protocol validation and correct AC-24/25 references"
     },
     {
       "path": "docs/design/system-architecture.md",
@@ -280,8 +289,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "数据、凭据与恢复规则",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～09；金融数据隔离、系统凭据与备份恢复规则"
+      "reviewed": "2026-11-08",
+      "basis": "M2 B review F-03/04/06/07: library credentials, deletion recovery, package ownership, static CRT and bounded PE inspection, metadata-only logging"
     },
     {
       "path": "docs/dev-rules/development-workflow.md",
@@ -298,8 +307,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "阶段 Git、远端授权与分支保护",
-      "reviewed": "2026-11-07",
-      "basis": "D-04、D-09、D-13～14、D-18、D-20；从文档治理基线重建后的分支与提交规则"
+      "reviewed": "2026-11-08",
+      "basis": "D-09/D-27 and M2 v1.0: current-stage amend with fixed M1 squash parent, preserving the immutable first commit"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",
@@ -317,7 +326,7 @@
       "owner": "Agent A / 维护者",
       "scope": "验证与交付门禁",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 B review F-02/07: real native samples, explicit not-run semantics, resource cleanup and packaged CLI/static-CRT verification"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -326,7 +335,7 @@
       "owner": "Agent A / 维护者",
       "scope": "仓库地图",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 B review: controller/forms/canvas/native verification, real packaging and license collection module ownership"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
@@ -335,7 +344,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA 实施路线与验收计划",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 AC-26/27: actual raw percentiles and measurement boundaries; static CRT, PE imports and packaged CLI installation/uninstallation"
     },
     {
       "path": "docs/engineering/technology-selection.md",
@@ -344,7 +353,7 @@
       "owner": "Agent A / 维护者",
       "scope": "DELTA 技术栈与通用能力比较",
       "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "basis": "M2 locked compatibility; S-23 ZIP/Rust installer fallback with explicit MSVC target, encoded static-CRT flags and PE dependency checks"
     },
     {
       "path": "docs/evidence/2026-09-26-codex-rust-research.md",
@@ -424,8 +433,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 产品需求文档",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；61 项 FR/NFR 需求定义与 M1～M5 阶段边界"
+      "reviewed": "2026-11-08",
+      "basis": "M2 B review: autosave drafts/scope, period/cutoff search, per-library credentials, log privacy and standalone Windows package dependencies"
     },
     {
       "path": "docs/templates/agent-handoff.md",
@@ -491,13 +500,22 @@
       "basis": "M1 v2.6 POC-D06；精度/栈边界与 LOOP-03"
     },
     {
+      "path": "docs/evidence/2026-11-08-m2-gpui-kit-spike.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent A",
+      "scope": "M2 计划开始时 gpui-kit 0.9.0 本机构建、官方无头 Dock UI 测试静音实测与依赖许可盘点（OSS-09）",
+      "reviewed": "2026-11-08",
+      "basis": "crates.io gpui-kit 0.9.0 / gpui-pre 0.3.11；Windows 11 MSVC Rust 1.99.1 隔离 spike；0 可见窗口、焦点不变"
+    },
+    {
       "path": "docs/evidence/2026-11-08-dependency-licenses.md",
       "kind": "evidence",
       "status": "reference",
       "owner": "Agent B",
-      "scope": "M1 锁文件 221 个第三方包的许可表达式、分支与盘点边界",
+      "scope": "M1–M2 锁文件 885 个第三方包的许可表达式、分支、MPL-2.0 通知与盘点边界",
       "reviewed": "2026-11-08",
-      "basis": "cargo metadata --locked 实际清单；D-24 / OSS-06"
+      "basis": "M2 final 885-package coverage; complete AND obligations, 48 pinned-text/source fallbacks and both real package archive hashes verified"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # DELTA 数据模型设计
 
-版本 0.5 · 2026-11-08 · 本文为完整产品逻辑模型；M1 实际子集见第 11 节，不能由目标表推定功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
+版本 0.6 · 2026-11-08 · 本文为完整产品逻辑模型；M1–M2 实际持久化子集见第 11 节，不能由目标表推定 M3/M4 功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
 
 ## 1. 通用规则
 
@@ -112,13 +112,15 @@ erDiagram
 | --- | --- | --- |
 | trade_plan | id, thesis, entry_rule, invalidation, risk_budget, created_at | 可关联真实或模拟上下文，但明确所属空间 |
 | journal_entry / journal_revision | id, title, current_revision / body, structured_fields, saved_at | 自动保存与版本；保留交易前内容用于比较 |
-| journal_link | journal_id, target_type, target_id, relation | 目标类型白名单并校验存在性；删除用 tombstone 提示 |
+| journal_link | journal_id, target_type, target_id, relation | 目标类型白名单并校验存在性；账户 owner 与 `review_date` 范围锚点和业务关联分别记录；删除用 tombstone 提示 |
 | plan_fill_link | plan_id, fill_id, allocated_quantity | 同一成交拆到多个计划时分配总量不超过成交量 |
 | chart_context | id, instrument_id, timeframe, visible_range, anchor_at, adjustment, indicators, drawing_refs, dataset_version | 可恢复；版本可选固定或 latest |
 | attachment | id, hash, mime_type, size, relative_path | 内容寻址/去重；受资料库目录边界约束 |
 | tag / journal_tag | id, name / journal_id, tag_id | 自动建议与用户确认标签区分 |
 
 结构化 JSON 字段需有 schema_version，不把全部账本和查询关键字段塞入不受约束的 JSON。
+
+M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与 `target_type=review_date`、`target_id=as_of_date`、`relation=scope` 链接。复盘日期用于历史分析期间，实际 `saved_at` 继续记录知识写入时间；训练的 `visible_until` 同时检查两者，禁止后来写的历史复盘进入过去上下文。旧无期间锚点笔记按保存日期限制。查询对每项账户、成交、图表锚点和日期链接执行范围检查，不能因为一项合法关联就放行其他越界关联。
 
 ## 8. 训练、策略与实验
 
@@ -160,17 +162,20 @@ erDiagram
 
 数据库迁移采用有序版本脚本，应用校验 schema_version；迁移失败还原新资料库，旧库保持可恢复。业务规则变化增加计算/分录版本并重建派生数据，不只修改旧缓存数值。
 
-## 11. M1 实际持久化契约
+## 11. M1–M2 实际持久化契约
 
-当前 SQLite schema 为 3，规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1 提供账本、日线、FX、公司行动、订阅、质量诊断与报告子集；笔记/AI/训练/策略和完整组合配置是后续目标。
+当前 SQLite schema 为 4（从 schema 3 升级前自动创建一致性备份，故障注入不留半写库），规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1–M2 提供账本、账户与统计组合（嵌套防环去重）、手工资产/负债估值、日线、FX、公司行动、自选组、交易计划、图表上下文、Markdown 笔记修订/附件/FTS5 `trigram` 索引、AI 会话与单事务压缩检查点、质量诊断与报告；历史训练（M3）与策略实验（M4）仍属后续目标。
 
 | 实体 | 当前关键字段 / 不变量 |
 | --- | --- |
 | event_book_fx | `(event_id,currency)` 主键，`rate/source_date/dataset_version`；固定事件记账采用的汇率，市场 FX 后续修订不改变已提交成本 |
 | journal_transaction / posting | journal 带 `ledger_revision`、`posting_rule_version=v3` 与 `reversal_of`；旧修订和冲销分录保留，批次/持仓为可重建派生值 |
-| source_record | 可靠源 ID 绑定 provider/account/业务分类和内容；买卖统一 trade、现金充提统一 cash_movement，源内容变化需显式更正 |
+| source_record | 可靠源 ID 绑定 provider/account/业务分类和内容；买卖统一 trade、现金充提统一 cash_movement、换汇统一 cash_exchange，源内容变化需显式更正 |
 | dataset_publication | 只有完整事务成功后封存版本；发布后不接受该版本的 bar/FX/action mutation；未知版本拒绝；manifest 哈希覆盖实际数据和元数据 |
-| analysis_report | scope 保存账户快照、as-of/cutoff、记账及报表币种、FIFO、费用口径、估值源、`m1-ledger-3`；身份包含 scope，事件更正使旧报告 stale |
+| analysis_report | scope 保存账户快照、as-of/cutoff、记账及报表币种、FIFO、费用口径、估值源、`m1-ledger-3` / `m2-ledger-1`；身份包含 scope，事件更正使旧报告标为 stale 并提供重算入口 |
+| portfolio_group_link / manual_valuation | 统计组合支持嵌套子组合并在解析时防环去重；手工估值记录 `as_of` 与 `method` |
+| note / note_revision / note_link / attachment / note_fts | 笔记修订只追加、保存校验期望修订，失败不提交部分链接；owner 与 `review_date` 定义账户/期间范围；附件存于 `attachments/` 并校验 SHA-256 与磁盘存在性；FTS5 `trigram`（3 字及以上）与有界 `LIKE` 回退（1～2 字），候选 10,000/返回 100 上限以 Partial 提示 |
+| model_connection / ai_session / ai_run / ai_message / ai_tool_call / ai_checkpoint | 凭据引用绑定通道，keyring account 由 `(library.id, connection.id)` 哈希派生；`ai_tool_call` 按 `(run_id, call_id)` 唯一幂等；run 保存完整连接指纹；会话压缩在单事务内写入 `ai_checkpoint` 并切换 `active_checkpoint_id`，故障自动回滚保留上一有效检查点 |
 | provider_connection / dataset_version | 实际端点、capabilities 和 source/terms_class；条款取 public_open / official_free_personal / unofficial_personal；限额为 0 表示尚无确定每分钟配额，不表示无限量 |
 
 资金/持仓在途投影保存两端账户、原始 lot 日期与成本。整库 scope 由实际事件账户和登记 active 账户组成；外部目的地不自动加入。未知历史成本贯穿处置，损益不可用；未知成本处置的 journal 差额进入 COST_PENDING 清算项，不是已实现收益。
