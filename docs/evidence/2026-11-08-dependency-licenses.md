@@ -38,7 +38,7 @@
 
 SPDX 表达式按括号、AND、OR 与 WITH 解析；旧 Cargo `/` 语法作为 OR。缓存绑定 package ID、source、manifest 哈希、上游提交/path 和包校验信息，不能只按名称版本复用。缺正文的标准文本来自 [SPDX license-list-data v3.28.0](https://github.com/spdx/license-list-data/tree/c4a7237ec8f4654e867546f9f409749300f1bf4c)，固定 commit `c4a7237ec8f4654e867546f9f409749300f1bf4c`；每包清单记录正文/源码来源、SHA-256 和 fallback 标记。
 
-收集器为构建期 Python 工具，产品运行期仍为纯 Rust。`python -m unittest discover -s scripts -p test_collect_third_party_licenses.py` 的 3 项回归覆盖 AND 义务、缓存身份和标准正文/源码回退；原始 manifest 与日志位于 `.local/reports/m2/b-review/licenses-v3/`。最终 M2 门禁与两通道打包重新收集通过，全部正文、归档及 `ATTRIBUTION.json` 已放入各包 `third-party-licenses/`；两个 ZIP 各 2443 个清单文件的哈希校验通过，源码指纹与产物 SHA 见 [阶段报告](../delivery/stage-report.md)。
+收集器为构建期 Python 工具，产品运行期仍为纯 Rust。`python -m unittest discover -s scripts -p test_collect_third_party_licenses.py` 的 3 项回归覆盖 AND 义务、缓存身份和标准正文/源码回退；原始 manifest 与日志位于 `.local/reports/m2/b-review/licenses-v3/`。最终 M2 门禁与两通道打包重新收集通过，全部正文、归档及 `ATTRIBUTION.json` 已放入各包 `third-party-licenses/`；两个 ZIP 各 2443 个清单文件的哈希校验通过，源码指纹与产物 SHA 见 [阶段报告](2026-11-09-m2-stage-report.md)。
 
 ## 3. 非 crate 与独立 POC 边界
 

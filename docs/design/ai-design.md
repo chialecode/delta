@@ -6,7 +6,7 @@
 
 AI 帮助用户组织问题、调用业务分析、解释结果和形成复盘。账本事实、金融计算和数据权限由应用掌握。
 
-M2 交付个人数据问答和交易复盘，采用用户指定的 OpenAI API 形式接口，首轮参考 Codex 官方 Rust 源码，自研窄模型客户端并验证 Rust 工具循环与会话/压缩能力；不要求同时集成所有厂商。Rust 宿主掌握数据范围、确定性结果和证据。M3 增加训练结束复盘，M4 增加策略草拟和研究辅助。
+M2 交付个人数据问答和交易复盘，采用用户指定的 OpenAI API 形式接口，首轮参考 Codex 官方 Rust 源码，自研窄模型客户端并验证 Rust 工具循环与会话/压缩能力；不要求同时集成所有厂商。Rust 宿主掌握数据范围、确定性结果和证据。M4 增加训练结束复盘，M5 增加策略草拟和研究辅助。
 
 优先问题：
 
@@ -54,8 +54,8 @@ sequenceDiagram
 | `search_journal` | scope, query, tags, period | 授权笔记片段与修订 ID | 是 |
 | `get_chart_window` | instrument, range, timeframe | 受限行情窗口、来源与质量 | 是 |
 | `compare_trade_groups` | scope, group_definitions | 样本、指标与缺失标签率 | 否，随分组统计交付 |
-| `get_training_report` | session_id | 执行偏差、模拟结果和时间线 | 否，随 M3 |
-| `validate_strategy_draft` | typed_rules | 静态校验和未补齐条件 | 否，随 M4 |
+| `get_training_report` | session_id | 执行偏差、模拟结果和时间线 | 否，随 M4 |
+| `validate_strategy_draft` | typed_rules | 静态校验和未补齐条件 | 否，随 M5 |
 
 不提供任意 SQL、任意文件读写、系统命令或直接下单工具。所有查询复用 UI 的业务服务，不能存在第二套 AI 专用损益计算。
 
@@ -109,7 +109,7 @@ M2 工具只读。后续标签/笔记建议生成可比较的草稿，由用户�
 
 ## 7. 历史训练中的 AI
 
-M3 默认仅在训练结束后提供 AI 分析。训练中允许结构化笔记与确定性规则提醒。
+M4 默认仅在训练结束后提供 AI 分析。训练中允许结构化笔记与确定性规则提醒。
 
 即使截断查询，通用模型仍可能从预训练知识中认出某段历史走势。隐藏日期/名称并不能保证模型“忘记未来”。因此不把训练中模型建议视为盲测成绩，也不让 AI 推荐混入用户独立决策的评分。
 

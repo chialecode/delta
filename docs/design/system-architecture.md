@@ -4,7 +4,7 @@
 
 ## 1. 架构目标与决策
 
-1. **全项目 100% 纯 Rust 实现（D-22）**：M1～M5 不引入任何运行期 Python 子进程或外部脚本解释器。行情/汇率/公司行动连接器、交易日历、技术指标、十进制账本、应用编排、CLI、M2 GPUI 桌面工作台、AI 模型客户端、M3 训练与 M4 受控策略引擎全部在单一纯 Rust 代码库与二进制中完成。
+1. **全项目 100% 纯 Rust 实现（D-22）**：M1～M6 不引入任何运行期 Python 子进程或外部脚本解释器。行情/汇率/公司行动连接器、交易日历、技术指标、十进制账本、应用编排、CLI、M2 GPUI 桌面工作台、AI 模型客户端、M4 训练与 M5 受控策略引擎全部在单一纯 Rust 代码库与二进制中完成。
 2. **金融数据底座先行（Data-First，D-20）**：M1 优先交付可自动增量同步、多源交叉核验的本地金融数据平面（`delta-data`）、十进制账本核心（`delta-core`）与命令行工具（`delta-cli`），不绑定任何桌面 GUI 框架。
 3. **单一真相与 UI 分阶段衔接（D-21）**：M1 领域核心与数据平面不耦合 GUI；M2 桌面端直接采用长桥最新 **`gpui-kit`（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**，在同一个 Rust 进程内通过 `delta-app` 的同步命令/查询与作业句柄调用服务与不可变数据快照（`dataset_version`）。
 
@@ -71,13 +71,13 @@ MarketDataProvider
 ### 4.4 SQLite 单库存储与快照版本（M1）
 
 - **原始留痕**：保留导入 CSV 原始行与数据源响应正文（按内容哈希寻址，纳入备份清单），支持审计与重放。
-- **规范化层**：SQLite 保存事务账本、标的字典、交易日历、公司行动、汇率、日线 `bar`、水位线与 `dataset_version` / `dataset_partition` 清单。`dataset_partition.location_kind` 保留存储类型抽象，M1 仅为 `sqlite`；Parquet/DuckDB 在 M4 批量扫描或实测性能不足时经 `OSS-10` 接入，不改变上层查询契约。
+- **规范化层**：SQLite 保存事务账本、标的字典、交易日历、公司行动、汇率、日线 `bar`、水位线与 `dataset_version` / `dataset_partition` 清单。`dataset_partition.location_kind` 保留存储类型抽象，M1 仅为 `sqlite`；Parquet/DuckDB 在 M5 批量扫描或实测性能不足时经 `OSS-10` 接入，不改变上层查询契约。
 - **不可变 `dataset_version`**：每次增量同步事务提交后生成新的 `dataset_version`（含 `manifest_hash`、覆盖范围与质量等级）；版本是清单而非行情副本，`bar` 修订以有效版本区间保存，同步回看重叠窗口检出修订（M1 计划 S-09）。账本估值、图表窗口、训练回放（带 `visible_until` 截断）和 AI 问答均显式绑定 `dataset_version`，保证跨模块结果 100% 一致。
 
 ## 5. 并发、异步、容错与恢复模型
 
 - **SQLite 单写多读**：公开应用会话持资料库独占锁，后台 worker 共用该锁 lease；SQLite 写事务串行化，开启 `WAL` 与 `FOREIGN KEY`；金额/数量用规范化十进制文本存储并在 Rust `Decimal` 中聚合，禁用 SQL `REAL` 求和。
-- **异步边界与后台作业隔离（AC-16）**：`delta-core` 纯同步无 IO；`delta-data` 内部使用 `tokio` + `reqwest`；`delta-app` 私有持有运行时，对外只提供同步命令/查询与后台作业句柄（`JobId`、进度与取消经标准库通道或回调 trait），不暴露 `tokio`/`reqwest` 类型或 `async fn`。任何数据拉取或后续 M4 策略评估作业均绑定超时（deadline）、取消令牌与步数/资源上限；作业超时、取消或触发故障时由宿主安全中止并转为结构化错误（`PROVIDER_UNAVAILABLE` / `CANCELLED` / `INTERRUPTED`），主程序保持可用且不会把失败作业标为成功（AC-16）。M2 GPUI 自带执行器，可在 UI 线程直接调用；CLI 同样复用该接口。
+- **异步边界与后台作业隔离（AC-16）**：`delta-core` 纯同步无 IO；`delta-data` 内部使用 `tokio` + `reqwest`；`delta-app` 私有持有运行时，对外只提供同步命令/查询与后台作业句柄（`JobId`、进度与取消经标准库通道或回调 trait），不暴露 `tokio`/`reqwest` 类型或 `async fn`。任何数据拉取或后续 M5 策略评估作业均绑定超时（deadline）、取消令牌与步数/资源上限；作业超时、取消或触发故障时由宿主安全中止并转为结构化错误（`PROVIDER_UNAVAILABLE` / `CANCELLED` / `INTERRUPTED`），主程序保持可用且不会把失败作业标为成功（AC-16）。M2 GPUI 自带执行器，可在 UI 线程直接调用；CLI 同样复用该接口。
 - **一致性备份与恢复**：资料库目录即应用数据根（正式版 `%LOCALAPPDATA%\delta`、开发版 `%LOCALAPPDATA%\delta-dev`，见 [安装与数据位置](../dev-rules/data-and-security.md#install-and-data-locations)），包含 `manifest.json`、`delta.sqlite`、`raw/`（若原始响应正文存于文件）、`imports/`、`attachments/` 与 `backups/`。数据库使用 SQLite Backup API 创建一致性快照，恢复时先在独立新目录完整校验清单哈希、外键与引用后再原子切换（AC-09）。
 
 ## 6. M1 已实现边界
@@ -89,3 +89,11 @@ MarketDataProvider
 原始报文内容寻址；schema 3 固定事件 FX、保留 journal 修订、封存 dataset_publication。报告使用一次加载的历史输入逐日重放，绑定 `m1-ledger-3`、币种、账户和 cutoff。备份递归包含 raw/imports/attachments/settings，恢复在 staging 校验数据库身份/哈希/外键后发布，拒绝非空目标；导出也是 coherent read snapshot + staging，8 CSV 成功后发布清单。
 
 M1 的 AccountProvider 是离线录制实现：输入为 OKX/Binance 原生 data 数组的合成记录，规范化成交、余额和已完成充提；真实只读账户 API/鉴权/分页在线同步见 LOOP-03。所有开发数据目的路径（含备份/恢复/导出/删除）校验实际构建通道，source/dev 不能伪装 release。
+
+## 7. 安装身份、生命周期与更新（M3）
+
+- **身份**：构建期 `DELTA_IDENTITY` 决定 AppId、显示名、可执行文件名、互斥量、控制管道与 AppUserModelID（`delta-app/src/identity.rs`）；版本由 Git 标签推算并经 `DELTA_VERSION` 注入，build-info、`VERSIONINFO` 与设置页“关于”读取同一值（`version.rs`）。源码构建没有安装身份，不注册单实例与控制管道。
+- **单实例与控制管道**（`instance.rs`）：已安装身份启动时创建命名互斥量 `<身份>-instance`（同时是安装器的 `AppMutex`）；第二个进程只经管道发送 `focus` 后退出。`\\.\pipe\<身份>-control` 只有一个实例、拒绝远程客户端，并逐连接核对客户端会话与用户 SID；管道线程把命令交给 UI 线程（`delta-desktop/src/lifecycle.rs`），60 s 内无应答回执 `busy`。
+- **保存后退出**：`quit-for-update` 与“应用更新”走同一序列：检查忙碌（进行中的同步作业或 AI 复盘）→ 自动保存未保存的笔记（保存失败回执 `save-failed`）→ 保存布局 → 回执 `ok` 并附带重启参数 → 退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消同步与 AI 再继续。
+- **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 原参数重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
+- **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，之前在运行则以脱离作业的方式按原参数重启。

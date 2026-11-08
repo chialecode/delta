@@ -1050,10 +1050,10 @@ pub(super) fn run_verify_stage_m2(
                 status: status.into(),
                 elapsed_ms: b_start.elapsed().as_millis() as u64,
                 evidence: format!(
-                    "Explicit native release --ui-bench; 5 AC-02 first screens p95={} ms, 300 navigation actions p95={} us; 100k transactions/bars, 300 measured frames each; chart p50/p95/p99={}/{}/{} us, table={}/{}/{} us; controlled cancellation dispatch={} ms / actual worker release={} ms; raw report {}",
+                    "Explicit native release --ui-bench; 5 AC-02 first screens p95={} ms, 300 navigation actions p95={} us; 100k transactions/bars, 300 measured frames each; chart p50/p95/p99={}/{}/{} us, table={}/{}/{} us; controlled cancellation dispatch={} ms / actual worker release={} ms; power throttling {}; raw report {}",
                     bench["first_screen_p95_ms"], bench["interaction_p95_us"],
                     bench["kline_p50_us"], bench["kline_p95_us"], bench["kline_p99_us"], bench["table_scroll_p50_us"], bench["table_scroll_p95_us"], bench["table_scroll_p99_us"],
-                    bench["cancel_ui_latency_ms"], bench["cancel_backend_latency_ms"], bench_path.display()
+                    bench["cancel_ui_latency_ms"], bench["cancel_backend_latency_ms"], bench["power_throttling"], bench_path.display()
                 ),
             });
         } else {
@@ -1276,7 +1276,10 @@ pub(super) fn run_verify_stage_m2(
 }
 
 fn native_benchmark_passed(report: &Value) -> bool {
+    // Frames measured under Windows background power throttling (EcoQoS) of the hidden window
+    // describe OS scheduling, not the app; the measuring process must have opted out (TEST-03).
     if report["build_profile"] != "release"
+        || report["power_throttling"] != delta_app::EXECUTION_SPEED_OPT_OUT
         || report["native_window_created"] != true
         || report["focus_stolen"] != false
         || report["visible_windows"] != 0
@@ -1367,7 +1370,7 @@ mod benchmark_tests {
         assert!(!native_benchmark_passed(
             &json!({"kline_p95_us": 1, "kline_total_bars": 100_000})
         ));
-        let mut report = json!({"build_profile":"release", "native_window_created":true,"visible_windows":0,"focus_stolen":false,
+        let mut report = json!({"build_profile":"release", "power_throttling":"execution_speed_opt_out", "native_window_created":true,"visible_windows":0,"focus_stolen":false,
             "transaction_rows":100_000,"kline_total_bars":100_000,"kline_visible_bars":1000,"native_chart_paints":320,"native_table_cells":49600,
             "cancel_ui_latency_ms":0,"cancel_backend_latency_ms":5,"kline_frames":300,"table_scroll_frames":300,
             "first_screen_times_ms":vec![500_u64;5],"first_screen_p50_ms":500,"first_screen_p95_ms":500,"first_screen_p99_ms":500,
@@ -1378,6 +1381,9 @@ mod benchmark_tests {
         report["build_profile"] = json!("dev");
         assert!(!native_benchmark_passed(&report));
         report["build_profile"] = json!("release");
+        report["power_throttling"] = json!("");
+        assert!(!native_benchmark_passed(&report));
+        report["power_throttling"] = json!("execution_speed_opt_out");
         report["kline_p99_us"] = json!(999);
         assert!(!native_benchmark_passed(&report));
         report["kline_p99_us"] = json!(1000);

@@ -1,109 +1,136 @@
-# M2 v1.0 阶段验证与交付报告
+# M3 v1.0 阶段验证与交付报告
 
-更新：2026-11-09；角色：Agent B（实现）/ Agent A（集中审核）；唯一计划：[M2 v1.0](stage-plan.md)，用例见 [m2-stage-cases.json](m2-stage-cases.json)。分支 `codex/m2-desktop-workbench`；固定父提交 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`；复核基点 `6dfa28c69c11d2764bc2233e407eb4827dd4812d`。最终被测源码指纹为 `e2ba2bdc3bc070f3620cd2fb1beb92f2620495a708d04b9ad91c7b5cf4857a71`；amend 后完整 SHA 以实际 B→A 交接与 `git rev-parse HEAD` 为准。未跟踪 `workers/agent/` 未读取、构建、修改或暂存；未执行远端操作。
+更新：2026-11-09；角色：Agent B（实现与自检）/ Agent A（集中审核）；唯一计划：[M3 v1.0](stage-plan.md)，用例见 [m3-stage-cases.json](m3-stage-cases.json)。分支 `codex/m3-installer-update`；固定父提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`；B 交付的阶段提交 `9199fe0b1abde44ee14e60bcfb728f35f1dd53c5`（B 最终被测指纹 `95003b7d…`）。A 审核修正已 amend 进同一阶段提交，**最终被测源码指纹 `77dd43c8798e0b97b93f4a970a1d89b79bc3416f49e75c3142458afa91c09622`**；完整 SHA 以交接消息与 `git rev-parse HEAD` 为准。未跟踪 `workers/agent/` 未读取、构建、修改或暂存；未执行 push、PR、GitHub Release 或远端设置变更。
 
 ## 当前判断
 
-**B 实现与自检：完成；A 技术审核：通过（见 [A 集中技术审核](#a-集中技术审核2026-11-09)）；产品验收：未完成。** M2-W01～W08 的可执行工作与 F-01～F-07 修复已完成，最终静态 CRT 包、M2 全门禁和 M1 v2.6 回归在相同源码指纹下通过；当前无工程阻断。原测试不足以支持实际界面、帧性能、安装通道和权限隔离的结论，已由本轮真实证据替换。真实模型、个人账单和人工检查仍按下文保持 not-run。
+**B 实现：完成；A 集中技术审核：通过，工程阻断 0；产品验收：未开始。** 最终指纹下 `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` overall **passed**（`M3-G-01～06`、`M3-A-01～10`、`M3-K01～K04` 全部 passed），同指纹 M1 v2.6 与 M2 v1.0（`--ui-smoke --ui-bench`）回归 passed。B 自检时唯一的失败 `M3-A-10`（M2 帧性能，TEST-03）经 A 定位为 Windows 对隐藏窗口进程的执行速度节流（EcoQoS），测量进程退出该节流后同机达标（图表 p95 9.6 ms、表格 p95 6.9 ms，门槛 ≤20 ms 不变），见下文 [A 集中技术审核](#a-集中技术审核2026-11-09)。按用户指示（[D-32](../decisions/confirmed-decisions.md)），凭据与发布签名私钥改为文件，不再使用 Windows 凭据管理器。
 
-## 复核发现与修复
+门禁只真实安装、升级、卸载测试身份 `delta-test` / `delta-dev-test`。开发者的 `delta` / `delta-dev` 安装目录文件哈希、HKCU 卸载键、开始菜单快捷方式和数据目录树在门禁前后逐项一致。在线更新只做了 `127.0.0.1` 回环演练（`M3-A-08`），**不是真实 GitHub 发布**。真实发布（`M3-L-01`，需 ACT-10/ACT-11）与人工检查 H-03/H-04（`M3-M-01/02`）保持 not-run。下文“本轮实际验证”及之前各节为 B 自检记录（指纹 `95003b7d…`），A 复跑结果以 A 审核一节为准。
 
-| 编号 / 严重度 | 触发、实际与预期 | 修复与复验入口 |
+## Spike 结论（第 4 节）
+
+| Spike | 实际验证 | 结论与发现 |
 | --- | --- | --- |
-| F-01 / P1 / resolved | 导航无事件，各页同内容；导入/笔记/AI 只存在直接调用的状态方法；同步是计时任务。预期实际控件使用后台宿主并展示真实状态 | `controller.rs`、`ui_forms.rs` 建立实际工作流；保存期间保留新输入、失败保留缓冲与旧范围；真实同步 phase/记录数与在途取消。M2-A-07～12/16、实际点击/输入/导入提交与阻塞回环 HTTP 取消回归通过 |
-| F-02 / P1 / resolved | 冒烟没有 GPUI 窗口；格式化/切片计时当帧时间，p99 复制 p95；默认 AC-26 宣称 passed | `ui_verification.rs` 创建真实隐藏 HWND，显式初始化尺寸并执行 WM_PAINT；100k 图表/表格 20 预热＋300 实测帧各有原始样本和绘制计数；5 个新进程首屏及 300 次工作台交互。门禁重算 p50/p95/p99，缺显式验证保持 not-run；最终 release 包 M2-K02/K06/A20 通过 |
-| F-03 / P0 / resolved | 冒烟/基准递归删除调用方 data-dir；找不到桌面二进制时复制 CLI，两个通道复制同一 source 构建 | 验证只创建并清理随机子目录，核对父目录/身份/链接；真实 `DELTA_CHANNEL=release/dev` 独立构建、build-info 与完整文件哈希，安装随机 staging 校验后切换；卸载先核对全部所有权、哈希和 Windows lease，自卸载在删文件前拒绝。M2-K04、M2-A-17、两包 ZIP 全文件哈希与未知文件/数据保留通过 |
-| F-04 / P1 / resolved | 中文数字/正负匹配失真，keyring 只用进程缓存；同连接 ID 跨库密钥覆盖；历史与预算守卫不完整 | 宿主结构化报告＋显式引用校验、规范化保留正负；工具投影重算 result_id/证据；一致内存快照、完整连接/journal 指纹、累计预算和原子压缩；keyring account 绑定资料库身份，设置恢复/空密钥/失败回滚/丢失条目重配。M2-A-01/13～16 与跨库凭据回归通过 |
-| F-05 / P1 / resolved | 图表缺账户 scope，笔记无期间/保存截止；复权和缓存可能使用未来数据 | 冻结零版本/空账户；逐项校验 note owner、review_date、事件/图表锚点及真实保存 cutoff；复权过滤未来公司行动，缓存绑定内容/指标/版本/截止，恢复日期窗口与锚点。M2-A-01/10～12 与范围/截止/缓存回归通过 |
-| F-06 / P1 / resolved | 日志依赖调用方提供已知 secret 和完整正文，未列密钥/正文片段可落盘，泄露诊断会回显命中秘密 | 审计改为白名单 action 和时间/版本/大小元数据，舍弃调用方正文；扫描只返回命中位置序号。M2-A-17 中未知 secret、正文片段和诊断回显回归通过 |
-| F-07 / P1 / resolved | 真实两通道包的 desktop/CLI 均导入 `VCRUNTIME140.dll`，包未带运行库，开发机已有安装掩盖干净机器失败 | 显式 MSVC target＋静态 CRT，覆盖 Cargo 编码 flags 优先级；构建/安装有界检查普通及延迟 PE 导入并纳入包内哈希清单。实际 PE、截断/无效 RVA/延迟依赖回归和 M2-K04 通过；两个包的 desktop/CLI 均无外部 MSVC 运行库导入，包内 CLI 安装与外部卸载实跑通过 |
+| M3-K01 Inno 按用户安装 | Inno Setup 7.1.1（winget `JRSoftware.InnoSetup.7`，按用户安装）编译的测试身份 `setup.exe` 以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART` 安装到 `%LOCALAPPDATA%\Programs\delta-test`，不需要提权；HKCU 卸载键、开始菜单快捷方式和 `VERSIONINFO` 齐全；静默卸载移除程序文件、键与快捷方式，数据保留 | 通过，W02 继续。① Inno 卸载分两阶段：第一阶段复制 `_unins*.tmp` 后退出，由第二阶段删除 `unins000.exe`。放在 kill-on-close 作业里会被截断，导致文件残留。改为在作业之外启动卸载器，以 HKCU 键消失、`unins000.exe` 删除且日志出现 `_unins-done.tmp` 作为完成条件（上限 180 s）。② `InitializeSetup` 早于内置 `AppMutex` 检查，因此模板在 `InitializeSetup` 中先请求保存退出，再交给 `AppMutex` 兜底 |
+| M3-K02 AppMutex 与控制管道 | 运行中的测试身份收到 `quit-for-update` 后保存待写笔记与布局，以 0 退出；忙碌时回答 `busy`，安装器中止且不改动安装；不响应控制的应用不被强杀，安装器超时放弃 | 通过，W03/W04 继续；未使用 `WM_CLOSE` 备选。控制管道在 `Drop` 时用单次 poke 唤醒监听线程，存在竞态（约 1/16 卡住）。改为有界重试，连接失败时调用 `DisconnectNamedPipe`，之后连续 60 次通过 |
+| M3-K03 Ed25519 与回环更新 | `ed25519-dalek` 2.2.0 签名/验签；回环源返回 GitHub latest release 形态的 JSON，第一次下载在 1/3 处中断，之后 Range 续传、验签、备份，在作业之外启动安装器，静默升级后重启 | 通过，W04 继续；续传正常，未触发整包重下 |
+| M3-K04 静默安装不抢焦点 | 门禁全程每 200 ms 采样前台窗口和门禁自有进程（测试身份、安装/卸载器、ISCC 等）的可感知窗口 | 通过，未使用 `CreateDesktop`。Inno 的 `Exec` 会创建一个 0×0 的 `TWindowDisabler-Window`（带 `WS_VISIBLE`，用户看不到）。哨兵只把 `WS_VISIBLE`、矩形非空且未被 DWM cloak 的窗口计为可感知窗口。全程可感知窗口数 `0`，前台未被门禁进程占用 |
 
-普通实现修复无需新增 ADR；金融、范围、状态、恢复、接口与打包行为已回写职责正本。S-23 使用计划内便携 ZIP＋Rust 按用户安装备选，M2 v1.0 的范围和版本不变；Git 规则中遗留的 M1 固定父提交说明已改为按当前唯一计划核对。
+**门禁中发现的分离启动缺陷（已修复）**：`M3-A-06` 前两轮失败，表现为“应用未重启”。事件日志显示重启后的进程已就绪，但门禁检查时它已按 200 s 上限退出。原因是 `CreateProcessW` 开启了句柄继承，`spawn_detached_app` 启动的应用继承了 `install-dev` 自身可继承的 stdout 管道。读取方于是要等应用退出才能收到 EOF，这同样会让开发者执行 `delta-cli install-dev | tee …` 时挂起。修复：分离启动前清除本进程标准句柄的继承标志（`Stdio::inherit()` 不受影响，因为 std 会为子进程显式复制句柄）。新增回归测试 `process::tests::m3_a06_detached_launch_does_not_hold_the_callers_stdout_open`：不修复时调用方等待 15.2 s 后失败，修复后 0.03 s 通过。A-06 的存活判断也从互斥量检查改为通过重启后应用自己的控制管道往返（`focus` 返回新版本）。
 
-## A 集中技术审核（2026-11-09）
+**Spike 事故（D-25，已处置）**：早期在 Git Bash 中手动运行 K01 spike 安装器时，MSYS 路径转换把 `/VERYSILENT` 改写成了路径。安装器于是按非静默方式运行，并停在可见的语言选择窗口。B 结束了这个自建 spike 安装器进程（未安装任何内容，不涉及应用或用户数据），随后做了三项修正：① 模板加 `ShowLanguageDialog=no`（门禁 M3-G-06 核对）；② 之后的手动命令一律带 `MSYS_NO_PATHCONV=1`；③ 门禁只经 Rust `run_quiet_command` / `spawn_detached_app` 直接传参启动安装器，不经过 shell。此后门禁内无可感知窗口。
 
-角色：Agent A；待审提交 `6a388c92f1bc684b243b53f2c4f7bceadf912db2`（父 `0370b7e`）。A 独立重算待审源码指纹，与 B 声明的 `e2ba2bdc…5a71` 一致，跟踪树干净；`workers/agent/` 未读取、构建、修改或暂存。按风险抽查 AI 工具范围/冻结版本、证据与数值校验、`CashExchange` 记账、范围解析、卸载所有权和删除计划，并以隐藏原生窗口实际截图复核界面。审核修正与用户要求的界面重设计已 amend 进同一阶段提交，最终被测源码指纹 `3c6a16dceea9515b5deb4942d26ae7bfa1181af1f4c4621b2064dc3cb34293d9`。
+## 工作包与实现
 
-| 编号 / 严重度 | 触发、实际与预期 | 修复与复验 |
+| 工作包 | 实现 | 验证入口 |
 | --- | --- | --- |
-| F-08 / P1 / resolved | 摘要数字提取把前缀含字母的数字一律当标识符跳过：模型写 `总损益 PnL:99999 USD`、`SGD99999` 等虚构数值仍判 `verified`，违反 S-20“正文数值须在工具回执中找到” | `ai.rs`：`键:值`/`键=值` 与 3～5 位大写货币/代码前缀按金融数值校验；只有本次有效或已拦截的引用 ID 先作为标识符剔除，内联有效引用仍可 `verified`。新增 3 个绕过用例与内联引用用例，修复前绕过用例会判为已验证；AI 设计正本同步 |
-| F-09 / P2 / resolved | 实际截图显示：应用未注册图标资源，所有 `Icon`（状态横幅、下钻箭头）为空白；Dock 面板以裸实体加入，标题栏显示内部类型名 `CenterWorkspacePanel` 等 | 主窗口与冒烟/基准/截图均 `with_assets(gpui_kit::assets::Assets)`；面板经 `panel_handle` 加入并自绘标题。截图复核图标与标题正确 |
-
-**用户要求的界面重设计（行为不变）**：参照长桥桌面客户端的布局与信息密度（不复制其品牌资产）：新增 `delta-desktop::theme` 浅色主题；顶部工具栏（标识、当前页、账户、紧凑范围输入、AI/任务开关）、左侧图标导航栏、底部状态栏；市场页改为自选列表＋报价头＋图表工具条＋K 线，涨跌额/涨跌幅由新的 `KlineWindowSliceDto::last_close_change`（`delta-app`，Decimal）计算，UI 只格式化；总览为净资产主值＋卡片网格；资产页批次/对账改为表格。原有元素 ID、测试文本和交互契约全部保留；规则回写 [DESIGN](../design-rules/DESIGN.md)。显式截图测试 `capture_workbench_pages`（`#[ignore]`，隐藏窗口、不激活）输出六页 PNG 到 `.local/reports/m2/a-review/ui-capture/`（`before/` 为原界面，`v2/` 为重设计后）。
-
-**A 复验（最终源码指纹）**：`verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` overall passed（日志 `.local/reports/m2/logs-12160-1794157036210/`，控制台 `.local/reports/m2/a-review/verify-stage-m2.log`），0 可见窗口、未抢焦点、正式数据根未触碰；工作区 95 passed、0 failed、2 ignored（live 探针与显式截图）；fmt/clippy 零警告。M1 v2.6 回归 overall passed：22 passed、5 项 extension/live not-run（日志 `.local/reports/m1/logs-28164-1794157361857/`，控制台 `.local/reports/m2/a-review/verify-stage-m1.log`）。release 原生基准（同机 RTX 4070 SUPER、缩放 1.5、逻辑窗口约 918.7×596）：
-
-| 项目 | 次数 | p50 | p95 | p99 | p95 门槛 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| AC-02 首屏 | 5 个新进程 | 318 ms | 339 ms | 339 ms | ≤3000 ms |
-| 工作台导航/持久化/绘制 | 300 | 31.008 ms | 33.530 ms | 35.134 ms | ≤100 ms |
-| 100k 日线、1000 可见图表帧 | 300（另 20 预热） | 11.920 ms | 17.789 ms | 18.963 ms | ≤20 ms |
-| 100k 行 DataTable 滚动帧 | 300（另 20 预热） | 5.672 ms | 7.238 ms | 7.591 ms | ≤20 ms |
-
-图表帧 p95 余量约 2.2 ms，较 B 轮无实质退化；结论只适用于记录的机器与口径。本轮重新构建的两通道静态 CRT 包：release `delta-0.1.0-windows-x86_64-5b192dd5-0290-4d8c-a6af-ec2bd8eb6e23.zip`（36448773 字节，SHA-256 `30c8d6020eaa5c284dff8ec20cf936db6baefb11b3c236c21f940fc96b022500`），dev `delta-dev-0.1.0-windows-x86_64-11308079-6aa4-45ef-8519-efd9c76c399c.zip`（36468341 字节，SHA-256 `1db0013e4f2b3176a28b4252232dfa2113636e7895a721e58d5e12f971b961b3`），M2-K04 安装/卸载与导入检查随门禁通过；H-01～H-03 以这两个包为准，下文 B 轮包表仅为历史。
-
-**结论**：B 实现与自检：完成。**A 技术审核：通过**，F-08/F-09 已在同一阶段提交修复并复验，无剩余工程阻断，无需交回 B。产品阶段验收：未完成——真实模型 ACT-01、个人账单 ACT-03、人工 H-01～H-03 保持 not-run，界面重设计尚待你在实际窗口中确认。下一步为 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-09` 推送与创建 PR 的授权。
-
-## 工作包与验证入口
-
-| 工作包 | 实现与重点入口 |
-| --- | --- |
-| M2-W01 | `delta-app/host.rs`、`delta-data/m2_schema.rs` / `storage.rs`：一致快照、AnalysisScope、ResultEnvelope、CapabilityCatalog、schema 3→4 备份/故障回滚；M2-A-01/02，冻结空 scope/零行情回归 |
-| M2-W02 | `delta-core/ledger.rs` / `valuation.rs`、导入/报告服务：账户/组合去重、期间损益、缺价/FX/成本、手工估值、对账、更正 stale、现金换汇；M2-A-04～06 与 M1 金额回归 |
-| M2-W03/04 | DockArea/DockSkin/Panel/DataTable、六页导航、账户/组合、预设导入、总览下钻、真实同步状态；M2-A-03/07～09 与实际点击/输入回归 |
-| M2-W05 | KlineViewport、批量 GPUI quads/path、滚轮/拖拽/光标/键盘、日期/指标/复权、交易/笔记标记；M2-A-10/11，同日指标窗口不变、未来哨兵、缓存内容指纹 |
-| M2-W06 | 笔记模板/正文/标签、owner/复盘日期、乐观修订、诚实自动保存、搜索/附件、图表双向恢复；M2-A-11/12，保存失败/范围切换和期间/截止回归 |
-| M2-W07 | `delta-model` 两协议真实 HTTP/SSE 回环、`delta-app/ai.rs` 工具/报告/历史/压缩，设置与 AI 控件；M2-A-13～16，中文/符号/伪造引用/权限/跨库凭据回归 |
-| M2-W08 | 一致备份/恢复/导出/删除、白名单日志、真实两通道静态 CRT 包/PE 校验/安装/外部卸载、逐包许可与全门禁；M2-A-17～20 与 M1 v2.6 回归 |
-
-AC-02 手算固定：初始 2000，买 10×100 费 1，卖 4×110 费 1，期末价 105 → 现金 1438、持仓 6、成本 600.6、已实现 38.6、未实现 29.4、NAV 2068、总损益 68 USD。金融数值由 core/app 产生，UI 与 AI 不另算。
+| M3-W01 版本、身份与资源 | `delta-app::identity`：四个身份 delta / delta-dev / delta-test / delta-dev-test，各有独立 AppId GUID、互斥量 `<id>-instance`、管道 `\\.\pipe\<id>-control`、AUMID 与数据根；测试身份不能编译为正式版。`version`：标签 `0.1.N`，开发/测试为 `<下一版本>-dev.<UTC 14 位>`，非法和降级版本拒绝。`DELTA_VERSION` / `DELTA_IDENTITY` / `DELTA_SOURCE_FINGERPRINT` 注入 build-info。`VERSIONINFO` 与 Δ 图标（`scripts/generate_icon.py`）。`instance`：单实例，以及只接受本身份的控制管道（`focus` / `quit-for-update`）。设置页“关于/更新” | M3-A-01、M3-A-02、M3-A-03（安装后的 `VERSIONINFO`） |
+| M3-W02 Inno 安装包 | `crates/delta-cli/installer/delta.iss`：中英文；AppId、AppMutex、`SetupMutex`、`CloseApplications=no`；快捷方式；HKCU 卸载；不删数据。ISPP `Ver` 检查只接受 7.1.x。`package-build` 的流程是：静态 CRT 构建，核对 build-info 与 PE 导入，随附许可/通知/README/build-info，用 ISCC 编译，写入带 SHA-256 的 sidecar；构建期间源码指纹变化时拒绝。M2 便携安装迁移见 S-34 | M3-A-03、M3-A-04、M3-A-05、M3-G-06 |
+| M3-W03 开发版本机更新 | `install-dev [--package] [--test-identity]`：只接受 delta-dev 包（门禁用 `--test-identity` 换成 delta-dev-test），拒绝其他身份和不更高的版本。运行中的应用先保存退出，30 s 内未退出或回答忙碌则放弃，不改动安装。静默安装后，在作业之外按原参数重启 | M3-A-06 |
+| M3-W04 正式版联网更新 | `delta-app::update`：只用 HTTPS 与白名单主机（github.com / objects.githubusercontent.com 等），重定向逐跳校验，有大小上限，Range 续传；用内置公钥验签，签名绑定通道和版本，拒绝降级。启动安装前做一致性备份，备份失败则不安装；随后在作业之外启动安装器。工具栏显示“更新就绪”，设置页提供检查/开关（Q-05 默认开启）。离线时本地功能不受影响。只有 `delta-test` 读取 `DELTA_UPDATE_SOURCE` / `DELTA_UPDATE_PUBLIC_KEY`（回环演练用） | M3-A-07、M3-A-08 |
+| M3-W05 发布产物与演练 | `release-keygen`（A 审核按 D-32 改为生成仓库外密钥文件 `%APPDATA%\delta-release\update-signing.key`，拒绝覆盖与写进仓库，只打印路径与公钥；原 `release-key-export` 删除，备份即离线复制该文件）；`release-build`：缺私钥时在构建前以 `RELEASE_KEY_MISSING` 失败；正式版私钥必须与内置公钥一致；产出 `setup.exe`、`latest.json`、`.sig`、`public-key.txt`。`update-test-source` 只服务 channel 为 `test` 的清单 | M3-A-09、M3-A-08 |
+| M3-W06 门禁、文档与回归 | `verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`；README 安装与 SmartScreen 说明；USER-ACTIONS 中 H-03 改为安装器步骤，新增 H-04 测试身份体验步骤，补充 ACT-10/ACT-11 命令；M1/M2 回归 | M3-G-01～06、M3-A-10 |
 
 ## 本轮实际验证
 
-最终命令均退出 0，源码指纹相同：
+最终源码指纹 `95003b7df43ad0500181a8f0afb8288c73255327471b0596b74f7763e5899eb2`，均在 Windows 11 本机以低优先级静默运行：
 
-```text
-cargo run -p delta-cli --locked -- verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench
-cargo run -p delta-cli --locked -- verify-stage --stage M1 --plan-version 2.6
-```
-
-| 验证 | 实际结果与原始证据 |
+| 检查 | 结果 |
 | --- | --- |
-| M2 全门禁 | overall passed；M2-G-01～06 与 M2-A-01～20 共 26 项 passed；M2-K01～06 全 passed；3 项人工与 2 项 live not-run。报告 `.local/reports/m2/verify-stage-report.json`，日志 `.local/reports/m2/logs-16112-1794143708105/`，控制台日志 `.local/reports/m2/b-review/verify-stage-static-crt-final.log` |
-| 静态与测试 | docs/diff/fmt/clippy/test 均通过，Clippy 零警告；工作区 94 passed、0 failed、1 ignored（`test_m1_live_network_probes`）。其中 app 56、desktop 14、CLI 5，含实际表单/导航/保存失败/导入/AI 无模型/图表输入和包 PE 回归 |
-| 模型协议 | `openai-responses` 与 `openai-chat-completions` 的受控 HTTP/SSE 回环、工具配对、reasoning、预算、认证/限流/取消/截断恢复通过；M2-K03/A13～16。真实模型保持 not-run |
-| M1 v2.6 回归 | overall passed；22 项 passed、5 项 extension/live not-run；百万行 SQLite POC passed，独立 ccxt POC-D06 本轮 not-run。报告 `.local/reports/m1/verify-stage-report.json`，日志 `.local/reports/m1/logs-4832-1794143844223/` 和 `.local/reports/m2/b-review/m1-regression-static-crt-final.log` |
-| 许可 | M2-G-06 与 3 项 Python 回归通过，885/885、0 errors；48 包明确标准正文＋完整锁定源码回退，4 种 AND 义务全部保留。MPL 包源码零修改，公开逐包清单见 [依赖许可](../evidence/2026-11-08-dependency-licenses.md) |
-| 安装与卸载 | 两通道分别编译，包内 CLI 实际安装；并存、dev 和 release 外部卸载、安装目录内自卸载拒绝、两个数据根和未知文件保留均通过。命令日志见 M2 日志目录的 `package-*.json` 与 `installed-self-uninstall.json` |
-| ZIP 分发内容 | 两包各 2443 个清单文件＋1 个 manifest；2444 个 ZIP 条目全部 CRC/哈希校验，无重名/越界/链接条目。原始结果 `.local/reports/m2/b-review/archive-verification.json` |
-| 静音与隔离 | M2/M1 均为 below_normal、并发 4、0 可见窗口、0 临时残留、0 观测范围外新建目录、正式数据根未触碰；原生冒烟/基准未抢焦点。观测范围为目录元数据，非全系统写入追踪 |
+| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings` | passed（门禁 `M3-G-01～04` 实跑，另在序列开头单独执行 fmt/clippy） |
+| `cargo test --workspace --locked` | passed：103 passed、0 failed、2 ignored（live 探针与显式截图）；门禁 `M3-G-05` |
+| `verify-stage --stage M1 --plan-version 2.6` | passed：22 passed、5 项 extension/live not-run。本序列第一次运行中锁探针 `M1-A-15` 冷启动超时一次（TEST-02），同指纹立即重跑通过 |
+| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke` | failed：25 passed、5 not-run（人工 H-01～H-03、live、真实模型），仅 `M2-A-20` / `M2-K02` 帧性能未达标（见下）；首屏 p95 229 ms、导航 p95 43.3 ms 达标；0 可见窗口。仅 `--ui-smoke`（不带 `--ui-bench`）时 overall 为 not-run |
+| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | failed，仅 `M3-A-10`（M2 回归前置条件）与随之绑定的 `M3-K04`；其余必需项 passed（日志 `.local/reports/m3/logs-3136-1794199760499/`） |
 
-## 原生 release 性能与包
+M3 用例（报告 `.local/reports/m3/verify-stage-report.json`，日志在同目录 `logs-*`）：
 
-Windows 11；20 逻辑核（Intel Family 6 Model 183）；RTX 4070 SUPER，driver 621.14；缩放 1.5，逻辑窗口约 918.7×596 px。以下均为最终静态 CRT release 包实测，原始样本在 `.local/reports/m2/ui-bench-report.json`，门禁独立重算分位数。
+| 用例 | 结果 | 实际证据（摘要） |
+| --- | --- | --- |
+| M3-G-01～05 | passed | check_docs、`git diff --check`、fmt、clippy、工作区测试实跑 |
+| M3-G-06 | passed | `.iss` 指令齐全、无数据删除；四个身份的 AppId、互斥量、管道、可执行文件与 AUMID 互不相同；正式版公钥尚未内置（ACT-10），正式版更新校验失败关闭 |
+| M3-A-01 / A-02 / A-07 | passed | 版本推算与身份隔离、单实例与跨身份管道拒绝、签名/降级/传输策略与回环续传/重定向拒绝的单元测试 |
+| M3-A-03（K01） | passed | 两个测试身份静默按用户安装（setup 2.9 s，无提权），HKCU 键、Inno 7.1.1、快捷方式、build-info 与 `VERSIONINFO [0,1,1,0]` 正确，安装后隐藏窗口 `--ui-smoke` 通过；静默卸载约 1.0 s 移除文件、键与快捷方式，数据根与未知用户文件保留 |
+| M3-A-04（K02） | passed | 同步忙碌时应用回答 busy，安装器 36.6 s 后中止，版本不变、应用继续运行；不响应控制的应用不被强杀，安装器 66.4 s 后放弃；空闲时 quit-for-update 保存待写笔记与布局，以 0 退出，5.6 s 内完成升级；账户、笔记、附件与设置保留 |
+| M3-A-05 | passed | M2 布局（7 个清单文件，1 个被修改，另有 1 个未知文件）在 3.2 s 内迁移：已核对的文件与两份清单移除，`README.txt` 改名为 `README.txt.m2-modified` 保留，`user-notes.txt` 保留，两者都写入安装日志 |
+| M3-A-06 | passed | 拒绝 delta-test 包（`INSTALL_DEV_IDENTITY`）和同版本包（`INSTALL_DEV_DOWNGRADE`），安装与运行均不变；运行中的应用保存退出、静默升级，按原参数重启后经自身控制管道以新版本回答 focus（持有互斥量），随后按请求退出；资料库保留 |
+| M3-A-08（K03） | passed | 回环源提供 `latest.json`、`.sig` 和在 1/3 处中断的安装包；应用 Range 续传，忙碌时只提示不安装，空闲后验签、备份、在作业之外启动安装器并退出；静默升级后重启，资料库保留，备份可恢复。**仅回环演练，不是 GitHub 发布** |
+| M3-A-09 | passed | 无私钥时在构建前以 `RELEASE_KEY_MISSING` 失败且无产物；测试命名空间生成密钥并拒绝覆盖；`release-build` 产出的安装包、`latest.json` 与 `.sig` 可用生成的公钥验证，换通道验证失败；无 MSVC 运行库导入；私钥不出现在 4982 个日志/报告文件中 |
+| M3-A-10 | failed | 低优先级；0 可见/前台窗口；开发者安装、卸载键、快捷方式与 8 个数据目录不变；无临时残留。只有“M2 回归 overall passed”这一前置条件未满足（M2-A-20，见下） |
+| M3-K04 | failed（绑定 A-10） | 静音本身达标：全程 0 个可感知窗口，前台未被门禁进程占用 |
+| M3-M-01 / M-02 / L-01 | not-run | H-03、H-04 人工检查；真实 GitHub 发布需 ACT-10、ACT-11 |
 
-| 项目 | 实测次数 | p50 | p95 | p99 | p95 门槛 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| AC-02 首屏 | 5 个新进程 | 233 ms | 244 ms | 244 ms | ≤3000 ms |
-| 工作台导航/设置持久化/绘制 | 300 | 30.820 ms | 32.068 ms | 32.765 ms | ≤100 ms |
-| 100k 日线、1000 根可见图表帧 | 300（另 20 预热） | 7.743 ms | 18.171 ms | 21.725 ms | ≤20 ms |
-| 100k 行 DataTable 滚动帧 | 300（另 20 预热） | 5.501 ms | 7.765 ms | 13.360 ms | ≤20 ms |
+**M2 帧性能对照（TEST-03）**：同机（RTX 4070 SUPER，驱动 621.14，缩放 1.5，逻辑窗口 918.7×596）、同测量口径，均为 release 隐藏窗口、低优先级，各 300 帧：
 
-实际图表绘制 320 次、表格 cell 绘制 49,600 次；取消接受 <1 ms（整毫秒记录 0）、worker 释放 5 ms，在途 provider 取消另有阻塞 HTTP 回归。图表 p99 超过 20 ms，当前 p95 满足门槛；性能结论只适用于记录的机器和测量口径。
+| 二进制 | 运行 | 图表 p95 | 表格 p95 | 导航 p95 |
+| --- | ---: | ---: | ---: | ---: |
+| M2 审核时（`3c6a16dc`，M2 报告记录） | 1 | 18.2 ms | 7.8 ms | 32.1 ms |
+| 归档 M2 最终包 `3c6a16dc`（本次现场复测） | 3 | 36.3～43.2 ms | 24.0～25.8 ms | 42.0～43.4 ms |
+| M3 构建 `95003b7d`（门禁 + 现场复测） | 1 + 5 | 34.4～46.7 ms | 22.2～25.4 ms | 41.5～43.8 ms |
 
-| 通道 | 最终 ZIP（位于 `.local/reports/m2/packages/`） | 字节数 | SHA-256 |
-| --- | --- | ---: | --- |
-| release | `delta-0.1.0-windows-x86_64-61ec907d-5d81-478d-a783-6548d1e7600b.zip` | 36392374 | `a58afa432977dbe279bb4db5069315e4097a7c9c9de08eb5bfcd76c294adb566` |
-| dev | `delta-dev-0.1.0-windows-x86_64-3b91a692-ff4a-4ccd-aa28-712937e20008.zip` | 36411929 | `74227965db3dc9ffd6769c9a0014c40ebff8a463434451f6ca53b2f1bbf2b072` |
+基线包与 M3 构建在误差范围内一致，GPU 复测时空闲于 P8；首屏（约 230 ms）与取消延迟不变。M3 未修改图表与表格组件（`chart_canvas.rs`、`components.rs`）；`workbench.rs` 的改动是工具栏“更新就绪”、设置页“关于/更新”和生命周期/验证常驻模式。
 
-产物索引为 `.local/reports/m2/packages/package-artifacts.json`；每包带 `README.txt`、`package-manifest.json`、`binary-imports.json`、项目通知及完整第三方许可/归档。两个 desktop 与两个 CLI 的普通/延迟导入均无 `vcruntime` / `msvcp` / `msvcr` / `concrt`；仍依赖 Windows 系统 DLL。两通道及四个二进制 SHA 不同，具体可执行文件 SHA 见 archive-verification 原始结果。包未签名，H-03 干净机器仍 not-run。
+## 与计划的偏差与补充（未缩减范围）
+
+- **S-34 迁移的修改文件**：清单中哈希不符的文件不原地保留，而是改名为 `<名称>.m2-modified` 保留，避免被新版本文件覆盖；未知文件原样保留，两类都写入安装日志。卸载新版本时这些文件也保留。`M3-A-05` 期望已按此改写。
+- **`package-build` 拒绝正式版身份**：正式版只能经 `release-build`（需签名私钥）产出，避免出现未签名的“正式版”安装包；M2 便携 ZIP 构建改名为 `package-portable-build`。
+- **`install-dev --test-identity`**：门禁和 H-04 用它把目标换成 delta-dev-test。不带该参数时只认 delta-dev，从不触碰正式版。
+- **验证常驻模式 `--verification-resident`**：仅测试身份可用，以隐藏窗口运行，事件写入 stdout 与 `<data_dir>/verification-events.jsonl`（重启后的进程没有可读的 stdout），并设硬性最长运行时间，到期后自行保存退出。
+- **窗口哨兵细化**：在 D-25 的“可见窗口”中排除零尺寸与被 cloak 的窗口（见 K04），其余规则不变。
+- **`install-dev` 重启方式**：经 `spawn_detached_app` 在门禁作业之外启动，不随调用方作业结束，参数恢复为原运行参数。
+- **`CloseApplications=no`**：计划写的是 CloseApplications，实际关闭了 Restart Manager 关闭应用的功能，因为它可能在应用未保存时结束进程。改为在 `InitializeSetup` 中经本身份 CLI 发送 `control quit-for-update`（保存后退出，忙碌时中止安装），再由 `AppMutex` 兜底等待，满足不强杀要求。
+- **Inno 版本锁定**：`ISCC.exe` 没有版本资源，因此由 `.iss` 内 ISPP `Ver` 检查锁定 7.1.x（OSS-12）。
+- **命令补充**：`update-test-source`（回环源）、`control focus|quit-for-update`（只能指向本身份或测试身份）、隐藏命令 `__migrate-portable`（安装器内迁移助手）。
+- **测试私钥**（A 审核按 D-32 修改）：`release-build --test-identity --key-file <一次性密钥>` 只能用于测试身份，拒绝正式密钥文件；环境变量私钥 `DELTA_RELEASE_SIGNING_KEY` 只对正式版生效。
 
 ## 验证边界与接续
 
-默认 `verify-stage --stage M2 --plan-version 1.0` 执行静音离线/无头检查；没有 `--ui-smoke --ui-bench` 时，K02/K06/A20 与 overall 保持 not-run，成功退出仅表示已执行检查无失败。阶段完整 B 自检需显式运行两项 UI 验证。隐藏窗口帧包含 GPUI 更新/布局/绘制与 DirectX render/present 调用，排除等待定时器；FPS 为帧预算倒数，不能当作可见桌面的持续显示采样。首屏为 AC-02 本地库、5 个新进程，包含夹具初始化，排除 OS loader 且不清空系统文件缓存；100k 图表/表格规模分别测试。
+- **not-run**：`M3-M-01`（H-03 干净机器安装两通道、SmartScreen）、`M3-M-02`（H-04 正式版更新体验）、`M3-L-01`（真实 GitHub 发布 v0.1.1，需 ACT-10 生成并备份私钥、内置公钥入库，以及 ACT-11 授权）。正式版内置公钥尚未写入（ACT-10），因此正式版更新校验在拿到公钥前一律失败关闭，属预期行为。
+- **回环演练 ≠ 发布**：`M3-A-08` 的检查、下载、续传、验签、安装和重启都针对本机 `127.0.0.1` 测试源与测试私钥，不证明 GitHub 网络、真实 Release 资产或正式私钥可用。
+- **SmartScreen**：Q-04 默认不购买代码签名证书，安装时会出现“未知发布者”提示；README 已说明。
+- **已知不稳定测试（未修改，登记 TEST-01）**：M2 既有测试 `test_m2_a14_ai_review_ac02_qa_evidence_number_verification_and_injection_defense` 在约 40 次全量并行运行中出现 1 次 `CREDENTIAL_UNAVAILABLE`（Windows 凭据管理器瞬时失败），单独重跑通过。A 审核按 D-32 去掉凭据管理器后，该失败来源已不存在（TEST-01 关闭）。
+- **依赖**：第三方包 897 个（M2 为 885），许可收集 0 errors；`Cargo.lock`（LF 规范化）SHA-256 `cd374a417f4e910ca487d04d3d186e41afbde9746af91d14d41f32343ca22b58`；版本锁定见[技术选型](../engineering/technology-selection.md)。
 
-本轮只使用合成数据、回环服务、测试 keyring 命名空间和隔离根。真实模型 ACT-01、真实个人账单 ACT-03、中文输入法/缩放/干净机器安装 H-01～H-03 保持 not-run；公共行情本轮未运行时同样标 not-run，历史 live 记录不冒充本次通过。机器为 Windows 11、20 逻辑核、RTX 4070 SUPER，性能外推限于实际记录的硬件/缩放。
+## A 集中技术审核（2026-11-09）
 
-集中待处理项为 OSS-07（用户配置的真实兼容端点）、OSS-10（M4 存储扩展）、LOOP-01～03（后续训练/策略及扩展连接器），见 [工程台账](../decisions/open-questions.md)。OSS-08/09/11 已按本轮证据关闭；F-01～07 全部修复并复验，没有本轮必做工程缺陷延期给用户。
+角色：Agent A；待审提交 `9199fe0b1abde44ee14e60bcfb728f35f1dd53c5`（父 `5f30f6e`）。A 独立重算 B 声明的源码指纹 `95003b7d…` 一致，工作区仅有未跟踪 `workers/`。对照计划第 5、6 节逐项复核实际 diff：
 
-首选下一步：Agent A 对同一 M2 v1.0 计划与本轮提交集中技术审核，核对源码指纹并复用充分的未变更证据，重点复验金融、权限、恢复、实际 UI 和包的边界。A 收敛后才在 USER-ACTIONS 登记具体远端授权事项；独立人工检查不等于技术审核或产品验收通过。
+| 审核点 | 结论与依据 |
+| --- | --- |
+| 四个身份隔离 | `identity.rs` 中 AppId、安装目录、可执行文件、互斥量 `<id>-instance`、管道 `\\.\pipe\<id>-control`、AUMID 两两不同（单元测试与 M3-G-06）；测试身份编译为 dev 通道但数据、文档与凭据根用自身名称，且 `ensure_channel_data_isolation` 额外禁止访问 `delta-dev` 根；`.iss` 固定 `DefaultDirName={localappdata}\Programs\<id>`、`UsePreviousAppDir=no` |
+| 数据保留、备份失败不安装 | 模板无 `[UninstallDelete]`、不引用 `{userappdata}`/`{userdocs}`；应用内更新在 `backup_and_launch_installer` 中先一致性备份，失败返回 `BackupFailed`，不启动安装器；A-03/A-04/A-08 实测数据保留 |
+| 不强杀 | `CloseApplications=no`、`RestartApplications=no`；`InitializeSetup` 经已安装 CLI 发送 `quit-for-update`，忙碌或超时即中止且不改动；`AppMutex` 兜底；全仓新增代码只有门禁测试身份清理用到 `taskkill`，模板禁止出现 |
+| 更新传输与签名 | 只接受 HTTPS＋白名单主机（无端口、无内嵌凭据），重定向逐跳校验，测试身份才允许 `127.0.0.1` HTTP；签名规范串绑定通道、版本、文件名与 SHA-256；缺签名、跨通道、非更高版本、超限均拒绝；安装前再次验签；正式版内置公钥为空时失败关闭 |
+| 私钥边界 | 私钥只在密钥文件或正式版环境变量中；`release-build` 先读密钥再构建，缺失时无产物；正式版私钥必须与内置公钥一致；A-09 扫描日志与报告无私钥 |
+| 分离启动 | `spawn_detached_app` 以 `CREATE_BREAKAWAY_FROM_JOB` 脱离调用方作业（作业允许 breakaway），安装器不允许留在作业内；启动前清除本进程标准句柄继承标志，`Stdio::inherit()` 仍由 std 显式复制，回归测试覆盖 |
+| M2 便携迁移 | 哈希一致的清单文件删除，修改过的改名 `*.m2-modified` 保留，未知文件保留并写日志 |
+
+**A 修正（已 amend 进同一阶段提交）**：
+
+1. **TEST-03 根因与测量口径（M2-A-20/K02）**：同一 release 二进制、同为低优先级，退出执行速度节流前后图表 p95 39.3 ms → 8.6 ms、表格 22.3 ms → 5.9 ms；改普通优先级则无改善（36～38 ms）。Windows 11 对隐藏/后台窗口进程施加 EcoQoS 节流，测到的是系统后台调度而不是用户在前台窗口看到的帧耗时；节流下还偶发“隐藏窗口尚无有效的绘制尺寸”启动失败。修正：`--ui-bench` 测量进程调用 `opt_out_of_execution_speed_throttling`（仍为低优先级），报告记录 `power_throttling`，M2 门禁只接受 `execution_speed_opt_out` 样本；门槛不变（[质量门禁](../dev-rules/quality-gates.md#foreground-quiet)）。
+2. **M2 便携迁移的部分执行**：原实现逐个删除，遇到正在运行的 M2 应用占用的文件时已删除一部分，却报告“nothing was changed”。改为先分类并对每个待删文件做写打开预检，任一被占用即 `MIGRATE_IN_USE` 中止且不改动任何文件；新增占用场景单元测试。
+3. **密钥导出先查后写**：改为 `create_new` 原子拒绝已有文件（随后该命令按 D-32 删除，`release-keygen` 同样使用 `create_new`）。
+4. **安装包位置与产物清理（用户要求）**：`package-build` 固定把 `setup.exe` 写到仓库根 `dist/`，成功后删除同一身份的旧安装包，每个身份只留最新；构建日志在 `.local/reports/m3/packages/`；每次构建的许可暂存目录结束即删除（原先每次留下约 25 MB）。`install-dev` 默认取 `dist/` 最新开发版包，日志写 `.local/reports/m3/install-dev/`。新增 `scripts/clean_artifacts.py`（默认只列出，`--apply` 删除）。dev profile 改为工作区只保留行号表、依赖不带调试信息：`target/` 从 32 GB 降到完整 clippy＋测试后约 3.5 GB，干净构建测试约 3 分钟。见[构建产物](../dev-rules/local-files-and-references.md#build-artifacts)。
+5. **凭据改为文件（用户 D-32）**：应用凭据改为数据目录 `credentials/<命名空间>/` 下的 DPAPI 加密文件（命名空间、提供方、账户绑定进附加熵；原子写入；不可加密时拒绝），一致性备份与导出不含该目录，删除资料库随之删除；发布签名私钥改为仓库外 `%APPDATA%\delta-release\update-signing.key` 密钥文件，`release-keygen [--key-file]` 拒绝覆盖与写进仓库，`release-build --test-identity --key-file` 用一次性密钥，`release-key-export` 删除。移除 `keyring` 依赖（第三方包 897 → 895，`Cargo.lock` LF SHA-256 `b9031453fe66de57a9e49f90de4efeec5e31680c067888346c9a2746a77e1a01`）。凭据管理器中原本没有 `delta*` 条目，无需迁移。新增单元测试覆盖无明文落盘、换槽位/命名空间不能解密、损坏即报错；M1-A-13 跨进程读取改为凭据文件，M3-A-09 改为临时目录密钥文件并验证拒绝写进仓库。TEST-01（凭据管理器并发瞬时失败）随之关闭。
+6. **mbx（jdx/mr-boxington）评估**：单检出与 Windows 复制恢复下收益有限，登记 `LOOP-05`，多工作树并行开发时再评估。
+
+**A 复跑（最终指纹 `77dd43c8798e0b97b93f4a970a1d89b79bc3416f49e75c3142458afa91c09622`，Windows 11 本机，低优先级静默）**：
+
+| 检查 | 结果 |
+| --- | --- |
+| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings` | passed |
+| `cargo test --workspace --locked` | passed：104 passed、0 failed、2 ignored |
+| `verify-stage --stage M1 --plan-version 2.6` | passed（5 not-run, 22 passed） |
+| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` | passed；图表 p50/p95/p99 = 7.1/9.6/12.3 ms，表格 = 4.2/6.9/7.6 ms，首屏 p95 255 ms，导航 p95 40.9 ms；`power_throttling` = `execution_speed_opt_out`；0 可见窗口 |
+| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | passed：M3-A-01～10、M3-G-01～06 全部 passed，M3-M-01/M-02/L-01 not-run；日志 `.local/reports/m3/logs-19004-1794224901779/` |
+
+中间指纹 `8008ebc1…`（含修正 1～4、未含 D-32）也完整跑过一次三阶段门禁并全部 passed，报告留存于 `.local/reports/m3/a-review/`。
+
+**收尾修订（2026-11-12，用户要求）**：只改文字——`crates/delta-cli/src/installer.rs` 一行注释与 D-24、D-26、D-32、`Q-02` 的措辞，去掉对仓库之外项目的提及。源码指纹因这行注释不再是上面的值；行为未变，复跑 `cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings` 与 `python scripts/check_docs.py` 均 passed，三阶段门禁结果沿用上面的指纹。
+
+**边界**：回环更新演练不是 GitHub 发布；`M3-M-01`（H-03）、`M3-M-02`（H-04）、`M3-L-01`（ACT-10、ACT-11）保持 not-run。帧性能结论只适用于退出节流的测量口径与本机环境（RTX 4070 SUPER、缩放 1.5）；用户在前台窗口使用时不受该节流影响。
+
+## 接续
+
+A 审核收敛，工程阻断为零。首选下一步：用户按 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-12` 授权推送本阶段分支并创建 PR。ACT-10（生成并备份签名密钥文件）、ACT-11（v0.1.1 发布）与 H-03、H-04 人工检查独立推进，不是推送/PR 的前提。

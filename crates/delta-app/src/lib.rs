@@ -1,10 +1,14 @@
 pub mod ai;
 pub mod credentials;
 pub mod host;
+pub mod identity;
+pub mod instance;
 pub mod kline;
 pub mod paths;
 pub mod process;
 pub mod service;
+pub mod update;
+pub mod version;
 
 pub use ai::*;
 pub use credentials::*;
@@ -27,10 +31,13 @@ pub use delta_model::{
     RetryPolicy,
 };
 pub use host::*;
+pub use identity::*;
+pub use instance::*;
 pub use kline::*;
 pub use paths::*;
 pub use process::*;
 pub use service::*;
+pub use version::*;
 
 #[cfg(test)]
 mod regression;
@@ -125,16 +132,53 @@ mod tests {
 
     #[test]
     fn test_s04_credential_store_and_redaction() {
-        let prefix = format!("delta-test-unit-{}", std::process::id());
-        let store = CredentialStore::with_custom_prefix(&prefix);
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_cred_unit_{}", uuid::Uuid::new_v4()));
+        let store = CredentialStore::new(&root, "delta-test-unit");
         let secret = "unit-test-cred-value-123";
         let opaque = store.set_secret("tiingo", "unit_user", secret).unwrap();
-        assert!(opaque.starts_with("keyring://"));
+        assert!(opaque.starts_with("credential://delta-test-unit:tiingo"));
         assert!(!opaque.contains(secret));
-        let fetched = store.get_secret("tiingo", "unit_user").unwrap();
-        assert_eq!(fetched, secret);
-        store.delete_secret("tiingo", "unit_user").unwrap();
+        // D-32: one DPAPI-encrypted file under the data directory, no plaintext on disk.
+        let files: Vec<_> = std::fs::read_dir(store.directory())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        let raw = std::fs::read(&files[0]).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains(secret));
+        assert_eq!(store.get_secret("tiingo", "unit_user").unwrap(), secret);
+        // The slot is bound into the encryption: a file moved to another slot or namespace
+        // does not decrypt, and a damaged file is an error rather than a wrong secret.
+        store.set_secret("tiingo", "other_user", "x-other").unwrap();
+        let other = store.directory().join(format!(
+            "{}.{}.bin",
+            hex::encode("tiingo"),
+            hex::encode("other_user")
+        ));
+        std::fs::copy(&files[0], &other).unwrap();
+        assert!(store.get_secret("tiingo", "other_user").is_err());
+        let foreign = CredentialStore::new(&root, "delta-test-other");
+        std::fs::create_dir_all(foreign.directory()).unwrap();
+        std::fs::copy(
+            &files[0],
+            foreign.directory().join(files[0].file_name().unwrap()),
+        )
+        .unwrap();
+        assert!(foreign.get_secret("tiingo", "unit_user").is_err());
+        let mut damaged = raw.clone();
+        *damaged.last_mut().unwrap() ^= 0xff;
+        std::fs::write(&files[0], &damaged).unwrap();
         assert!(store.get_secret("tiingo", "unit_user").is_err());
+        store.delete_secret("tiingo", "unit_user").unwrap();
+        assert!(matches!(
+            store.get_secret("tiingo", "unit_user"),
+            Err(credentials::CredentialError::NotFound(_))
+        ));
+        store.delete_secret("tiingo", "unit_user").unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
 
         let redacted = redact_secrets("Bearer unit-test-cred-value-123 failed", &[secret]);
         assert!(!redacted.contains(secret));

@@ -24,31 +24,31 @@ pub(crate) struct PackageArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackageManifest {
-    schema_version: u32,
-    product: String,
-    version: String,
-    channel: String,
-    source_fingerprint: String,
-    files: BTreeMap<String, String>,
+pub(crate) struct PackageManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) product: String,
+    pub(crate) version: String,
+    pub(crate) channel: String,
+    pub(crate) source_fingerprint: String,
+    pub(crate) files: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct InstallManifest {
-    schema_version: u32,
-    product: String,
-    channel: String,
-    version: String,
-    install_dir: PathBuf,
-    files: BTreeMap<String, String>,
+pub(crate) struct InstallManifest {
+    pub(crate) schema_version: u32,
+    pub(crate) product: String,
+    pub(crate) channel: String,
+    pub(crate) version: String,
+    pub(crate) install_dir: PathBuf,
+    pub(crate) files: BTreeMap<String, String>,
 }
 
-fn failure(code: &str, error: impl std::fmt::Display) -> ErrorEnvelope {
+pub(crate) fn failure(code: &str, error: impl std::fmt::Display) -> ErrorEnvelope {
     ErrorEnvelope::new(code, error.to_string(), false)
 }
 
 /// Read PE import names without running the binary or relying on developer tools.
-fn pe_imports(path: &Path) -> Result<Vec<String>, ErrorEnvelope> {
+pub(crate) fn pe_imports(path: &Path) -> Result<Vec<String>, ErrorEnvelope> {
     const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -204,7 +204,7 @@ fn parse_pe_imports(bytes: &[u8]) -> Result<Vec<String>, ErrorEnvelope> {
     Ok(names)
 }
 
-fn check_runtime_imports(imports: &[String]) -> Result<(), ErrorEnvelope> {
+pub(crate) fn check_runtime_imports(imports: &[String]) -> Result<(), ErrorEnvelope> {
     if imports.iter().any(|name| {
         ["vcruntime", "msvcp", "msvcr", "concrt"]
             .iter()
@@ -229,7 +229,7 @@ fn product(channel: &str) -> Result<&'static str, ErrorEnvelope> {
     }
 }
 
-fn reject_link(path: &Path) -> Result<(), ErrorEnvelope> {
+pub(crate) fn reject_link(path: &Path) -> Result<(), ErrorEnvelope> {
     let metadata = fs::symlink_metadata(path).map_err(|e| failure("PACKAGE_PATH", e))?;
     #[cfg(windows)]
     let linked = {
@@ -247,7 +247,7 @@ fn reject_link(path: &Path) -> Result<(), ErrorEnvelope> {
     Ok(())
 }
 
-fn relative_file(name: &str) -> Result<PathBuf, ErrorEnvelope> {
+pub(crate) fn relative_file(name: &str) -> Result<PathBuf, ErrorEnvelope> {
     let path = PathBuf::from(name);
     if name.is_empty()
         || name.contains([':', '\\'])
@@ -285,7 +285,7 @@ fn checked_file(root: &Path, name: &str, expected: &str) -> Result<PathBuf, Erro
     Ok(resolved)
 }
 
-fn collect_files(
+pub(crate) fn collect_files(
     root: &Path,
     directory: &Path,
     files: &mut BTreeMap<String, String>,
@@ -310,7 +310,7 @@ fn collect_files(
     Ok(())
 }
 
-fn copy_tree(source: &Path, target: &Path) -> Result<(), ErrorEnvelope> {
+pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), ErrorEnvelope> {
     let mut files = BTreeMap::new();
     collect_files(source, source, &mut files)?;
     for name in files.keys() {

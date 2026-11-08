@@ -36,10 +36,10 @@
 
 <a id="destaging"></a>
 
-保留 `FR-模块-编号`、`NFR-编号`、`AC-编号`；技术验证使用 `POC-编号`，里程碑统一使用 `M1`、`M2`、`M3`、`M4`、`M5`（M = Milestone），工作包使用 `M1-W01` 等，决定使用 `D-编号`、`ADR-0001`，事项使用 `Q/H/OSS/ACT/LOOP/DOC-编号`。编号不为排序改动或复用。
+保留 `FR-模块-编号`、`NFR-编号`、`AC-编号`；技术验证使用 `POC-编号`，里程碑统一使用 `M1`、`M2`、`M3`、`M4`、`M5`、`M6`（M = Milestone），工作包使用 `M1-W01` 等，决定使用 `D-编号`、`ADR-0001`，事项使用 `Q/H/OSS/ACT/LOOP/DOC-编号`。编号不为排序改动或复用。
 
 - **阶段标识大小写（[D-30](../decisions/confirmed-decisions.md)）**：人读标签与编号用大写——正文、计划、决定、登记表 `currentStage`/`retireAfter`、追踪表 `stage` 与 `M2-W01`、`M2-A-01`、`M2-K01` 等编号；机器标识用小写——路径与文件名（`m2-stage-cases.json`、`docs/evidence/2026-11-08-m1-stage-report.md`）、分支（`codex/m2-desktop-workbench`）、报告目录（`.local/reports/m2/`）、提交 scope（`feat(m2)`）与计算版本（`m1-ledger-3`）。`verify-stage --stage` 两种大小写都接受。
-- **阶段命名卫生（去旧阶段化）**：全仓 `active`/`draft` 正本统一使用 `M1`–`M5` 里程碑编号，禁止在正本中回流旧 `S0`–`S4` 或 `R1`–`R2` 阶段名。长期设计、产品原则与工程规范直接描述当前有效规则，不堆叠各轮历史变更流水账。
+- **阶段命名卫生（去旧阶段化）**：全仓 `active`/`draft` 正本统一使用 `M1`–`M6` 里程碑编号，禁止在正本中回流旧 `S0`–`S4` 或 `R1`–`R2` 阶段名。长期设计、产品原则与工程规范直接描述当前有效规则，不堆叠各轮历史变更流水账。
 - **验证状态口径**：需求追踪表的 `planned` 不代表实施通过。运行结果只用 `passed/failed/blocked/not-run`，部分通过需拆分子场景。
 
 ## 4. 冲突、阶段清理与归档

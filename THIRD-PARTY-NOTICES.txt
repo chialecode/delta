@@ -1,20 +1,24 @@
-DELTA - Third-Party Open Source Software Notices (M2 v1.0)
+DELTA - Third-Party Open Source Software Notices (M3 v1.0)
 ==========================================================
 
 DELTA is licensed under the Apache License, Version 2.0 (see LICENSE).
-The complete machine-readable per-package license inventory generated from
-`cargo metadata --locked --format-version 1` (6 workspace packages + 885
-resolved third-party dependency packages; Cargo.lock SHA-256:
-f01595156f542efd12b91bcdb507702bf080f58a4351e1fe13264ac09f48d730) is tracked in:
+The M2 machine-readable per-package license inventory (885 packages) is tracked in:
 - docs/evidence/2026-11-08-dependency-licenses.json
 - docs/evidence/2026-11-08-dependency-licenses.md
+M3 adds 12 resolved packages (including ed25519-dalek, curve25519-dalek, semver,
+winresource and getrandom 0.3) and removes `keyring` together with the older
+windows-sys 0.60.2 it pulled in (credentials are DPAPI-encrypted files, D-32); the
+current graph from `cargo metadata --locked --format-version 1` has 6 workspace
+packages + 895 resolved third-party dependency packages (Cargo.lock SHA-256, LF:
+b9031453fe66de57a9e49f90de4efeec5e31680c067888346c9a2746a77e1a01). Every package build regenerates and bundles the complete
+inventory, so the third-party-licenses/ directory of each installer is authoritative.
 
-1. Summary of Selected License Branches (885 Packages)
+1. Summary of Selected License Branches (895 Packages)
 ------------------------------------------------------
-- MIT: 775 packages
+- MIT: 783 packages
 - Apache-2.0: 56 packages
 - Unicode-3.0: 22 packages
-- BSD-3-Clause: 9 packages
+- BSD-3-Clause: 11 packages
 - ISC: 5 packages
 - BSD-2-Clause: 4 packages
 - MPL-2.0: 3 packages (see Section 2 below)
@@ -64,5 +68,14 @@ and crates.io archives listed above.
 - `tokio` v1.54.1 (MIT) — Copyright Tokio Contributors
 - `rust_decimal` v1.43.0 (MIT) — Copyright Paul Mason
 - `chrono` v0.4.45 (MIT OR Apache-2.0, MIT selected) & `chrono-tz` v0.10.4 (MIT OR Apache-2.0, MIT selected)
-- `keyring` v3.6.3 (MIT OR Apache-2.0, MIT selected) — Copyright Walther Chen & Contributors
 - `pulldown-cmark` v0.13.0 (MIT) — Copyright Google Inc. & Raph Levien
+
+Installer: Inno Setup
+---------------------
+DELTA installers (`*-setup-*-x64.exe`) are built with Inno Setup 7.1.x
+(https://jrsoftware.org/isinfo.php), Copyright (C) 1997-2026 Jordan Russell,
+Portions Copyright (C) 2000-2026 Martijn Laan. Inno Setup is used under the
+Inno Setup License, which permits use for any purpose including commercial
+applications; the copyright notice and web site addresses in the setup program
+(for example its About box) are retained unmodified. Inno Setup is a build tool
+only: no Inno Setup source code is distributed with DELTA.

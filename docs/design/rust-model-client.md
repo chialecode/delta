@@ -1,6 +1,6 @@
 # Rust 模型客户端设计
 
-版本 0.3 · 2026-11-08 · 依据 D-08 与 [ADR-0002](../decisions/0002-ai-integration.md)。M2 已建立 `delta-model` 与 `delta-app::ai`，回环验证与真实服务结论分别见 [阶段报告](../delivery/stage-report.md)。
+版本 0.3 · 2026-11-08 · 依据 D-08 与 [ADR-0002](../decisions/0002-ai-integration.md)。M2 已建立 `delta-model` 与 `delta-app::ai`，回环验证与真实服务结论分别见 [阶段报告](../evidence/2026-11-09-m2-stage-report.md)。
 
 ## 1. 范围与参考方式
 
@@ -59,7 +59,7 @@ OpenAI 官方连接优先推荐 Responses；兼容端点按用户选定协议连
 
 首轮只做文本与业务 function tools；图像、音频、Realtime、WebSocket、远端会话托管、provider 原生检索和 computer-use 延期。结构化报告优先由宿主类型/引用校验保证，不把供应商独有 structured output 设为所有端点的前置。
 
-自定义端点配置校验 URL、路径拼接和认证方式；禁止在 URL 中嵌密钥。远端用 HTTPS，本地开发受控服务可显式使用回环 HTTP。默认凭据是 API key 的 keyring 引用，不移植 ChatGPT 登录流程。Responses 在支持时使用 `store: false`，保留必要 reasoning/encrypted 项；它不等于第三方端点的零留存承诺。
+自定义端点配置校验 URL、路径拼接和认证方式；禁止在 URL 中嵌密钥。远端用 HTTPS，本地开发受控服务可显式使用回环 HTTP。默认凭据是 API key 的加密凭据文件引用（D-32），不移植 ChatGPT 登录流程。Responses 在支持时使用 `store: false`，保留必要 reasoning/encrypted 项；它不等于第三方端点的零留存承诺。
 
 ## 5. 流式、重试与工具安全
 

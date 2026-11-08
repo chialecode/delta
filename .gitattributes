@@ -5,3 +5,6 @@
 *.yml text eol=lf
 *.rs text eol=lf
 *.toml text eol=lf
+*.iss text eol=lf
+*.svg text eol=lf
+*.ico binary

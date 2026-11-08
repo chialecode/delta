@@ -27,7 +27,7 @@ KINDS = {
     "entry", "index", "rule", "requirements", "design", "plan", "status",
     "decision", "research", "evidence", "template",
 }
-STAGES = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5}
+STAGES = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M6": 6}
 FORBIDDEN_FILE_PATTERNS = (
     re.compile(r"(?:^|/)\.env(?:\.(?!example$)[^/]+)?$", re.I),
     re.compile(r"\.(?:sqlite|sqlite3|db|wal|shm|pem|key|p12|pfx)$", re.I),
@@ -200,7 +200,7 @@ def check(root: Path) -> tuple[list[str], int, int]:
         tracked[rid] += 1
         if rid not in reqs:
             errors.append(f"unknown traced requirement: {rid}")
-        if item.get("stage") not in {"M1", "M2", "M3", "M4", "M5"}:
+        if item.get("stage") not in STAGES:
             errors.append(f"{rid}: invalid stage")
         if priorities.get(rid) == "P0" and item.get("stage") != "M2":
             errors.append(f"{rid}: P0 must remain M2")
@@ -232,7 +232,7 @@ def check(root: Path) -> tuple[list[str], int, int]:
         content = prose(text)
         if meta.get("kind") in {"requirements", "design", "plan"}:
             if re.search(r"\b(?:S[0-4]|R[12])\b", content):
-                errors.append(f"{name}: obsolete stage label (use M1..M5)")
+                errors.append(f"{name}: obsolete stage label (use M1..M6)")
         for ref_id in re.findall(r"\b(?:FR-[A-Z]+-\d+|NFR-\d+)\b", content):
             if ref_id not in req_set:
                 errors.append(f"{name}: unknown requirement reference: {ref_id}")

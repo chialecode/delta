@@ -74,6 +74,46 @@ pub fn apply_process_quiet_guards() {
     }
 }
 
+/// Power-throttling state recorded by native frame benchmarks.
+pub const EXECUTION_SPEED_OPT_OUT: &str = "execution_speed_opt_out";
+
+/// Opt this process out of Windows execution-speed power throttling (EcoQoS).
+///
+/// Windows 11 throttles processes whose windows are hidden or in the background. A native
+/// frame benchmark runs in a hidden window (`D-25`), so without this opt-out it measures OS
+/// background scheduling rather than the frame cost a user sees in a foreground window. The
+/// process keeps its below-normal priority. Returns [`EXECUTION_SPEED_OPT_OUT`] on success.
+pub fn opt_out_of_execution_speed_throttling() -> String {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE,
+        };
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: 0,
+        };
+        let ok = SetProcessInformation(
+            GetCurrentProcess(),
+            ProcessPowerThrottling,
+            (&state as *const PROCESS_POWER_THROTTLING_STATE).cast(),
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        );
+        if ok != 0 {
+            EXECUTION_SPEED_OPT_OUT.into()
+        } else {
+            format!("unavailable:{}", std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        "platform_default".into()
+    }
+}
+
 /// Windows Job Object wrapper configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (S-10)
 /// so any child process assigned to the job is automatically terminated if the parent exits.
 pub struct QuietJobObject {
@@ -90,14 +130,18 @@ impl QuietJobObject {
             use windows_sys::Win32::Foundation::CloseHandle;
             use windows_sys::Win32::System::JobObjects::{
                 CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             };
             let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if handle.is_null() {
                 return Err("CreateJobObjectW returned null".to_string());
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // Only `spawn_detached_app` (explicit CREATE_BREAKAWAY_FROM_JOB) may leave the job:
+            // an app relaunched after an update must outlive the CLI or app that started it.
+            info.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
             let ok = SetInformationJobObject(
                 handle,
                 JobObjectExtendedLimitInformation,
@@ -346,6 +390,98 @@ where
         .map_err(|e| format!("failed to spawn {:?}: {e}", program))
 }
 
+/// Outcome of starting a process that must outlive its parent (`S-30`, `S-31`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DetachedLaunch {
+    pub process_id: u32,
+    /// False when an enclosing job forbids breakaway; the process then ends with that job.
+    pub broke_away_from_job: bool,
+}
+
+/// Start a detached process (installer or relaunched app) that survives the caller's
+/// kill-on-close job. Console windows are suppressed; GUI apps decide their own visibility.
+///
+/// With `allow_in_job` false, a failed breakaway is an error instead of a process that would
+/// be terminated together with the caller (an installer must never be cut off mid-install).
+#[allow(clippy::disallowed_methods)]
+pub fn spawn_detached_app<I, S>(
+    program: &OsStr,
+    args: I,
+    extra_env: &BTreeMap<String, String>,
+    allow_in_job: bool,
+) -> Result<DetachedLaunch, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let args: Vec<std::ffi::OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    stop_inheriting_own_stdio();
+    let build = |breakaway: bool| {
+        let mut cmd = Command::new(program);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        #[cfg(windows)]
+        {
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+            let mut flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+            if breakaway {
+                flags |= CREATE_BREAKAWAY_FROM_JOB;
+            }
+            cmd.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = breakaway;
+        cmd
+    };
+    match build(true).spawn() {
+        Ok(child) => Ok(DetachedLaunch {
+            process_id: child.id(),
+            broke_away_from_job: cfg!(windows),
+        }),
+        Err(error) if error.raw_os_error() == Some(5) && !allow_in_job => Err(format!(
+            "cannot start {:?} outside the caller's job: {error}",
+            program
+        )),
+        Err(error) if error.raw_os_error() == Some(5) => build(false)
+            .spawn()
+            .map(|child| DetachedLaunch {
+                process_id: child.id(),
+                broke_away_from_job: false,
+            })
+            .map_err(|e| format!("failed to start {:?}: {e}", program)),
+        Err(error) => Err(format!("failed to start {:?}: {error}", program)),
+    }
+}
+
+/// `CreateProcessW` is called with handle inheritance enabled, so a detached process would
+/// also inherit this process's own inheritable stdio handles (for example the pipe a gate or
+/// `delta-cli install-dev | tee` reads). The reader would then wait for EOF until the detached
+/// app exits. Clear the inherit flag on our own standard handles first; `Stdio::inherit()`
+/// keeps working because std duplicates those handles explicitly for each child.
+fn stop_inheriting_own_stdio() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        for handle in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !handle.is_null() {
+                // Failure (no handle, or a console handle) leaves the previous behaviour.
+                unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+            }
+        }
+    }
+}
+
 /// Escape ASCII control characters (`\x07` BEL, `\x1b` ESC/ANSI sequences, etc.) from
 /// untrusted strings before writing to logs or terminal output (S-10).
 pub fn sanitize_terminal_output(raw: &str) -> String {
@@ -364,7 +500,44 @@ pub fn sanitize_terminal_output(raw: &str) -> String {
     out
 }
 
-/// Window sentinel (`EnumWindows` + `IsWindowVisible` + `GetWindowThreadProcessId`)
+/// Whether a top-level window can be seen by the user: `WS_VISIBLE`, a non-empty window
+/// rectangle and not cloaked by DWM. Toolkits such as Inno Setup keep zero-size, disabled
+/// `WS_VISIBLE` helper windows (`TWindowDisabler-Window`) that nobody can see or activate;
+/// those are not popups in the sense of `D-25`.
+#[cfg(windows)]
+/// `handle` is the window handle value (`HWND as isize`).
+pub fn window_is_perceivable(handle: isize) -> bool {
+    let hwnd = handle as windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+    unsafe {
+        if IsWindowVisible(hwnd) == 0 {
+            return false;
+        }
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut rect) != 0
+            && (rect.right <= rect.left || rect.bottom <= rect.top)
+        {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        let cloak_known = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            (&mut cloaked as *mut u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+        ) == 0;
+        !(cloak_known && cloaked != 0)
+    }
+}
+
+/// Window sentinel (`EnumWindows` + `window_is_perceivable` + `GetWindowThreadProcessId`)
 /// that counts visible top-level windows belonging to the current process (`D-25` / S-10).
 pub fn count_visible_windows_for_current_process() -> usize {
     #[cfg(windows)]
@@ -372,7 +545,7 @@ pub fn count_visible_windows_for_current_process() -> usize {
         use windows_sys::Win32::Foundation::{HWND, LPARAM};
         use windows_sys::Win32::System::Threading::GetCurrentProcessId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+            EnumWindows, GetWindowTextW, GetWindowThreadProcessId,
         };
 
         struct CallbackCtx {
@@ -382,7 +555,7 @@ pub fn count_visible_windows_for_current_process() -> usize {
 
         unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
             let ctx = &*(lparam as *const CallbackCtx);
-            if IsWindowVisible(hwnd) != 0 {
+            if window_is_perceivable(hwnd as isize) {
                 let mut pid: u32 = 0;
                 GetWindowThreadProcessId(hwnd, &mut pid);
                 let mut belongs = pid == ctx.target_pid;
@@ -435,5 +608,57 @@ pub fn count_visible_windows_for_current_process() -> usize {
     #[cfg(not(windows))]
     {
         0
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Child half of the test below: launch a detached sleeper and return immediately.
+    fn launch_detached_sleeper() {
+        let ping = std::env::var_os("SystemRoot")
+            .map(|root| Path::new(&root).join("System32").join("PING.EXE"))
+            .unwrap();
+        let launch = spawn_detached_app(
+            ping.as_os_str(),
+            ["-n", "16", "127.0.0.1"],
+            &BTreeMap::new(),
+            true,
+        )
+        .unwrap();
+        println!("detached {}", launch.process_id);
+    }
+
+    #[test]
+    fn m3_a06_detached_launch_does_not_hold_the_callers_stdout_open() {
+        if std::env::var_os("DELTA_TEST_DETACHED_CHILD").is_some() {
+            return launch_detached_sleeper();
+        }
+        let exe = std::env::current_exe().unwrap();
+        let env = BTreeMap::from([("DELTA_TEST_DETACHED_CHILD".to_string(), "1".to_string())]);
+        let started = Instant::now();
+        let result = run_quiet_command_with_timeout(
+            exe.as_os_str(),
+            [
+                "--exact",
+                "process::tests::m3_a06_detached_launch_does_not_hold_the_callers_stdout_open",
+                "--nocapture",
+                "--test-threads=1",
+            ],
+            None,
+            &env,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(result.status_code, Some(0), "{}", result.stderr);
+        assert!(result.stdout.contains("detached "), "{}", result.stdout);
+        // The sleeper runs ~15 s; reading the child's output must not wait for it.
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "caller waited {elapsed:?} for a detached process to release its stdout"
+        );
     }
 }

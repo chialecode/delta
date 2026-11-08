@@ -112,13 +112,20 @@ pub fn ensure_channel_data_isolation(
             .replace('\\', "/")
             .to_lowercase())
     };
-    // Both D-26 release roots: the application data root and the user-file root.
-    let mut release_roots = Vec::new();
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        release_roots.push(PathBuf::from(local).join("delta"));
+    // Both D-26 release roots: the application data root and the user-file root. Test
+    // install identities are additionally barred from the developer's `delta-dev` roots.
+    let mut leaves = vec!["delta"];
+    if crate::identity::InstallIdentity::current().is_some_and(|identity| identity.is_test()) {
+        leaves.push("delta-dev");
     }
-    if let Ok(documents) = system_documents_root() {
-        release_roots.push(documents.join("delta"));
+    let mut release_roots = Vec::new();
+    for leaf in leaves {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            release_roots.push(PathBuf::from(local).join(leaf));
+        }
+        if let Ok(documents) = system_documents_root() {
+            release_roots.push(documents.join(leaf));
+        }
     }
     if release_roots.is_empty() {
         return Ok(());
@@ -232,7 +239,7 @@ pub fn resolve_app_paths(
     };
 
     let docs_root = resolve_user_documents_root()?;
-    let documents_dir = docs_root.join(channel.dir_name());
+    let documents_dir = docs_root.join(identity_dir_name(channel));
     let default_export_dir = documents_dir.join("exports");
     let default_backup_dir = documents_dir.join("backups");
 
@@ -242,8 +249,19 @@ pub fn resolve_app_paths(
         documents_dir,
         default_export_dir,
         default_backup_dir,
-        credential_prefix: channel.credential_prefix().to_string(),
+        credential_prefix: identity_dir_name(channel).to_string(),
     })
+}
+
+/// Test install identities (`S-26`) keep their own data, document and credential roots even
+/// though they compile as the `dev` channel, so they never share `delta-dev` state.
+fn identity_dir_name(channel: BuildChannel) -> &'static str {
+    match crate::identity::InstallIdentity::current() {
+        Some(identity) if identity.is_test() && channel == BuildChannel::current() => {
+            identity.name()
+        }
+        _ => channel.dir_name(),
+    }
 }
 
 fn default_channel_data_dir(channel: BuildChannel) -> Result<PathBuf, PathResolutionError> {
@@ -254,7 +272,7 @@ fn default_channel_data_dir(channel: BuildChannel) -> Result<PathBuf, PathResolu
             "LOCALAPPDATA is empty".to_string(),
         ));
     }
-    Ok(PathBuf::from(local_app_data).join(channel.dir_name()))
+    Ok(PathBuf::from(local_app_data).join(identity_dir_name(channel)))
 }
 
 /// Ensure `data_dir` is a writable directory; if it is a file or cannot be created/written,

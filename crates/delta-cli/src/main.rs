@@ -1,6 +1,8 @@
+mod installer;
 mod packaging;
 mod verify;
 mod verify_m2;
+mod verify_m3;
 use chrono::{NaiveDate, Utc};
 use delta_app::{
     apply_process_quiet_guards, resolve_app_paths, sanitize_terminal_output, AppService,
@@ -17,6 +19,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 use verify::run_verify_stage_m1;
 use verify_m2::{install_per_user_channel, run_verify_stage_m2, uninstall_per_user_channel};
+use verify_m3::run_verify_stage_m3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PocResultRecord {
@@ -89,7 +92,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "delta-cli (M2 v1.0) - financial data, ledger and desktop package operations\n\
+        "delta-cli (M3 v1.0) - financial data, ledger, installer and update operations\n\
          Subcommands:\n\
          - init [--data-dir <dir>]\n\
          - register --venue <NASDAQ|NYSE|OKX|BINANCE> --symbol <symbol> [--etf] [--data-dir <dir>]\n\
@@ -104,11 +107,16 @@ fn print_usage() {
          - export --dir <path> [--data-dir <dir>]\n\
          - library delete [--yes] [--data-dir <dir>]\n\
          - credential set|get|delete --provider <p> --user <u> --stdin [--prefix <pfx>]\n\
-         - package-build [--out-dir <dir>]\n\
-         - package-install --channel release|dev --package-dir <dir> [--local-app-data <dir>]\n\
-         - package-uninstall --channel release|dev [--local-app-data <dir>]\n\
+         - package-build [--identity delta-dev|delta-test|delta-dev-test] [--version <v>] [--out-dir <dir>] (installer in dist/; older ones of that identity removed)\n\
+         - install-dev [--package <setup.exe>] (default: newest delta-dev installer in dist/)\n\
+         - release-build --version 0.1.N [--key-file <file>] [--out-dir <dir>] | release-build --test-identity --key-file <throw-away key> (test rehearsal)\n\
+         - update-test-source --release-dir <test release dir> [--seconds <n>] (loopback source for H-04)\n\
+         - release-keygen [--key-file <file>] (default %APPDATA%/delta-release/update-signing.key; back up that file)\n\
+         - control focus|quit-for-update [--identity <id>] [--timeout-secs <n>]\n\
          - verify-stage --stage M1 --plan-version 2.6 [--live]\n\
-         - verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]"
+         - verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]\n\
+         - verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]\n\
+         Test and migration diagnostics only: package-portable-build, package-install, package-uninstall"
     );
 }
 
@@ -137,13 +145,23 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
 
     match sub {
         "--build-info" => {
+            println!("{}", delta_app::build_info("delta-cli"));
+            Ok(ExitCode::SUCCESS)
+        }
+        "--version" | "-V" => {
             println!(
-                "{}",
-                serde_json::json!({"product":"delta-cli", "version":env!("CARGO_PKG_VERSION"), "channel":BuildChannel::current().as_str()})
+                "{} {} ({})",
+                delta_app::InstallIdentity::current()
+                    .map(delta_app::InstallIdentity::cli_exe)
+                    .unwrap_or("delta-cli"),
+                delta_app::app_version(),
+                BuildChannel::current().as_str()
             );
             Ok(ExitCode::SUCCESS)
         }
-        "package-build" => {
+        "package-build" | "install-dev" | "release-build" | "release-keygen" | "control"
+        | "update-test-source" | "__migrate-portable" => installer_command(sub, args),
+        "package-portable-build" => {
             let root = env::current_dir()
                 .map_err(|e| delta_app::ErrorEnvelope::new("cwd", e.to_string(), false))?;
             let output = parse_flag(args, "--out-dir")
@@ -208,7 +226,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 .map_err(|e| delta_app::ErrorEnvelope::new("wait", e.to_string(), false))?;
             Ok(ExitCode::SUCCESS)
         }
-        "__internal-keyring-read" => {
+        "__internal-credential-read" => {
             let prefix = parse_flag(args, "--prefix")
                 .filter(|s| s.starts_with("delta-test-"))
                 .ok_or_else(|| {
@@ -220,7 +238,10 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 })?;
             let provider = parse_flag(args, "--provider").unwrap_or_else(|| "tiingo".to_string());
             let user = parse_flag(args, "--user").unwrap_or_else(|| "default".to_string());
-            let store = CredentialStore::with_custom_prefix(prefix);
+            let dir = cli_data_dir.as_deref().ok_or_else(|| {
+                delta_app::ErrorEnvelope::new("missing_arg", "--data-dir required", false)
+            })?;
+            let store = CredentialStore::new(dir, prefix);
             let val = store.get_secret(&provider, &user).map_err(|e| {
                 delta_app::ErrorEnvelope::new("credential_error", e.to_string(), false)
             })?;
@@ -464,6 +485,9 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
             let action = args.get(1).map(|s| s.as_str()).unwrap_or("");
             let provider = parse_flag(args, "--provider").unwrap_or_else(|| "tiingo".to_string());
             let user = parse_flag(args, "--user").unwrap_or_else(|| "default".to_string());
+            // D-32: credentials are DPAPI-encrypted files in the library's data directory.
+            let paths = resolve_app_paths(channel_override, cli_data_dir.as_deref())
+                .map_err(|e| delta_app::ErrorEnvelope::new("path_error", e.to_string(), false))?;
             let store = if let Some(pfx) = parse_flag(args, "--prefix") {
                 if !pfx.starts_with("delta-test-") {
                     return Err(delta_app::ErrorEnvelope::new(
@@ -472,9 +496,9 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                         false,
                     ));
                 }
-                CredentialStore::with_custom_prefix(pfx)
+                CredentialStore::new(&paths.data_dir, pfx)
             } else {
-                CredentialStore::for_channel(channel_override.unwrap_or_else(BuildChannel::current))
+                CredentialStore::for_paths(&paths)
             };
             match action {
                 "set" => {
@@ -591,11 +615,13 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 let ui_smoke = has_flag(args, "--ui-smoke");
                 let ui_bench = has_flag(args, "--ui-bench");
                 run_verify_stage_m2(live_mode, ui_smoke, ui_bench)
+            } else if stage.eq_ignore_ascii_case("M3") && plan_ver == "1.0" {
+                run_verify_stage_m3(has_flag(args, "--installer"), has_flag(args, "--ui-smoke"))
             } else {
                 Err(delta_app::ErrorEnvelope::new(
                     "invalid_verify_args",
                     format!(
-                        "expected '--stage M1 --plan-version 2.6' or '--stage M2 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
+                        "expected '--stage M1 --plan-version 2.6', '--stage M2 --plan-version 1.0' or '--stage M3 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
                     ),
                     false,
                 ))
@@ -606,5 +632,206 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
             format!("unknown subcommand '{other}'"),
             false,
         )),
+    }
+}
+
+fn print_json(value: &impl Serialize) {
+    println!(
+        "{}",
+        sanitize_terminal_output(&serde_json::to_string_pretty(value).unwrap_or_default())
+    );
+}
+
+fn require_identity(text: &str) -> Result<delta_app::InstallIdentity, delta_app::ErrorEnvelope> {
+    delta_app::InstallIdentity::parse(text).ok_or_else(|| {
+        delta_app::ErrorEnvelope::new(
+            "invalid_identity",
+            "expected delta, delta-dev, delta-test or delta-dev-test",
+            false,
+        )
+    })
+}
+
+/// M3 installer, update and lifecycle commands (`S-25`..`S-34`).
+fn installer_command(sub: &str, args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
+    use delta_app::InstallIdentity;
+    let root = || {
+        env::current_dir().map_err(|e| delta_app::ErrorEnvelope::new("cwd", e.to_string(), false))
+    };
+    match sub {
+        "package-build" => {
+            let root = root()?;
+            let identity = require_identity(
+                &parse_flag(args, "--identity").unwrap_or_else(|| "delta-dev".into()),
+            )?;
+            if identity == InstallIdentity::Release {
+                return Err(delta_app::ErrorEnvelope::new(
+                    "PACKAGE_IDENTITY",
+                    "release installers are produced only by release-build (signed, S-32)",
+                    false,
+                ));
+            }
+            let version = match parse_flag(args, "--version") {
+                Some(version) => version,
+                None => installer::default_dev_version(&root, Utc::now())?,
+            };
+            // Installers go to `dist/` (only the newest per identity is kept); build logs,
+            // metadata and scratch files stay under `.local/reports/m3/packages`.
+            let dist = parse_flag(args, "--out-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(installer::DIST_DIR));
+            let context = installer::PackagingContext::prepare(
+                &root,
+                &root.join(".local/reports/m3/packages"),
+            )?;
+            let artifact = context.build(identity, &version, &dist)?;
+            let pruned = installer::prune_older_packages(&dist, identity, &artifact.setup_path)?;
+            print_json(&serde_json::json!({
+                "installer": artifact.setup_path,
+                "artifact": artifact,
+                "removed_older_installers": pruned,
+            }));
+            Ok(ExitCode::SUCCESS)
+        }
+        "install-dev" => {
+            let expected = if has_flag(args, "--test-identity") {
+                InstallIdentity::DevTest
+            } else {
+                InstallIdentity::Dev
+            };
+            let root = root()?;
+            let package = match parse_flag(args, "--package") {
+                Some(package) => PathBuf::from(package),
+                None => installer::latest_package(&root.join(installer::DIST_DIR), expected)?,
+            };
+            // Keep `dist/` limited to installers: logs go to the workspace report directory.
+            let log_dir = if root.join("crates/delta-cli/installer/delta.iss").is_file() {
+                root.join(".local/reports/m3/install-dev")
+            } else {
+                package
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(env::temp_dir)
+            };
+            let receipt = installer::install_dev(&package, expected, &log_dir)?;
+            print_json(&receipt);
+            Ok(ExitCode::SUCCESS)
+        }
+        "release-build" => {
+            let root = root()?;
+            // `--test-identity` is the gate/H-04 rehearsal: a test-channel release signed with
+            // a separate throw-away key file (never the release key, D-32).
+            let identity = if has_flag(args, "--test-identity") {
+                InstallIdentity::Test
+            } else {
+                InstallIdentity::Release
+            };
+            let key_file = match (parse_flag(args, "--key-file"), identity) {
+                (Some(path), _) => PathBuf::from(path),
+                (None, InstallIdentity::Release) => installer::default_release_key_file()?,
+                (None, _) => {
+                    return Err(delta_app::ErrorEnvelope::new(
+                        "missing_arg",
+                        "--test-identity requires --key-file <throw-away key>",
+                        false,
+                    ))
+                }
+            };
+            let version = match (parse_flag(args, "--version"), identity) {
+                (Some(version), _) => version,
+                (None, InstallIdentity::Test) => installer::default_dev_version(&root, Utc::now())?,
+                (None, _) => {
+                    return Err(delta_app::ErrorEnvelope::new(
+                        "missing_arg",
+                        "--version 0.1.N required",
+                        false,
+                    ))
+                }
+            };
+            let output = parse_flag(args, "--out-dir")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| root.join(".local/reports/m3/release"));
+            let artifacts =
+                installer::release_build(&root, &output, identity, &version, &key_file)?;
+            print_json(&artifacts);
+            Ok(ExitCode::SUCCESS)
+        }
+        "release-keygen" => {
+            let key_file = match parse_flag(args, "--key-file") {
+                Some(path) => PathBuf::from(path),
+                None => installer::default_release_key_file()?,
+            };
+            print_json(&installer::release_keygen(&key_file, &root()?)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        "control" => {
+            let command = args
+                .get(1)
+                .and_then(|c| delta_app::ControlCommand::parse(c))
+                .ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new(
+                        "invalid_subcommand",
+                        "expected 'control focus|quit-for-update'",
+                        false,
+                    )
+                })?;
+            let own = InstallIdentity::current();
+            let identity = match parse_flag(args, "--identity") {
+                Some(text) => require_identity(&text)?,
+                None => own.ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new("missing_arg", "--identity required", false)
+                })?,
+            };
+            // Installed CLIs only control their own identity; source builds only test identities.
+            if own.map_or(!identity.is_test(), |own| own != identity) {
+                return Err(delta_app::ErrorEnvelope::new(
+                    "CONTROL_IDENTITY",
+                    format!("this CLI may not control {}", identity.name()),
+                    false,
+                ));
+            }
+            let timeout = parse_flag(args, "--timeout-secs")
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(30u64)
+                .clamp(1, 120);
+            let (code, detail) =
+                installer::control(identity, command, Duration::from_secs(timeout));
+            print_json(&detail);
+            Ok(ExitCode::from(code))
+        }
+        "update-test-source" => {
+            let directory = parse_flag(args, "--release-dir")
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new("missing_arg", "--release-dir required", false)
+                })?;
+            let seconds = parse_flag(args, "--seconds")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1800u64)
+                .clamp(10, 4 * 3600);
+            installer::serve_test_release(&directory, Duration::from_secs(seconds))?;
+            Ok(ExitCode::SUCCESS)
+        }
+        "__migrate-portable" => {
+            let identity = require_identity(&parse_flag(args, "--identity").unwrap_or_default())?;
+            let own = InstallIdentity::current();
+            if own.is_some_and(|own| own != identity) || (own.is_none() && !identity.is_test()) {
+                return Err(delta_app::ErrorEnvelope::new(
+                    "MIGRATE_IDENTITY",
+                    "the migration helper only handles its own identity",
+                    false,
+                ));
+            }
+            let directory = parse_flag(args, "--install-dir")
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    delta_app::ErrorEnvelope::new("missing_arg", "--install-dir required", false)
+                })?;
+            let report = installer::migrate_portable(&directory, identity)?;
+            // Printed to stdout so Inno's ExecAndLogOutput copies it into the setup log.
+            print_json(&report);
+            Ok(ExitCode::SUCCESS)
+        }
+        _ => unreachable!("dispatch only routes installer commands here"),
     }
 }

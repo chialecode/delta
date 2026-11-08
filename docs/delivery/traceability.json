@@ -15,7 +15,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -33,7 +33,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -51,7 +51,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -69,7 +69,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -87,13 +87,13 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-DATA-04",
-      "stage": "M3",
+      "stage": "M4",
       "status": "in-progress",
       "design": [
         "docs/design/data-model.md",
@@ -121,7 +121,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -140,7 +140,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -158,7 +158,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -174,7 +174,7 @@
         "AC-08"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -192,13 +192,13 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-MKT-05",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/interaction-and-workflows.md",
@@ -211,7 +211,7 @@
     },
     {
       "id": "FR-MKT-06",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/interaction-and-workflows.md",
@@ -237,7 +237,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -255,7 +255,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -273,7 +273,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -291,7 +291,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -309,7 +309,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -327,13 +327,13 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-LED-07",
-      "stage": "M3",
+      "stage": "M4",
       "status": "in-progress",
       "design": [
         "docs/design/financial-engine.md",
@@ -361,13 +361,13 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-LED-09",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -390,7 +390,7 @@
         "AC-09"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -406,7 +406,7 @@
         "AC-08"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -422,7 +422,7 @@
         "AC-08"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -439,13 +439,13 @@
         "AC-09"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-JRN-05",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/data-model.md",
@@ -457,7 +457,7 @@
     },
     {
       "id": "FR-TRN-01",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -469,7 +469,7 @@
     },
     {
       "id": "FR-TRN-02",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -482,7 +482,7 @@
     },
     {
       "id": "FR-TRN-03",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -495,7 +495,7 @@
     },
     {
       "id": "FR-TRN-04",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -508,7 +508,7 @@
     },
     {
       "id": "FR-TRN-05",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -521,7 +521,7 @@
     },
     {
       "id": "FR-TRN-06",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -534,7 +534,7 @@
     },
     {
       "id": "FR-STR-01",
-      "stage": "M4",
+      "stage": "M5",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -546,7 +546,7 @@
     },
     {
       "id": "FR-STR-02",
-      "stage": "M4",
+      "stage": "M5",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -558,7 +558,7 @@
     },
     {
       "id": "FR-STR-03",
-      "stage": "M4",
+      "stage": "M5",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -571,7 +571,7 @@
     },
     {
       "id": "FR-STR-04",
-      "stage": "M4",
+      "stage": "M5",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -584,7 +584,7 @@
     },
     {
       "id": "FR-STR-05",
-      "stage": "M4",
+      "stage": "M5",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -597,7 +597,7 @@
     },
     {
       "id": "FR-STR-06",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -621,7 +621,7 @@
         "AC-25"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -639,7 +639,7 @@
         "AC-19"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -657,7 +657,7 @@
         "AC-24"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -675,13 +675,13 @@
         "AC-19"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
     {
       "id": "FR-AI-05",
-      "stage": "M3",
+      "stage": "M4",
       "status": "planned",
       "design": [
         "docs/design/ai-design.md",
@@ -706,7 +706,7 @@
         "AC-19"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -723,7 +723,7 @@
         "AC-24"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -741,7 +741,7 @@
         "AC-25"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -758,7 +758,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -775,7 +775,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -793,7 +793,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -810,7 +810,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -828,7 +828,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -847,7 +847,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -863,7 +863,7 @@
         "AC-26"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -879,7 +879,7 @@
         "AC-26"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -898,7 +898,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -915,7 +915,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -928,11 +928,12 @@
         "docs/design/integration-contracts.md"
       ],
       "acceptance": [
-        "AC-27"
+        "AC-27",
+        "AC-30"
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -950,7 +951,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -966,7 +967,7 @@
         "AC-27"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -985,9 +986,24 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+    },
+    {
+      "id": "NFR-11",
+      "stage": "M3",
+      "status": "planned",
+      "design": [
+        "docs/dev-rules/data-and-security.md",
+        "docs/design/system-architecture.md"
+      ],
+      "acceptance": [
+        "AC-27",
+        "AC-30"
+      ],
+      "evidence": [],
+      "implementation_scope": "M3 v1.0 plan: Inno Setup per-user installers for delta/delta-dev, version/identity resources, dev local update, signed release online update."
     }
   ]
 }

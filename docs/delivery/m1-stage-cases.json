@@ -334,10 +334,10 @@
       "acceptance": [
         "AC-17"
       ],
-      "precondition": "Windows Credential Manager accessible via keyring crate.",
+      "precondition": "Windows DPAPI available for the current user (D-32: credentials are encrypted files in the data directory; Windows Credential Manager is no longer used).",
       "steps": [
-        "Write a test credential under delta-test-<run_id>:tiingo in parent process.",
-        "Spawn child process (__internal-keyring-read) to read back the credential from Windows Credential Manager.",
+        "Write a test credential under delta-test-<run_id>:tiingo into a temporary data directory in the parent process.",
+        "Spawn child process (__internal-credential-read --data-dir <temporary>) to read back the credential from the DPAPI-encrypted file.",
         "Delete the test credential and verify subsequent read returns NotFound."
       ],
       "expected": "Child process reads exact secret; credential entry is deleted and leaves 0 residual test credentials.",

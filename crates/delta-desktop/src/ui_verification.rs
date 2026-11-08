@@ -408,7 +408,7 @@ impl NativeBenchmark {
             window_size: format!("{:?}", window.bounds().size), scale_factor: window.scale_factor(),
             first_screen_times_ms: vec![], first_screen_p50_ms: 0, first_screen_p95_ms: 0, first_screen_p99_ms: 0,
             interaction_times_us: vec![], interaction_p50_us: 0, interaction_p95_us: 0, interaction_p99_us: 0,
-            workbench_measurement: String::new(),
+            workbench_measurement: String::new(), power_throttling: String::new(),
             measurement: "native hidden Windows window: scripted update through synchronous WM_PAINT, including GPUI layout/paint and DirectX render/presentation; excludes idle timer; 20 warm-up frames per component; FPS is the reciprocal frame budget".into() }
     }
 }
@@ -540,6 +540,192 @@ pub(crate) fn run_native_benchmark() -> Result<UiBenchReport, ErrorEnvelope> {
         ErrorEnvelope::new("BENCH_INTERRUPTED", "原生窗口验证没有产生结果", false)
     })?;
     result
+}
+
+/// Gate-only resident options (`M3-A-02`, `M3-A-04`, `M3-A-08`). The resident app runs the real
+/// workbench in a hidden, never-activated window with the real control pipe and updater.
+pub(crate) struct ResidentOptions {
+    pub seed: bool,
+    pub pending_note: Option<String>,
+    pub busy_sync_ms: Option<u64>,
+    pub apply_update: bool,
+    pub ignore_control: bool,
+    pub max_seconds: u64,
+}
+
+pub(crate) const RESIDENT_SEED_NOTE: &str = "note:m3-seed";
+pub(crate) const RESIDENT_PENDING_NOTE_TITLE: &str = "M3 pending note";
+
+fn seed_resident_library(host: &AppHost) -> Result<(), ErrorEnvelope> {
+    if host
+        .list_notes(false)?
+        .iter()
+        .any(|note| note.id == RESIDENT_SEED_NOTE)
+    {
+        return Ok(());
+    }
+    host.save_note_revision(
+        RESIDENT_SEED_NOTE,
+        "M3 seed note",
+        "post_trade",
+        false,
+        "Upgrade must keep this note.",
+        delta_app::StructuredNoteFields::default(),
+        vec!["m3".into()],
+    )?;
+    host.add_note_attachment(
+        RESIDENT_SEED_NOTE,
+        "m3-attachment.txt",
+        "text/plain",
+        b"M3 attachment bytes".to_vec(),
+    )?;
+    Ok(())
+}
+
+pub(crate) fn run_native_resident(
+    paths: delta_app::ResolvedAppPaths,
+    options: ResidentOptions,
+) -> Result<(), ErrorEnvelope> {
+    use crate::lifecycle::{emit_event, update_state, UpdateStatus, APPLY_REQUESTED};
+    let data_dir = paths.data_dir.clone();
+    let host = AppHost::from_service(delta_app::AppService::open(
+        paths, "USD", "USD", "UTC", true,
+    )?);
+    if options.seed {
+        if host.list_accounts()?.is_empty() {
+            host.execute(|service| delta_app::seed_ac02_fixture_in_service(service).map(|_| ()))?;
+        }
+        seed_resident_library(&host)?;
+    }
+    crate::lifecycle::IGNORE_CONTROL.store(options.ignore_control, Ordering::SeqCst);
+    crate::lifecycle::initialize_updates(data_dir.clone(), options.apply_update);
+    let failure = Arc::new(Mutex::new(None));
+    let failed = Arc::clone(&failure);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply_delta_theme(cx);
+            let wb = Arc::new(Mutex::new(None));
+            let captured = Arc::clone(&wb);
+            let as_of = chrono::Utc::now().date_naive();
+            let opened = cx.open_window(hidden_options(), move |window, cx| {
+                let view = cx.new(|cx| DeltaWorkbench::new(host, data_dir, as_of, window, cx));
+                *captured.lock().unwrap() = Some(view.clone());
+                cx.new(|cx| Root::new(view, window, cx))
+            });
+            let handle = match opened {
+                Ok(handle) => handle,
+                Err(error) => {
+                    *failed.lock().unwrap() = Some(ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false));
+                    cx.quit();
+                    return;
+                }
+            };
+            let hwnd = match native_window() {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    *failed.lock().unwrap() = Some(error);
+                    cx.quit();
+                    return;
+                }
+            };
+            cx.spawn(async move |cx| {
+                let outcome: Result<(), ErrorEnvelope> = async {
+                    initialize_native_window(hwnd)?;
+                    let started = Instant::now();
+                    let deadline = started + Duration::from_secs(options.max_seconds);
+                    let mut ready = false;
+                    let mut apply_sent = false;
+                    let mut busy_prompted = false;
+                    loop {
+                        cx.background_executor().timer(Duration::from_millis(100)).await;
+                        if Instant::now() >= deadline {
+                            emit_event("resident-timeout", json!({}));
+                            break;
+                        }
+                        let view = wb.lock().unwrap().as_ref().unwrap().clone();
+                        let (idle, has_job) = cx
+                            .update_window(handle.into(), |_, window, cx| {
+                                window.refresh();
+                                view.update(cx, |view, cx| {
+                                    let state = view.state.lock().unwrap();
+                                    (
+                                        !view.controller.read(cx).busy && state.overview.is_some(),
+                                        state.active_sync_job.is_some(),
+                                    )
+                                })
+                            })
+                            .map_err(|e| ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false))?;
+                        paint_native_window(hwnd)?;
+                        if !ready {
+                            if !idle {
+                                continue;
+                            }
+                            ready = true;
+                            cx.update_window(handle.into(), |_, _, cx| {
+                                view.update(cx, |view, _| {
+                                    let mut state = view.state.lock().unwrap();
+                                    if let Some(text) = &options.pending_note {
+                                        // An edit whose autosave has not run yet.
+                                        state.note_editor.title_buffer = RESIDENT_PENDING_NOTE_TITLE.into();
+                                        state.note_editor.body_buffer = text.clone();
+                                        state.note_editor.status = delta_app::AutosaveStatus::Editing;
+                                    }
+                                    if let Some(ms) = options.busy_sync_ms {
+                                        state.start_verification_cancellation_job(ms)?;
+                                    }
+                                    Ok::<_, ErrorEnvelope>(())
+                                })
+                            })
+                            .map_err(|e| ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false))??;
+                            emit_event(
+                                "resident-ready",
+                                json!({"process_id": std::process::id(), "build_info": delta_app::build_info("delta-desktop"),
+                                    "pending_note": options.pending_note.is_some(), "busy_sync": options.busy_sync_ms.is_some()}),
+                            );
+                        }
+                        if options.apply_update {
+                            match update_state().map(|state| state.status) {
+                                Some(UpdateStatus::Ready { .. }) if !apply_sent => {
+                                    apply_sent = true;
+                                    APPLY_REQUESTED.store(true, Ordering::SeqCst);
+                                }
+                                Some(UpdateStatus::BusyConfirm { .. }) => {
+                                    // The prompt is shown and nothing happens without
+                                    // confirmation; once the work has finished the
+                                    // simulated user asks again.
+                                    busy_prompted = true;
+                                    if !has_job {
+                                        emit_event("update-retry-when-idle", json!({}));
+                                        crate::lifecycle::set_update_status(UpdateStatus::Ready {
+                                            version: update_state()
+                                                .and_then(|s| s.offer.map(|o| o.manifest.version))
+                                                .unwrap_or_default(),
+                                        });
+                                        APPLY_REQUESTED.store(true, Ordering::SeqCst);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let _ = busy_prompted;
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = outcome {
+                    *failed.lock().unwrap() = Some(error);
+                }
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    let outcome = failure.lock().unwrap().take();
+    match outcome {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Explicit visual capture for design review: renders every workbench page in the same hidden,

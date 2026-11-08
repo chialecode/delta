@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "algorithm": "ed25519",
+  "purpose": "Verify DELTA release-channel update installers (S-31). The private key never enters the repository.",
+  "public_key_hex": ""
+}
