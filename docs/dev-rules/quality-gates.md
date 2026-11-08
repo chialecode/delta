@@ -1,6 +1,6 @@
 # 验证与交付门禁
 
-只声明实际执行结果。文档、Cargo 与 `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6` 检查已建立；当前运行结论和源码指纹只维护在 [阶段报告](../delivery/stage-report.md)，本规范不预先宣称某版本通过。
+只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立；当前阶段的运行结论和源码指纹只维护在 [M2 阶段报告](../delivery/stage-report.md)，本规范不预先宣称某版本通过。
 
 ## 1. 当前已存在并可运行的检查
 
@@ -10,8 +10,9 @@
 - `git diff --check`
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo test --workspace`
-- `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（及显式开启在线探针的 `--live`）
+- `cargo test --workspace --locked`
+- `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 [--live]`
+- `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`
 
 要求 Python 3.12+ 标准库，无第三方包依赖。`check_docs.py` 校验：
 
@@ -52,7 +53,7 @@ B 在 M1-W06 建立纯 Rust 统一验证入口 `cargo run -p delta-cli -- verify
 
 - 所有测试、HTTP 请求和后台作业必须设置显式超时与资源上限，严禁无界等待或无限重试。
 - 测试使用系统 TEMP 下的隔离目录；stage gate 把 `DELTA_DATA_DIR`、`DELTA_DOCUMENTS_DIR` 与 `LOCALAPPDATA` 指向本次临时根，结束检查门禁根与本次新建的已知测试目录是否残留。真实 `LOCALAPPDATA/delta[-dev]` 只观察目录元数据，不能读写个人金融数据；该观测不等于全系统文件追踪（D-26，见 [安装与数据位置](data-and-security.md#install-and-data-locations)）。
-- 机器可读验证报告与原始日志输出至忽略目录 `.local/reports/m1/`，仅将脱敏摘要回写至 `docs/delivery/stage-report.md`。
+- 机器可读验证报告与原始日志输出至忽略目录 `.local/reports/<阶段小写>/`（如 `m1`、`m2`），仅将脱敏摘要回写至当前阶段的 `docs/delivery/stage-report.md`。
 - 每条 docs/diff/fmt/clippy/test 命令保存 stdout/stderr/退出码/是否超时；每条命令持有独立 Windows Job，直接子进程退出或超时后先收口后代进程，再回收输出管道。错误或 POC panic 也写 failed 报告，不能早退丢失证据。报告绑定 Rust/Cargo/工具链/夹具/检查器源码 SHA-256，执行后核对未变。命名测试映射的 elapsed_ms=0 表示未单独计时，实际套件耗时在 command 记录中；结果状态只用 passed/failed/blocked/not-run。POC-D06 独立历史实测在证据文档保存，本次 gate 未重跑则标 not-run；私有服务同样 not-run。
 
 <a id="foreground-quiet"></a>
@@ -71,12 +72,16 @@ B 在 M1-W06 建立纯 Rust 统一验证入口 `cargo run -p delta-cli -- verify
 
 **窗口哨兵与进程树收口**：`verify-stage` 将当前进程及继承的子进程放入 Windows Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），执行静音命令期间用 `EnumWindows` 轮询该 Job 的可见顶层窗口；出现窗口即判 failed，报告保存 PID 与标题。实际优先级通过系统查询记录。该哨兵不观测其他进程的全部桌面窗口。依赖为 `windows-sys`（MIT OR Apache-2.0，仅在 Windows 目标启用）。
 
-M2 起的桌面测试沿用同一约束：界面逻辑测试使用 GPUI 测试平台，不创建真实窗口；真实窗口冒烟测试只在显式开关下运行，窗口创建时不激活、不置前，结束后由 Job 收口；该类测试的哨兵改为检查“焦点是否被切走”，在 M2 计划中细化。
+M2 起的桌面测试沿用同一约束：界面逻辑测试使用 GPUI 测试平台，不创建真实窗口；真实窗口冒烟测试只在显式开关下运行，窗口创建时不激活、不置前，结束后由 Job 收口；该类测试的哨兵改为检查“焦点是否被切走”。M2 细化见 [M2 计划 S-22](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)：视图逻辑测试统一用 `gpui-kit` `test-support` 无头窗口（2026-11-08 A spike 实测 0 可见窗口、前台焦点不变，见 [spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)）；真实窗口只在 `verify-stage --ui-smoke` / `--ui-bench` 显式运行。
+
+M2 门禁已建立。无 `--ui-smoke --ui-bench` 时 K02/K06/A20 与 overall 保持 not-run，退出 0 只表示已执行检查无失败；完整阶段自检使用两个显式开关。原生 HWND 必须有有效尺寸、实际图表/表格绘制计数与原始帧样本，门禁独立重算 p50/p95/p99 并拒绝 dev 构建或切片样本冒充 release 帧。首屏为 5 个新进程的 AC-02 工作台，常规交互 300 次，100k 表格/图表各 20 预热＋300 实测帧；报告说明隐藏窗口、OS loader/缓存与定时器口径。测试清理须先关闭窗口、join 宿主并断言成功，不能静默忽略锁导致的残留。
+
+M2-K04 用真实两通道静态 CRT 包执行包内 CLI 安装、外部 CLI 卸载及安装目录内自卸载拒绝，核对数据与未知文件保留。构建和安装有界解析普通/延迟 PE 导入，拒绝外部 MSVC 运行库；`binary-imports.json` 纳入文件哈希清单。开发机的成功启动不能代替该导入检查或 H-03 干净机器记录。
 
 ## 3. 阶段完成判断
 
 | 判断 | 必须满足的条件 |
 | --- | --- |
-| B 实现与自检完成 | M1-W01～W06 全部可执行工作包与自动检查通过，无工程缺口转交用户 |
+| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M2 为 M2-W01～W08）与自动检查通过，无工程缺口转交用户 |
 | A 技术审核通过（Agent 侧阶段完成） | A 核对实际 diff、代码、测试与数据质量边界，工程阻断为零；按 D-18 转入 [USER-ACTIONS](../../USER-ACTIONS.md) 请求具体远端授权 |
 | 真实私有账户/Key 验收 | 用户按 `ACT-03` 提供真实配置后独立验证；未测前保持 not-run，不冒充已通过 |

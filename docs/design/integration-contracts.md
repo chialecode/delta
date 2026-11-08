@@ -1,6 +1,6 @@
 # 统一能力与适配接口
 
-版本 0.3 · 2026-09-26 · 首轮实施契约；类型为设计约定，尚非 SDK。金融口径见 [金融规则](financial-engine.md)，AI 状态见 [上下文管理](context-state-management.md)。
+版本 0.4 · 2026-11-08 · 公共类型与 M1–M2 实现边界见第 7 节，尚非稳定 SDK。金融口径见 [金融规则](financial-engine.md)，AI 状态见 [上下文管理](context-state-management.md)。
 
 ## 1. 单一调用路径
 
@@ -75,10 +75,18 @@ ModelClient 负责类型化请求与协议事件，AgentRuntime 负责工具循�
 
 相同 scope/版本的 UI 查询与 AI 工具数值、质量和证据一致；未知工具、伪造范围、陈旧 generation 和失效引用均被拒绝。覆盖重复请求、并发更正、取消晚到响应、断开恢复、错误映射、金额跨语言无损和协议版本不匹配。首轮场景见路线中的 AC 与各阶段（M1–M4）验收用例。
 
-## 7. M1 实际接口子集
+## 7. M1–M2 实际接口实现
 
-M1 的消费者为 CLI 与测试，调用 AppService：注册标的、预览/提交导入、held row 确认或排除、事件更正、真实同步与作业控制、整库报告、对账、备份恢复、导出和删除。预览提交由宿主重建并验证文件/账本状态；客户端修改过的预览不构成授权事实。报告 DTO 带 dataset_version、ledger_revision、book/report currency、visible_until、valuation_sources、`m1-ledger-3` 和收益率方法。
+M1–M2 的消费者包括 CLI、GPUI 桌面工作台（`delta-desktop`）与只读 AI 复盘工具网关（`AnalysisToolGateway`）。`AppHost` 在单写者宿主线程上持有 `AppService`，对外提供带范围的查询契约（`AnalysisScope` → `ResultEnvelope<T>` + `EvidenceRef` + `m2-ledger-1`）与统一能力目录（`CapabilityCatalog`）。AI 只读工具严格投影自能力目录的 7 项只读子集（`scope.describe`、`report.period_breakdown`、`ledger.list_transactions`、`ledger.holdings_lots`、`reconcile.list_issues`、`data.quality_summary`、`journal.search_notes`），同一范围与版本下桌面 UI 查询与 AI 工具调用执行同一函数并产生逐字段一致的 `ResultEnvelope`（`M2-A-01`）。
 
-同一已发布数据版本只能读取其可见 raw 行情/FX/actions；未知或未封存版本拒绝。新 import/held resolution 固定事件 FX，更正保留历史 journal 与冲销引用。公开应用会话必须持库锁，后台同步共用 lease，取消与事务发布互斥。
+`AnalysisScope` 实际包含 `target`、解析后的 `resolved_accounts`、`start_date`、`as_of_date`、`report_currency`、`dataset_version`、`ledger_revision`、`journal_revision`、`visible_until`、`include_notes` 与 `versions_frozen`。第一次解析把 latest 与账户成员解析成明确快照；冻结后，`dataset_version=0` 表示尚无行情，空账户集表示没有获准账户，不能因新数据或新账户自动扩大。当前不支持的旧账本修订明确拒绝；笔记内容与权限指纹变化使冻结范围失效。日期查询同时执行期间与截止校验，工具参数不能覆盖宿主范围。
 
-`FixtureAccountProvider::from_recorded_response` 只解析声明的合成 OKX/Binance 原生 data 数组，不发网络请求；scope/time/Decimal 在代码中校验。统一能力目录、ResultEnvelope 的全部 AI 字段、模型 gateway 和 UI/AI 等值查询仍属 M2；当前 ErrorEnvelope/报告 DTO 不能称为全部目标契约已实现。
+AI 每个 run 从 SQLite Backup API 取得一致的私有内存副本，全部工具读取同一副本；持久化转录仍通过 live 宿主短事务写入，不在网络等待期间占用 live SQLite 事务。工具明细超过预算时，投影返回 `Partial`、截断原因与独立 `result_id`，仅保留实际返回对象的证据和数值；完整 UI 查询与工具投影的差异必须可见。
+
+笔记查询同时验证账户 owner、关联事件日期、图表锚点和 `review_date`；普通历史复盘按复盘日期筛选，`visible_until` 还限制实际保存时刻。候选扫描上限 10,000、返回上限 100，达到上限显式给出缺项警告。保存要求期望修订匹配，冲突返回 `REVISION_CONFLICT`；首次 scoped 保存将账户与复盘日期链接和笔记修订一并提交。
+
+同一已发布数据版本只能读取其可见 raw 行情/FX/actions；未知或未封存版本拒绝（`UNPUBLISHED_DATASET`），陈旧 generation 拒绝（`STALE_GENERATION`），未知或越权账户拒绝（`SCOPE_DENIED`）。新 import/held resolution 固定事件 FX，更正保留历史 journal 与冲销引用并将旧保存报告标为 `stale`。公开应用会话必须持库锁，后台同步共用 lease，取消与事务发布互斥。
+
+长作业句柄保留独立宿主引用和写入 lease。取消回执表示已接受取消，`worker_finished` 才表示后台资源已释放；同步进度报告真实 phase 与 prepared/published 数量。取消与 deadline 会中断在途 provider future 和重试等待，不能只在两次 HTTP 请求之间检查。
+
+`FixtureAccountProvider::from_recorded_response` 只解析声明的合成 OKX/Binance 原生 data 数组，不发网络请求；`ModelClient` 在 `delta-model` 中实现 `openai-responses` 与 `openai-chat-completions` 双协议 SSE 适配，经本地回环服务完成全套协议与流式边界验证（`M2-K03` / `M2-A-13`），真实在线模型服务由用户按 `ACT-01` 配置后启用。

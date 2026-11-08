@@ -8,13 +8,20 @@ use delta_data::{CannedHttpResponse, LoopbackTestServer, StatementPreset};
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+static NEXT_SANDBOX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 struct Sandbox(PathBuf);
 impl Sandbox {
     fn new() -> Self {
         apply_process_quiet_guards();
-        let path = std::env::temp_dir().join(format!(
-            "delta-regression-{}-{}",
+        let id = NEXT_SANDBOX_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let path = base.join(format!(
+            "delta-regression-{}-{}-{}",
             std::process::id(),
+            id,
             Utc::now().timestamp_nanos_opt().unwrap()
         ));
         fs::create_dir_all(&path).unwrap();
@@ -42,6 +49,12 @@ impl Sandbox {
 }
 impl Drop for Sandbox {
     fn drop(&mut self) {
+        for _ in 0..40 {
+            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
@@ -471,6 +484,241 @@ fn cancelled_sync_publishes_no_version() {
         }
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn in_flight_sync_cancellation_releases_resources_and_delete_restore_keep_identity() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let sandbox = Sandbox::new();
+    let app = sandbox.app();
+    let data_dir = app.paths().data_dir.clone();
+    let host = AppHost::from_service(app);
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let base_url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let (entered, received) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0_u8; 8192];
+        let _ = socket.read(&mut request).unwrap();
+        entered.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(5));
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+    });
+    let request = SyncRequest {
+        start: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        end: NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+        instruments: vec!["NASDAQ:AAPL".into()],
+        fx_pairs: vec![],
+        use_configured_credentials: false,
+        base_urls: BTreeMap::from([
+            ("yahoo".into(), base_url.clone()),
+            ("eastmoney".into(), base_url),
+        ]),
+    };
+    let job = host
+        .start_market_sync(request, Duration::from_secs(30))
+        .unwrap();
+    received.recv_timeout(Duration::from_secs(3)).unwrap();
+    let progress = host.poll_job_throttled(job).unwrap();
+    assert_eq!(progress.progress.records_published, 0);
+    assert!(!progress.worker_finished);
+    let start = Instant::now();
+    assert!(matches!(
+        host.cancel_job(job).unwrap().state,
+        JobState::Cancelled(_)
+    ));
+    assert!(start.elapsed() < Duration::from_secs(1));
+    let finished = host.wait_job_finished(job, Duration::from_secs(5)).unwrap();
+    assert!(finished.worker_finished);
+    assert!(matches!(finished.state, JobState::Cancelled(_)));
+    assert!(start.elapsed() < Duration::from_secs(5));
+    release.send(()).unwrap();
+    server.join().unwrap();
+    let published = host
+        .execute(|service| Ok(service.latest_dataset_version()))
+        .unwrap();
+    assert_eq!(published, 0);
+    let backup = sandbox.0.join("backup-after-cancel");
+    host.create_backup(backup.clone()).unwrap();
+    let preview = host
+        .execute(|service| service.preview_library_deletion())
+        .unwrap();
+    assert_eq!(
+        AppService::delete_library_from_preview(&preview, "wrong-id")
+            .unwrap_err()
+            .code,
+        "DELETE_CONFIRMATION"
+    );
+    assert!(data_dir.join("delta.sqlite").is_file());
+    host.shutdown().unwrap();
+    assert!(host.execute(|_| Ok(())).is_err());
+    assert!(
+        AppService::delete_library_from_preview(&preview, &preview.library_id)
+            .unwrap()
+            .deleted
+    );
+    assert!(!data_dir.exists());
+    AppService::restore_backup(&backup, &data_dir).unwrap();
+    let restored = sandbox.app();
+    assert_eq!(
+        restored.preview_library_deletion().unwrap().library_id,
+        preview.library_id
+    );
+}
+
+#[test]
+fn real_sync_job_reports_actual_prepared_and_published_records() {
+    let sandbox = Sandbox::new();
+    let server = LoopbackTestServer::start().unwrap();
+    server.register_route("/v8/finance/chart/AAPL", CannedHttpResponse::json(200,
+        r#"{"chart":{"result":[{"timestamp":[1598535000,1598621400],"indicators":{"quote":[{"open":[100,105],"high":[100,105],"low":[100,105],"close":[100,105],"volume":[100,100]}]}}]}}"#));
+    server.register_route("/api/qt/stock/kline/get", CannedHttpResponse::json(200,
+        r#"{"data":{"klines":["2020-08-27,100,100,100,100,100","2020-08-28,105,105,105,105,100"]}}"#));
+    let host = AppHost::from_service(sandbox.app());
+    let request = SyncRequest {
+        start: NaiveDate::from_ymd_opt(2020, 8, 27).unwrap(),
+        end: NaiveDate::from_ymd_opt(2020, 8, 29).unwrap(),
+        instruments: vec!["NASDAQ:AAPL".into()],
+        fx_pairs: vec![],
+        use_configured_credentials: false,
+        base_urls: BTreeMap::from([
+            ("yahoo".into(), server.base_url().into()),
+            ("eastmoney".into(), server.base_url().into()),
+        ]),
+    };
+    let job = host
+        .start_market_sync(request, std::time::Duration::from_secs(10))
+        .unwrap();
+    let result = host
+        .wait_job_finished(job, std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(matches!(result.state, JobState::Succeeded));
+    assert_eq!(result.progress.records_prepared, 2);
+    assert_eq!(result.progress.records_published, 2);
+    assert!(result.worker_finished);
+    host.shutdown().unwrap();
+}
+
+#[test]
+fn frozen_empty_scope_and_zero_market_version_never_expand_to_new_data() {
+    let sandbox = Sandbox::new();
+    let mut app = sandbox.app();
+    let scope = AnalysisScope::all_accounts(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(), "USD");
+    let frozen = app.resolve_and_validate_scope(&scope).unwrap();
+    assert!(frozen.versions_frozen);
+    assert!(frozen.resolved_accounts.is_empty());
+    app.store_mut()
+        .upsert_account("A", "later account", "broker", "manual", None, "active")
+        .unwrap();
+    app.sync_from_fixtures(&fixture_root()).unwrap();
+    let still_frozen = app.resolve_and_validate_scope(&frozen).unwrap();
+    assert!(still_frozen.resolved_accounts.is_empty());
+    assert_eq!(still_frozen.dataset_version, 0);
+    let slice = app
+        .load_scoped_kline_window_slice(
+            &still_frozen,
+            "NASDAQ:AAPL",
+            "1d",
+            AdjustmentKind::Raw,
+            &KlineViewport::new(0, 100),
+            100,
+        )
+        .unwrap();
+    assert!(slice.bars.is_empty());
+}
+
+#[test]
+fn journal_scope_enforces_accounts_review_period_cutoff_and_permission_changes() {
+    let sandbox = Sandbox::new();
+    let mut app = sandbox.app();
+    seed_ac02_fixture_in_service(&mut app).unwrap();
+    app.store_mut()
+        .upsert_account("B", "other account", "broker", "manual", None, "active")
+        .unwrap();
+    for (id, account, date) in [
+        ("note:A", "ACC-1", "2026-01-10"),
+        ("note:B", "B", "2026-01-10"),
+        ("note:future", "ACC-1", "2026-01-20"),
+        ("note:old", "ACC-1", "2025-12-31"),
+    ] {
+        app.store_mut()
+            .save_note_revision(
+                id,
+                "review",
+                "post_trade",
+                true,
+                "account-scoped review",
+                &StructuredNoteFields::default(),
+                &[],
+            )
+            .unwrap();
+        app.store_mut()
+            .add_note_link(id, "account", account, 1, None, "owner")
+            .unwrap();
+        app.store_mut()
+            .add_note_link(id, "review_date", date, 1, None, "scope")
+            .unwrap();
+        app.store()
+            .conn()
+            .execute(
+                "UPDATE note_revision SET saved_at='2026-01-11T00:00:00Z' WHERE note_id=?1",
+                rusqlite::params![id],
+            )
+            .unwrap();
+    }
+    let mut scope = AnalysisScope::for_accounts(
+        vec!["ACC-1".into()],
+        NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+        "USD",
+    );
+    scope.start_date = Some(NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+    scope.visible_until = Some(Utc.with_ymd_and_hms(2026, 1, 15, 23, 59, 59).unwrap());
+    let result = app.query_notes(&scope, "", true, "journal", 0).unwrap();
+    assert_eq!(
+        result
+            .value
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["note:A"]
+    );
+    for denied in ["note:B", "note:future", "note:old"] {
+        assert!(app.get_scoped_note(&scope, denied).is_err());
+    }
+    let frozen = result.scope;
+    app.store()
+        .conn()
+        .execute("UPDATE note SET allow_model_access=0 WHERE id='note:A'", [])
+        .unwrap();
+    assert!(app.resolve_and_validate_scope(&frozen).is_err());
+    assert!(app
+        .query_notes(&scope, "", true, "journal", 0)
+        .unwrap()
+        .value
+        .is_empty());
+    app.store()
+        .conn()
+        .execute("UPDATE note SET allow_model_access=1 WHERE id='note:A'", [])
+        .unwrap();
+    app.store()
+        .conn()
+        .execute(
+            "UPDATE note_revision SET saved_at='2026-01-16T00:00:00Z' WHERE note_id='note:A'",
+            [],
+        )
+        .unwrap();
+    assert!(app
+        .query_notes(&scope, "", true, "journal", 0)
+        .unwrap()
+        .value
+        .is_empty());
 }
 
 #[test]

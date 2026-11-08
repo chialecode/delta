@@ -17,7 +17,7 @@
 
 ## 2. 金融数据来源与纯 Rust 连接器选型（M1 核心）
 
-“必做/扩展”分层以 [M1 计划 3.1 节](../delivery/stage-plan.md#31-连接器与导入格式分层全部纯-rust) 为准；下表记录比较与角色。
+“必做/扩展”分层以 M1 v2.6 计划 3.1 节（PR #1 版本，Git 历史归档；实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）为准；下表记录比较与角色。
 
 | 领域 | M1 纯 Rust 首选（已在线实测） | 备选 / 扩展方案（纯 Rust） | DELTA 整合与自研边界 |
 | --- | --- | --- | --- |
@@ -73,3 +73,18 @@
 产品兼容版本以根 Cargo.toml/Cargo.lock 与 Rust 1.99.1 为准，不把调研时“最新版本”直接视为本地已构建版本。M1 保留 reqwest/serde_json 原生 REST 与 Binance ZIP CHECKSUM 路径，精度入口为 Decimal。
 
 官方 ccxt 的独立 POC 精确锁定 `=4.5.91`（okx/kraken features），实际构建与网络调用见 [POC-D06](../evidence/2026-11-08-ccxt-rust-poc.md)：不是停更问题，退出原因为 typed OHLCV f64 精度边界及默认 Windows 栈溢出。通用无损 adapter、Longport SDK 和额外原生账单模板登记 LOOP-03；不改变 M1 必做原生连接器和 M2 GPUI 方向。
+
+## 9. M2 桌面、模型客户端与打包选型（2026-11-08 A 核实）
+
+阶段定案见 [M2 计划第 3 节](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)，本机实测见 [gpui-kit spike](../evidence/2026-11-08-m2-gpui-kit-spike.md)。
+
+| 能力 | 选定 | 官方来源与日期 | 适配与许可边界 |
+| --- | --- | --- | --- |
+| 桌面框架 | `gpui-kit =0.9.0`（→ `gpui-pre =0.3.11`） | crates.io 2026-11-02；longbridge/gpui-kit | Apache-2.0；A 初始 spike 在 Rust 1.99.1 构建通过、锁文件 848 包；B 最终工作区为 6 个自有＋885 个第三方包，3 个 MPL-2.0 依赖的通知/源码来源处理见 `OSS-11` 和阶段报告 |
+| 工作台 | 官方 `DockArea` / `DockLayout` / `DockSkin` / `Panel` / `DataTable` | 同上 | **0.9.0 无官方 `Card` 组件**：D-21 的 `Card` 按官方 story `ChartCard` 模式自建 `MetricCard`，方向不变 |
+| K 线 | 自研 `KlineViewport` + 自绘 GPUI 元素；`CandlestickChart` 仅作候选 | 同上 | 官方 `CandlestickChart` 无视口、光标与标记层，数值为 `f64`；Decimal 只在绘制时转换 |
+| UI 测试 | `gpui-kit` `test-support` 无头窗口 | 上游 `crates/kit/TESTING.md` | 本机实测 0 可见窗口、焦点不变，满足 D-25 |
+| SSE | `eventsource-stream 0.2.3`；备选 `sse-stream 0.3.x` | crates.io（前者 2022-02，Codex 当前同版本；后者 2026-09） | 均为 MIT OR Apache-2.0；B 验证与 `reqwest 0.13` 流的兼容 |
+| 安装包 | `cargo-packager 0.11.x` NSIS 当前用户安装；备选 `cargo-wix 0.3.x` / 便携 zip | crates.io 2025-11；仓库 2026-11 仍活跃 | Apache-2.0 OR MIT；NSIS 为构建期工具，运行期仍为单一 Rust 二进制（D-22） |
+
+B 的兼容版本锁定为 `gpui-kit =0.9.0` / `gpui-pre =0.3.11`、`reqwest 0.13.5` / `eventsource-stream 0.2.3`，具体运行证据见 [M2 阶段报告](../delivery/stage-report.md)。本机缺少 NSIS/WiX 工具，S-23 落地为 `package-build` 便携 ZIP＋Rust 按用户安装器；两通道分别编译，build-info、源码指纹和文件哈希可复验。Windows 目标显式设置 `x86_64-pc-windows-msvc` 与 `+crt-static`，同时覆盖 `CARGO_ENCODED_RUSTFLAGS`，避免继承 flags 取消静态运行库；显式 target 让该设置只用于目标代码，不施加给 host proc-macro。构建和安装检查普通/延迟 PE 导入并保存 `binary-imports.json`，拒绝外部 MSVC 运行库依赖。当前机器的包内 CLI 安装/外部卸载与 H-03 干净机器验证分开记录，不能以开发机已有运行库或复制 source 二进制宣称包可交付。

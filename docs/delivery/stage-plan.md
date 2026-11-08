@@ -1,109 +1,115 @@
-# M1：金融数据来源底座、自动化增量同步与账本核对实施计划
+# M2：资产复盘桌面工作台、证据化 AI 复盘与 Windows 打包实施计划
 
-版本 **2.6** · 2026-11-07 · 编制：Agent A · 执行：Agent B · 当前状态见 [执行状态](status.md)。v2.6 按用户 [D-26](../decisions/confirmed-decisions.md) 增加 S-11 安装与数据位置（小写 `delta`，正式版/开发版 `delta-dev` 隔离），规则正本见 [安装与数据位置](../dev-rules/data-and-security.md#install-and-data-locations)。v2.5 按用户 [D-25](../decisions/confirmed-decisions.md) 增加 S-10 测试与门禁前台无干扰（静音、不弹窗、不抢焦点、低优先级），规则正本见 [质量门禁](../dev-rules/quality-gates.md#foreground-quiet)。v2.4 为 A 计划复审修订（不改变用户决定）：补定行情价格口径（S-08，Yahoo `close` 实测为拆股调整价）、行情修订与数据版本存储（S-09）、日历已验证范围与对照数据、Binance 归档时间戳单位、JSON 数值无损解析、真实依赖顺序与最薄端到端切片，并按协作流程精简 A→B prompt（实证见 [调研证据第 5 节](../evidence/2026-11-07-stack-and-data-research.md#5-a-计划复审实测2026-11-07-v24)）。v2.3 按用户 [D-22 ～ D-23](../decisions/confirmed-decisions.md) 确立**全项目 100% 纯 Rust 实现**与**用户主力平台（富途牛牛 + 欧易 OKX 核心主力，兼顾老虎、IBKR、长桥、嘉信、东方财富、币安）优先覆盖**，并在 v2.1/v2.2 基础上定案 SQLite 单库、实测数据源路由、`delta-app` 异步边界与必做/扩展分层（实证见 [调研证据第 4 节](../evidence/2026-11-07-stack-and-data-research.md#4-a-自审复核与在线实测2026-11-07-v21v22)）。
+版本 **1.0** · 2026-11-08 · 编制：Agent A · 执行：Agent B · 当前状态见 [执行状态](status.md)。本计划在 M1 v2.6（PR #1 集成为 `main` `0370b7e`，证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）之上，按 [D-20 ～ D-29](../decisions/confirmed-decisions.md) 交付 M2。计划开始前 A 已完成 `OSS-09` 首个 spike：`gpui-kit 0.9.0` 本机构建通过、官方无头 Dock UI 测试 0 可见窗口且不抢焦点，官方没有 `Card` 组件（见 [spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)）。
 
-## 1. 目标与核心转变（D-20 / D-21 / D-22 / D-23）
+## 1. 目标
 
-按用户指示（[D-20 ～ D-23](../decisions/confirmed-decisions.md)），项目从文档治理基线重建，反转研发顺序并统一为纯 Rust 技术栈：
-
-1. **全项目 100% 纯 Rust 实现（D-22）**：不引入 `workers/python` 或任何 Python 运行期子进程。所有行情/汇率/公司行动连接器、美股与加密交易日历、技术指标、十进制账本、CLI 与后续 M2 GPUI 桌面端、AI 模型客户端、M3 训练、M4 策略引擎全部用 Rust 实现，编译产物为单一原生二进制。
-2. **优先解决美股/ETF 与加密现货等金融数据来源问题，聚焦用户主力平台（D-20 / D-23）**：针对用户确认的常用平台（核心主力：**富途牛牛、欧易 OKX**；常用：**老虎证券、IBKR、长桥证券、嘉信证券、东方财富、币安 Binance**），Rust 原生打通免 Key 公共数据源（**欧易 OKX 公开现货 REST `bar=1Dutc`**、**币安公开行情镜像与历史归档**、Frankfurter/ECB 法币汇率、Coinbase/Bitstamp/Kraken 真实 `USDT/USD` 与 `USDC/USD` 日线、Yahoo Finance Chart v8 + **东方财富美股日线接口**交叉核验）与官方免费 API（Tiingo REST），内置权威交易日历（`XNYS`/`XNAS` 与 `CRYPTO_24_7`）及主力券商/交易所账单导入模板。
-3. **构建内置自动化数据平面（`delta-data`），告别外部手动维护**：“账本/自选驱动自动订阅 → 交易日历感知的水位线增量同步（`sync_checkpoint`）→ 多源降级与拆股/分红交叉核验 → SQLite 单库落盘 → 不可变 `dataset_version` 快照”。
-4. **M1 彻底解耦桌面 GUI（D-21）**：本阶段不引入 GPUI 或任何桌面窗口依赖，通过 `delta-core`、`delta-data`、`delta-app`、`delta-cli` 完成端到端数据获取、账单导入、FIFO 成本与多币种损益对账闭环。M2 桌面端采用新版 `gpui-kit` 官方面板体系；M1 按第 3 节 S-02 保持与之兼容的异步边界。
+1. **同一服务，两种消费者**：在 M1 `delta-app` 之上补齐带范围的查询契约（`AnalysisScope` + `ResultEnvelope` + 能力目录），桌面 UI 与 AI 只读工具调用同一函数，在同一范围与版本下得到一致的数值、质量和证据（AC-23）。
+2. **桌面工作台（D-21）**：新建 `delta-desktop`，以 `gpui-kit 0.9.0` 官方 `DockArea` + `DockSkin` + `DockLayout` + `Panel` + `DataTable` 构建总览、资产、市场（K 线视口切片）、日志、数据中心、设置与右侧 AI 面板、底部任务面板；未交付的训练/策略不显示入口。
+3. **完整资产复盘**：账户与统计组合配置、带范围与期间的损益分解、手工估值、余额核对、更正后报告过期提示，以及 `LEDGER-01` 现金换汇建模。
+4. **交易日志**：Markdown 笔记、结构化模板、与成交/计划/图表上下文的双向关联、附件、搜索与诚实的自动保存。
+5. **证据化 AI 复盘**：自研 Rust `ModelClient`（Responses / Chat Completions），宿主冻结范围、只读白名单工具、证据校验、会话与压缩检查点；未配置模型时全部本地功能可用。
+6. **可交付**：备份/恢复/导出/删除覆盖笔记与附件，Windows 按用户安装包（正式版/开发版共存），依赖许可与通知齐全，性能按固定规模实测。
 
 ## 2. 开始基线、分支与 Git 规则
 
-- 不可变基础提交：第一提交 `8329f63`（空 `README.md`）；文档治理基线并入本阶段提交（[D-29](../decisions/confirmed-decisions.md)）。
-- 当前分支：`codex/m1-data-foundation`，阶段父提交固定为 `8329f638536e4f303764045a2f10a2c1ab31fcd3`；阶段提交的当前完整 SHA 以 [执行状态](status.md) 为准。
-- 阶段提交规则（[D-09](../decisions/confirmed-decisions.md)、[Git 规则](../dev-rules/git-workflow.md)）：本计划所在提交是 `8329f63` 之后的唯一阶段提交；B 的实现、A 的审核修正与 B 的返工在 push 前均**直接 `git commit --amend` 进该阶段提交**，不得 amend 第一提交。
-- 工作区保护：保留既有未跟踪目录 `workers/agent/`，不删除、不构建、不暂存；旧废弃分支的本地备份 bundle 保存在忽略目录 `.local/rebuild-backup-20261107/`。无具体远端授权（[ACT-06](../../USER-ACTIONS.md)）前不执行 `git push` 或 PR 操作。
-- 网络与本机环境：用户确认本机经 TUN 代理以美国网络出口访问外网；A 已实测全部必做公共端点（含欧易 OKX `candles`/`history-candles`、Binance 镜像、Yahoo Chart v8 拆股/分红 JSON 与东财美股 JSON）。本机 [ACT-07](../../USER-ACTIONS.md) 已完成复核（Visual Studio Build Tools 2026 `18.11.12328.437` + `rustup` `stable-x86_64-pc-windows-msvc` `rustc 1.99.1` 编译链接实测通过）；Rust 版本由 B 以仓库根 `rust-toolchain.toml` **精确锁定 `channel = "1.99.1"`**（组件 `rustfmt`、`clippy`；不用浮动 `stable`，满足 NFR-08 可复现），升级工具链按普通依赖变更同步本节。
-- 网络出口可变：所有公共端点基址（含 OKX 区域域名、Binance 镜像）必须可配置，并在 `capabilities()` 与同步记录中保存实际基址；默认值按上述实测，`api.binance.com` 不作默认。HTTP 请求统一设置显式 User-Agent、超时与重试上限。
+- 阶段父提交：`main` `0370b7e9103d0172a7ab47613ea253949d6a9b8b`（M1 squash 合并，父 `8329f63`）。当前分支 `codex/m2-desktop-workbench`；本计划所在提交是父提交之后的唯一阶段提交，B 实现、A 审核修正与返工在 push 前直接 `git commit --amend -s` 进该提交（D-09、D-27），完整 SHA 以交接消息为准。
+- 工作区保护：未跟踪 `workers/agent/` 保持原样，不读取、不构建、不暂存。`.local/` 忽略目录下的 M1 备份、报告与本次 spike 保留。
+- 工具链：沿用根 `rust-toolchain.toml` 精确 `1.99.1`；升级工具链按普通依赖变更同步本节。
+- 远端：本阶段 push / PR / 合并另需用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 授权具体动作；CI 只能使用仓库 Actions 白名单（`actions/checkout`、`actions/setup-node`，见 [Git 规则](../dev-rules/git-workflow.md#github-hygiene)）。
+- 本机环境：Windows 11 + Visual Studio Build Tools 2026 + MSVC（`ACT-07` 已复核）；美国网络出口经 TUN 代理，公共端点基址保持可配置（沿用 M1 S-03）。
 
 ## 3. A 已定案的阶段技术决定（B 不再重新选型）
 
+M1 的 S-01～S-11 继续有效（SQLite 单库、同步命令 + 作业句柄边界、纯 Rust 连接器、keyring、数据条款类别、日历、FX 时点、原始价口径、版本区间、前台无干扰、安装与数据位置）。M2 新增：
+
 | ID | 决定 | 理由 / 退出条件 |
 | --- | --- | --- |
-| S-01 存储 | **M1 只用 SQLite（`rusqlite` bundled，WAL）**：控制面、账本、日线 `bar`、汇率、公司行动、日历、水位线、`dataset_version` 与原始响应摘要全部在单一 `delta.sqlite`（位于 S-11 应用数据根）；`dataset_partition.location_kind` 保留存储类型抽象（M1 仅 `sqlite`）。原始响应正文按内容哈希寻址保存（库内表或资料库 `raw/` 目录二选一由 B 定，必须纳入备份清单） | 个人组合日线规模（数百标的 × 数十年 ≈ 百万行级）SQLite 足够；单库使 AC-09 一致性备份恢复可由 SQLite Backup API 原子完成；避免 Windows 下 DuckDB bundled C++ 编译成本。Parquet/DuckDB 推迟为 `OSS-10`，触发条件：M4 批量扫描或实测查询性能不达标 |
-| S-02 异步边界 | `delta-core` 纯同步、无 IO；`delta-data` 内部使用 `tokio` + `reqwest`；**`delta-app` 对外 API 不暴露 `tokio`/`reqwest` 类型与 `async fn`**，采用同步命令/查询 + 后台作业句柄（`JobId`、超时/取消/进度通过标准库通道或回调 trait，作业 panic 与超时由宿主隔离转为结构化错误），运行时由 `delta-app` 私有持有 | M2 GPUI（`gpui-kit 0.9.0` 精确锁定 `gpui-pre =0.3.11`，自带执行器）可在 UI 线程直接调用而无需桥接两个运行时；同时原生满足 AC-16 后台任务超时/取消/故障隔离；M2 风险见 `OSS-09` |
-| S-03 连接器 | **100% 纯 Rust（`reqwest` + `serde_json`）实现**，见 3.1 节“必做/扩展”分层；不启动任何 Python 进程 | 消除跨语言 IPC 与 Python 打包负担；全部必做端点已于 2026-11-07 在线实测返回标准 JSON/ZIP（Tiingo 需 Token） |
-| S-04 凭据 | 私有 Token（Tiingo，扩展层 Alpaca）以 `keyring`（Windows 凭据管理器）为正式存储；开发/CI 仅允许显式受控环境变量引用（如 `DELTA_TIINGO_API_KEY`）；禁止出现在命令行参数、配置明文与日志 | 遵守 [数据安全规则](../dev-rules/data-and-security.md) 与 FR-OPS-03 |
-| S-05 数据条款 | 每个 Provider 的 `capabilities()` 声明 `requires_key`、`rate_limit`、`terms_class`（`public_open` / `official_free_personal` / `unofficial_personal`）；`dataset_version` 记录来源条款类别；导出携带来源与条款类别，M1 不提供行情再分发功能 | 代码开源许可不授予行情数据使用权；Yahoo/东财接口为 `unofficial_personal`，仅个人本地使用 |
-| S-06 日历 | **100% 纯 Rust 实现**：基于 `chrono` + `chrono-tz`（`America/New_York`）编码 `XNYS`/`XNAS` 法定节假日（含 Good Friday 复活节算法、Juneteenth 生效年份、独立日/感恩节次日/平安夜 13:00 ET 半日市、周末顺延观察日）+ 仓库内置的版本化特殊表 JSON（历史哀悼日/飓风等特殊闭市，以及**无法由规则推出的历史半日市**，带 SHA-256），建库/迁移时生成写入 SQLite `calendar_session`；`CRYPTO_24_7` 为 UTC 日切。**已验证范围定为 `1990-01-02`～`2027-12-31`**，范围外返回 `calendar_unknown`。日线 `session_date` 一律按交易所本地日期（`America/New_York`）归属，不由 UTC 日期推断 | 零外部运行时依赖、离线确定性可复现。对照数据：1990～2023-01 使用 `exchange_calendars`（Apache-2.0）仓库数据文件 `tests/resources/xnys.csv`（实测覆盖 1990-01-02～2023-01-13）作测试夹具，仅取数据文件、不引入 Python，保留许可声明并计入 `OSS-06`；2023～2027 以 NYSE 官网公布的假日与提前收盘表录制为夹具。`XNAS` 与 `XNYS` 若有差异记入特殊表 |
-| S-07 汇率时点（可逆默认 A-07） | 法币参考汇率仅在 ECB 发布日存在；非发布日估值使用最近一个不晚于估值时点的已发布值并标记 `carried_forward`（记录来源日期）；连续超过 4 个日历日无发布即视为缺汇率（`partial`）。稳定币用自身日线收盘，不做 1.0 假设 | 规则同步至 [金融规则](../design/financial-engine.md)；Frankfurter 的 `USD/CNY` 仅自 2005 年起有数据，更早区间必须显式缺失 |
-| S-08 行情价格口径（可逆默认 A-08） | **规范存储为原始未复权 OHLCV + `corporate_action`**，`adjustment` 取值 `raw` / `split_adjusted` / `total_return_adjusted`；复权序列由原始价与带版本的公司行动因子派生，供应商自带的复权序列只入核验，不作估值输入。**Yahoo Chart v8 的 `open/high/low/close/volume` 是拆股调整值而非原始价**，`adjclose` 为拆股+分红调整，`dividends` 金额也按之后的拆股调整：Yahoo 原始价须以“调整值 × 之后累计拆股因子”还原（成交量除以该因子），并与东财 `fqt=0`、Tiingo 原始价核验。JSON 数值必须从源文本直接解析为 `Decimal`（禁止 `f64` 中间值），Yahoo 浮点噪声按版本化规整规则处理（美股价格保留 4 位小数）；账本分红以券商流水为准，行情侧分红只作核验 | 实测 Yahoo `AAPL` 2020-08-28 `close=124.80750274658203`，东财 `fqt=0` 同日 `499.23`（4:1 拆股前原始价）。若把 Yahoo `close` 当原始价，估值与 AC-05 拆股会被重复调整；与 [金融规则](../design/financial-engine.md#3-转账与公司行动) “估值优先使用原始价格并显式处理公司行动”一致 |
-| S-09 行情修订与数据版本 | `bar` 按 `(instrument, timeframe, session, adjustment, source, open_at)` 保存内容，修订时保留旧行并以 `valid_from_version` / `valid_to_version` 标识有效版本区间；`dataset_version` 是清单与版本号，**不复制行情行**，按版本查询为 `valid_from_version ≤ v < valid_to_version`（`valid_to_version` 为空表示仍有效）。每次增量同步回看重叠窗口（美股最近 5 个交易时段、加密最近 3 个 UTC 日），内容变化生成新修订与 `data_revision` 诊断，不静默覆盖；新增拆股只追加 `corporate_action` 与新因子版本，原始价不重写 | 避免每次同步复制百万行；固定版本查询可复现（M3/M4 依赖）；修订可追溯 |
-| S-10 前台无干扰（D-25） | 测试、`verify-stage` 与 Agent 开发期命令按 [质量门禁](../dev-rules/quality-gates.md#foreground-quiet) 执行：子进程统一经静默进程助手（`CREATE_NO_WINDOW`、空 `stdin`、输出捕获，`clippy.toml` 禁止直接 `Command::new`）；回环测试服务只绑定 `127.0.0.1:0`；门禁设置 `SetErrorMode` 屏蔽崩溃与错误对话框、`BELOW_NORMAL` 优先级与 `max(1, 逻辑核数 - 2)` 并发；子进程放入 Job Object 统一收口，并以窗口哨兵（`EnumWindows`）检测任何可见窗口；全程非交互、不打开浏览器或资源管理器、不发声，外部文本中的控制字符转义后输出。依赖 `windows-sys 0.61.x`（仅 Windows 目标） | 用户要求后台测试尽量不影响前台工作。最常见干扰是从无控制台的 Agent/IDE 启动时每个子进程闪出控制台窗口，以及测试服务绑定非回环地址触发防火墙对话框；两者都可由代码规则消除，并由哨兵自动证明 |
-| S-11 安装与数据位置（D-26） | 按 [安装与数据位置](../dev-rules/data-and-security.md#install-and-data-locations) 实现单一位置解析模块（`delta-app` 内，CLI 与 M2 共用）：通道 `release` / `dev` / `source`（构建期 `DELTA_CHANNEL`）；应用数据根 `%LOCALAPPDATA%\delta[-dev]`，用户文件根 `<文档>\delta[-dev]`（`SHGetKnownFolderPath`），`source` 等同 `dev`；`DELTA_DATA_DIR` / `DELTA_DOCUMENTS_DIR` / `--data-dir` 覆盖；`delta.lock` 独占锁；`keyring` 服务名按通道命名空间；全部小写，不用 `%APPDATA%` 与 `~\.delta`。M1 不做安装包，安装目录约定供 M2 打包使用 | 与用户其他项目一致的通道约定；正式数据不会被开发构建或测试误写；单写锁与 S-01 单写执行器一致 |
+| S-12 crate 布局 | 新增 `delta-desktop`（二进制 `delta`，只含视图、交互状态与 GPUI 适配）与 `delta-model`（ModelClient、两协议适配、SSE、HTTP 传输，不访问业务库）；AI 运行时、工具网关与会话仓储放 `delta-app::ai`，会话表放 SQLite 迁移。`delta-desktop` 只依赖 `delta-app`（及其公开 DTO），**不得直接依赖 `delta-data`、`rusqlite`、`tokio`、`reqwest`**；`AppService::store()` / `store_mut()` 收为 crate 内部，CLI 改用服务查询 | UI 不拥有 SQL、金融公式或指标（[DESIGN](../design-rules/DESIGN.md)）；依赖边界由 `cargo metadata` 检查固化，不靠约定 |
+| S-13 查询契约 | `delta-app` 提供有类型的查询/命令：`AnalysisScope`（组合或账户集、期间、报表币种、`dataset_version`、`ledger_revision`、`visible_until`）→ `ResultEnvelope<T>`（数据、质量状态 `complete/partial/unavailable` 与缺口、证据引用 `EvidenceRef{kind,id,revision}`、版本、计算版本）。能力目录列出每个能力的 ID、schema 版本、读写类别与范围要求；AI 工具白名单是目录的只读子集，参数 schema 由同一类型生成 | 满足 [统一能力接口](../design/integration-contracts.md) 与 AC-23；避免 UI 与 AI 各写一套查询 |
+| S-14 宿主线程模型 | `AppHost`：一个所有者线程持有 `AppService`（单写者、持库锁），UI 通过标准库通道发送请求、在 GPUI 后台执行器中等待结果，**UI 线程永不阻塞在 SQLite 或网络上**；长任务沿用 `JobController`，进度以 ≤10 Hz 推送；每个视图请求带 generation，迟到结果按 generation 丢弃。只读查询如实测 P95 不达标，可增加绑定 `dataset_version` 的 WAL 只读连接（B 按实测决定并记录） | GPUI 自带执行器、`AppService` 内含非 `Sync` 的 SQLite 连接；保持 M1 S-02 不暴露 Tokio 的边界 |
+| S-15 工作台与卡片 | 按官方 `dock` 示例：`DockSkin::dock_area` + `DockLayout`，左侧导航（总览、市场、资产、日志、数据中心；设置在底部），中部工作区，右侧 AI 面板，底部任务面板；布局以带版本号的 JSON 存于应用数据根 `settings/layout.json`，版本不符或损坏时回到默认布局并提示。**`gpui-kit 0.9.0` 没有官方 `Card`**：按官方 story `ChartCard` 模式自建 `MetricCard`（标题、主值、币种、质量徽标、期间、说明、跳转）；表格统一用 `DataTable` + `TableDelegate` 虚拟滚动 | D-21 方向不变，`Card` 落地方式按上游实际 API 修正；布局恢复不能把损坏状态带进下次启动 |
+| S-16 K 线视口 | `KlineViewport` 为纯 Rust、无 GPUI 依赖的状态机（`visible_range`、缩放、平移、跳到日期、十字光标、命中测试、标记布局），全部单元测试；渲染首选 **自绘 GPUI 元素**（`canvas` / 路径批量绘制主图、成交量与指标副图、成交/笔记标记）；`CandlestickChart` 仅当 spike M2-K02 证明切片后满足性能与标记需求时可用于主图，否则只用于小卡片。数据按窗口分页从 `AppHost` 读取 Decimal DTO，仅在绘制时转 `f64`；指标由 `delta-core` 从固定数据起点计算，不随窗口重算预热 | `CandlestickChart` 无视口、光标与标记层（spike 证据）；AC-11 要求不同窗口同日指标一致；NFR-04 |
+| S-17 笔记与附件存储 | schema 4 迁移（迁移前自动一致性备份）：`note`（当前版本指针、模型访问开关）、`note_revision`（只追加）、`note_link`（成交事件/计划/标的/图表上下文，记录被链接对象修订号）、`chart_context`（标的/场所/周期/时间窗口/复权/指标参数/可选固定 `dataset_version`）、`attachment`（`attachments/` 下 SHA-256 内容寻址）、`tag` / `note_tag`、`trade_plan`。搜索用 SQLite FTS5 **trigram** 分词（中文 3 字以上子串），1～2 字查询回退为有界 `LIKE`；spike M2-K05 确认 `rusqlite` bundled 的 FTS5 可用 | 笔记与账本同库，使 AC-09 备份恢复与 AC-20 删除范围原子一致；FTS5 默认分词不切中文 |
+| S-18 自动保存 | 编辑缓冲 → 停止输入 1 s 或失焦保存为新 `note_revision`；状态严格为 `编辑中 / 正在保存 / 已保存（时间） / 保存失败可重试`；写失败保留缓冲、不显示已保存；崩溃后恢复到最近持久化修订 | FR-JRN-01、DESIGN 状态要求 |
+| S-19 ModelClient | 按 [Rust 模型客户端](../design/rust-model-client.md)：`reqwest 0.13`（沿用 M1 锁定）+ `eventsource-stream 0.2.3`（Codex 当前同版本；2022 年后无新版但被广泛使用，B 若发现与 reqwest 0.13 流不兼容可改用活跃的 `sse-stream 0.3.x` 并记录）；显式 `openai-responses` / `openai-chat-completions`，未知协议拒绝，不自动切换；默认上限：单条 SSE 记录 1 MiB、单 run 12 次工具调用、120 s、工具明细 100 行；401/403 不重试，429/5xx 在无可见输出前最多重试 2 次 | 已有设计正本；两协议都必须通过受控回环服务的独立全套用例（AC-25） |
+| S-20 AI 运行时与工具 | `AgentRuntime` 冻结 scope 与数据/账本版本；只读工具首批：`scope.describe`、`report.period_breakdown`、`ledger.list_transactions`、`ledger.holdings_lots`、`reconcile.list_issues`、`data.quality_summary`、`journal.search_notes`（只返回允许模型访问的笔记）；最终报告为结构化“摘要 / 计算结果 / 证据 / 局限”，每个引用由宿主解析为范围内真实对象，失效或越权引用拦截；**正文中的数值必须能在本次工具回执中找到（规范化格式后匹配）**，否则该报告标为 `needs_review` 并高亮，不显示为已验证 | AC-10 / AC-19 / FR-AI-02/04：模型不得生成或改写金融数值 |
+| S-21 会话与压缩 | 按 [上下文状态](../design/context-state-management.md)：SQLite 保存 run（含 generation）、转录项、工具回执、检查点与压缩来源；压缩在单事务内提交，失败保留原检查点并提示；换账户/换模型/换数据版本即新 run；系统约束、范围与引用由宿主重建，不信任摘要 | AC-24 |
+| S-22 测试与前台无干扰 | 视图逻辑测试统一用 `gpui-kit` `test-support` 无头窗口（spike 实测 0 可见窗口、不抢焦点）；`KlineViewport`、查询、AI 运行时用普通单元/集成测试；真实窗口冒烟与性能基准只在显式 `verify-stage --ui-smoke` / `--ui-bench` 下运行：窗口不激活、不置前，哨兵记录前台窗口是否被切走与可见窗口数，结束由 Job 收口；回环模型服务只绑定 `127.0.0.1:0` | D-25；[质量门禁](../dev-rules/quality-gates.md#foreground-quiet) |
+| S-23 打包 | 首选 `cargo-packager 0.11.x`（Apache-2.0 OR MIT，活跃）生成 NSIS **当前用户** 安装包：正式版装到 `%LOCALAPPDATA%\Programs\delta`、开发版 `delta-dev`，无需管理员，两通道可并存，卸载默认保留应用数据；构建期 `DELTA_CHANNEL=release` / `dev`。NSIS 只是构建期工具，运行期仍为单一 Rust 二进制（D-22 约束运行期）。若安装路径或并存不满足，备选 `cargo-wix` 按用户 MSI，或便携 zip + Rust 自写安装器；M2 不做代码签名（SmartScreen 提示在说明中如实写出） | D-26；AC-27 |
+| S-24 本地化与可访问性 | 中文优先，所有界面文案经单一文案目录（键值）输出，为后续国际化留接口；涨跌配色“红涨绿跌 / 绿涨红跌”可切换且始终配符号/文字；键盘可达导航、表格、图表控制与对话框，Esc 行为一致；中文输入法组合态不提交 | NFR-09、DESIGN |
 
-### 3.1 连接器与导入格式分层（全部纯 Rust）
+### 3.1 M2 范围内的需求与不做项
 
-按用户 [D-23](../decisions/confirmed-decisions.md)（核心主力：**富途牛牛 + 欧易 OKX**；常用：老虎、IBKR、长桥、嘉信、东方财富、币安）定案如下：
-
-| 领域 | M1 必做（阶段完成前提） | M1 扩展（必做通过后执行；未完成登记 `LOOP-03`，不阻塞收敛） |
-| --- | --- | --- |
-| 加密现货日线 | ① **欧易（OKX）公开现货 REST**（用户第一主力：`www.okx.com/api/v5/market/candles` 与 `/api/v5/market/history-candles`，`bar=1Dutc` 原生对齐 UTC 日切，仅提交 `confirm="1"` 已完结 K 线）；② **币安（Binance）公开行情**：增量用 `data-api.binance.vision/api/v3/klines`，回填用 `data.binance.vision` 日/月归档并校验 `.CHECKSUM`（SHA-256）；**现货归档自 2025-01-01 起时间戳为微秒**（此前为毫秒，实测 `BTCUSDT-1d-2025-03-01` 开盘时间 `1740787200000000`），解析器显式判定单位并用跨 2024-12-31/2025-01-01 的夹具验证。支持 `OKX:BTC/USDT`、`BINANCE:BTC/USDT` 独立同步与跨所核验。**不得使用 `api.binance.com`**（美国出口实测 HTTP 451） | 通用多场所连接器：官方 Rust `ccxt 4.5.x` crate（按交易所 feature 裁剪）（POC-D06） |
-| 稳定币汇率 | `USDT/USD`：Coinbase Exchange `USDT-USD` 日线（主，300 根/页分页）+ Bitstamp `usdtusd`（核验）；`USDC/USD`：Bitstamp `usdcusd`（主，1000 根/页）+ Kraken `USDCUSD`（核验，公开 OHLC 仅返回最近 720 根）。Coinbase 无 `USDC-USD` 产品 | — |
-| 法币汇率 | Rust 原生 Frankfurter（`api.frankfurter.dev/v1`，ECB 参考汇率，`USD/HKD`、`USD/CNY` 等） | 东方财富外汇历史接口或 FRED 公开 CSV/JSON 兜底 |
-| 美股/ETF 日线与公司行动 | 零配置路由（纯 Rust HTTP）：**Yahoo Finance Chart v8**（`query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&events=div,split`，主：公司行动事件 + 拆股调整 OHLCV，按 S-08 还原原始价）+ **东方财富美股日线接口**（`push2his.eastmoney.com/api/qt/stock/kline/get`，`secid=105.AAPL` 等，`fqt=0` 原始价核验，`fqt=1/2` 仅作复权核验）；配置 Token 路由：**Tiingo REST**（主，含 `divCash`/`splitFactor`）+ **Yahoo Chart v8**（核验）。Tiingo 无 Token 时以录制夹具验证，live 保持 not-run | Alpaca Market Data REST：`/v2/stocks/bars` + `/v1/corporate-actions`（`v1beta1` 不再使用）；长桥用户可选 `longport 4.3.7` Rust SDK |
-| 账户只读 API | `AccountProvider` trait + 录制夹具实现（覆盖 **欧易 OKX V5** 与 **Binance** 形态成交/余额/充提），覆盖 AC-17；M1 不做真实账户 API 在线同步 | 真实只读 API 同步（OKX V5 只读 REST / Longport 只读 API，需用户 Key；Binance.com 账户 API 在美国出口不可用） |
-| 账单导入（各预设均建立在同一通用 CSV 映射引擎之上，按表头签名识别；未知列或缺必需列拒绝并给出诊断，不静默忽略） | ① **富途牛牛（Futu）历史成交与资金流水 CSV**（用户第一美股/证券主力，支持中/英文表头、佣金/平台费/规费汇总与 `US.AAPL ↔ NASDAQ:AAPL` 映射）；② **欧易（OKX）现货成交与资金账单 CSV**（用户第一加密主力）；③ **通用 CSV 映射模板**；④ **IBKR Flex Query XML**（Trades、CashTransactions、CorporateActions、Transfers）；⑤ **币安（Binance）现货成交历史 + 充提 CSV** | 其余常用券商预设模板：**老虎证券（Tiger）活动账单 CSV**、**长桥证券（Longbridge）账单 CSV**、**嘉信证券（Charles Schwab Transactions）CSV**、**东方财富交割单 CSV**、**IBKR Activity CSV** |
-| 技术指标 | Rust 原生 MA/EMA/MACD/RSI，手算夹具对照 + 未来哨兵截断测试（AC-11） | Rust 原生扩展指标（ATR、Bollinger Bands 等） |
-
-交叉核验默认阈值（可逆，B 可按实测调整并在阶段报告记录理由；结果写入 `data_quality_issue`，账户余额差异仍用 `reconciliation_issue`）：同一交易日两源原始收盘价相对差 > 0.5% 记 `price_mismatch`；相邻交易日原始收盘比值落在常见拆股/合股比例 ±5% 内且无对应 `corporate_action` 记 `missing_corporate_action`；稳定币相对 1 的偏离只记录不告警（AC-06 要求按实际价估值）。
-
-富途与欧易账单没有公开格式规范且尚无真实样本（`ACT-03`）：B 以官方帮助文档或导出界面可得的列名构造合成夹具，夹具目录附 `PROVENANCE.md` 记录列名来源与日期；真实样本验证保持 not-run，收到样本后按差异修正映射并补回归夹具。
+- 范围：[追踪表](traceability.json) 中 `stage = M2` 的 42 项 FR/NFR（含 M1 已完成子集的 UI/AI 补齐），验收 AC-08、AC-09（含笔记/附件）、AC-10、AC-19～AC-27，并在 UI 路径上回归 AC-01～AC-07、AC-22。
+- 不做（属后续阶段，不显示入口）：训练（M3）、策略/扫描（M4）、多周期与绘图工具（FR-MKT-05，P1）、标签复盘统计（FR-JRN-05，P1）、TWR/XIRR 基准与币种影响完整分析（FR-LED-07，P1，现有日频近似 TWR/XIRR 可在条件满足时显示并标明方法）、只读账户 API 在线同步（FR-DATA-04，P1，`LOOP-03`）、AI 草稿接受（FR-AI-05，P1）。
 
 ## 4. 技术门槛（Spikes）与继续条件
 
 | ID | 最小实际验证 | 通过后直接继续 | 失败或异常分支 |
 | --- | --- | --- | --- |
-| POC-D01 | SQLite 迁移 + WAL + 外键；`bar` 表 100 万行写入/去重、S-09 按版本查询（含约 1% 修订行）与按 `visible_until` 截断查询耗时记录；Backup API 一致性快照并恢复到新目录、哈希一致 | M1-W01 完整存储实现 | 若单库查询不达标，先加复合索引与分区表；仍不达标记录实测并升级 `OSS-10`，不在 M1 引入 DuckDB |
-| POC-D02 | 纯 Rust 生成 `XNYS`/`XNAS` 日历并验证：2026-03-09（03-08 夏令时切换后首个交易日，开盘 13:30 UTC）、2026-04-03 耶稣受难日、2026-07-03 独立日观察日休市、2026-11-27 感恩节次日 13:00 ET 半日市、2012-10-29/30 飓风闭市、2025-01-09 国家哀悼日闭市、加密 UTC 日切；`1990-01-02`～`2027-12-31` 全量与 S-06 对照夹具逐日一致（开收盘时刻同样比对） | M1-W02 水位线判定与休市/缺数诊断 | 差异直接修正规则或特殊表；无法确认的年份缩小已验证范围、使其返回 `calendar_unknown`，不猜测 |
-| POC-D03 | 欧易 OKX `candles`/`history-candles`（`bar=1Dutc`）与 Binance 镜像 klines / 归档 CHECKSUM；Coinbase/Bitstamp/Kraken 稳定币分页；Frankfurter 历史区间；Binance 归档毫秒/微秒边界；全部以本地回环服务回放录制报文验证分页、429/5xx 退避与去重 | M1-W03 增量同步与限流恢复 | 某端点 live 不可达时保留回放测试并在报告中标 live not-run 及错误码，不改写为通过 |
-| POC-D04 | 纯 Rust Yahoo Chart v8 + 东财 `push2his` 获取 `AAPL`（2020-08-31 4:1 拆股）、`NVDA`（2024-06-10 10:1 拆股）、`SPY`（季度分红）；断言 `AAPL` 2020-08-28 还原后原始收盘 `499.23`（拆股调整值 `124.8075`）、原始成交量 = Yahoo 成交量 ÷ 4，并与东财 `fqt=0` 一致；Tiingo 以录制夹具解析 | M1-W04 拆股/分红核验与复权跳空告警 | 注入“缺失拆股记录”的夹具，交叉核验器必须输出 `partial/warning` 与 `data_quality_issue`（`missing_corporate_action`） |
-| POC-D05 | Decimal 跨层无损（含 JSON 数值源文本直接解析、SQLite TEXT 往返）+ AC-02 最小账本（通用 CSV → FIFO → 现金 1438 / 成本 600.6 / 已实现 38.6 / 未实现 29.4 / 总损益 68） | M1-W05 完整导入与账本 | 金额、数量或成本守恒不通过即阻断交付，优先修复领域核心 |
-| POC-D06（扩展） | 官方 Rust `ccxt` crate 仅启用 `okx`/`kraken` feature 的编译时间、依赖树与 `fetch_ohlcv` 免 Key 调用 | 采用 Rust `ccxt` 实现扩展层通用连接器 | 若 `ccxt` crate 编译过重或不稳定，保留原生 REST 实现并记录于 `OSS-05` |
+| M2-K01 宿主接入 | `delta-desktop` 无头测试：启动 `AppHost`（临时 dev 根 + M1 AC-02 夹具库），总览 `MetricCard` 显示现金 1438、NAV 2068、总损益 68；`cargo metadata` 检查桌面 crate 无 `delta-data`/`rusqlite`/`tokio`/`reqwest` 直接依赖 | W03～W07 全部基于 `AppHost` | 若 GPUI 执行器与通道等待冲突，改为 `AppHost` 回调 + `cx.spawn` 轮询；不得把 Tokio 运行时暴露到视图层 |
+| M2-K02 K 线性能 | release 构建、合成 100,000 根日线、1,000 根可见、脚本化缩放/平移 300 帧，记录帧时间分布（`--ui-bench`） | 自绘元素作为主图 | p95 帧时间 > 20 ms 时先做 LOD（按像素聚合 OHLC）与路径批量化；仍不达标记 `OSS-12` 并在报告写实测值，不宣称 NFR-04 达标 |
+| M2-K03 SSE 与两协议 | 回环服务按官方线格式回放：跨字节 UTF-8、多行 data、分片工具参数、`[DONE]` 与 `response.completed`、截断/断流 | W07 继续 | `eventsource-stream` 不兼容时换 `sse-stream 0.3.x`；两者都不行再自写有界解析器并补同组用例 |
+| M2-K04 打包路径 | `cargo-packager` NSIS currentUser 实际安装到 `%LOCALAPPDATA%\Programs\delta-dev`，卸载保留数据（安装在开发机执行需窗口时只作显式手动步骤） | W08 继续 | 按 S-23 备选顺序切换并记录 |
+| M2-K05 笔记搜索 | 检查 bundled SQLite 的 FTS5 与 `trigram` 分词；中文 1/2/3+ 字查询与英文查询结果 | S-17 实现 | 无 trigram 时 FTS5 `unicode61` + 有界 `LIKE` 回退，记录限制 |
+| M2-K06 主线程栈 | 完整工作台 dev 构建真实窗口启动（`--ui-smoke`）不溢出 | — | 仅对 `delta` 二进制设置链接器栈大小（如 8 MiB）并记录原因 |
 
-## 5. 工作包与依赖顺序
+## 5. 工作包、依赖与验收
 
-真实依赖顺序（`M1-W05` 的导入与账本核心不依赖连接器，提前做以尽早暴露金额问题）：
+依赖顺序：**W01 → W02 / W03 并行 → W04、W05、W06 → W07 → W08**。先打通最薄端到端切片：W01 查询契约 + W03 骨架 + W04 总览卡片显示 AC-02 结果（即 M2-K01），再扩展其余视图。
 
-```text
-M1-W01 ─┬─ M1-W02（标的/日历/汇率）─┬─ M1-W03（加密）─┐
-        │                            └─ M1-W04（美股）─┼─ M1-W05b（估值与多币种对账）─ M1-W06 ─ 扩展层
-        └─ M1-W05a（导入引擎、FIFO、分录、账本断言）─────┘
-```
-
-B 一次接手连续执行全部必做工作包并自检，再执行扩展层，不逐包停顿询问。先打通一条最薄端到端切片（建库 → 通用 CSV 导入 AC-02 → 一个加密源与一个美股源同步 → 报告 → 备份恢复），再横向补齐各来源与格式；状态必须真实报告，未完成项保持 failed/blocked，不得缩减第 6 节必做项。
-
-| 工作包 | 交付内容与模块位置 | 正常路径验收 | 失败/边界路径验收 | 对应需求与 AC |
+| 工作包 | 产出 | 正常路径验收 | 失败路径验收 | AC |
 | --- | --- | --- | --- | --- |
-| M1-W01 | 建立纯 Rust Cargo workspace（`crates/delta-core`、`crates/delta-data`、`crates/delta-app`、`crates/delta-cli`，包元数据统一 `license = "Apache-2.0"`，见 D-24）与 `rust-toolchain.toml`；SQLite 迁移、资料库目录与 `manifest.json`、Backup API 一致性备份/恢复；S-02 异步作业边界与 S-04 凭据存取骨架 | 建库、迁移、备份、恢复到新目录后哈希与外键校验一致；`Decimal` 字符串无损往返 | 迁移中断或损坏库拒绝覆盖原库；恢复目标非空拒绝执行；凭据不出现在日志与配置明文；以跨进程写入/读取/删除测试证明 `keyring` 实际使用 Windows 凭据管理器原生后端，而非内存或模拟后端（只操作 `delta-test-<run-id>` 前缀条目并清理）；S-10 静默进程助手、回环测试服务助手与 `clippy.toml` 禁用规则在本包建立，后续包直接复用；S-11 位置解析：三通道默认路径、覆盖优先级、`<文档>` 经系统登记位置解析、不可写报错不回退、第二个进程拿不到 `delta.lock` 立即报错的测试全部通过，且在临时 `LOCALAPPDATA` 与 `DELTA_DOCUMENTS_DIR` 下运行后临时根之外零新建目录 | FR-BASE-01/02、FR-OPS-01/02/03/04、NFR-01/06/08；AC-09 |
-| M1-W02 | 标的与跨源别名注册表（`NASDAQ:AAPL ↔ US.AAPL ↔ 105.AAPL ↔ AAPL.US`、`OKX:BTC/USDT`、`BINANCE:BTC/USDT`）、S-06 纯 Rust 日历引擎与查询、Frankfurter 法币汇率与 3.1 节稳定币汇率同步、S-07 汇率时点规则 | 冬夏令时、半日市、节假日与加密 UTC 日切准确；同版本逆汇率可推导；`carried_forward` 标记正确 | 区分法定休市、`coverage_gap` 与 `calendar_unknown`；缺汇率或稳定币脱锚显式标记，不假定 `1.0` | FR-DATA-03、FR-MKT-04、FR-LED-02；AC-06、AC-21 |
-| M1-W03 | 加密现货连接器（3.1 节必做：**欧易 OKX 公开现货 REST** + **币安公开行情镜像与归档**）+ `AccountProvider` 夹具实现（OKX / Binance）；`sync_checkpoint` 统一水位线 | 免 Key 增量拉取 `OKX:BTC/USDT`、`BINANCE:BTC/USDT`、`ETH/USDT` 日线；仅提交已完结 K 线，水位线在同一事务落盘后推进；归档 CHECKSUM 不符拒收 | 429/5xx 退避、断流重传幂等去重；余额快照与流水不一致生成 `reconciliation_issue` 而不篡改账本 | FR-DATA-03/04/05、FR-MKT-01；AC-17、AC-22 |
-| M1-W04 | 美股/ETF 纯 Rust 连接器与公司行动（Yahoo Chart v8 + 东财 `push2his` + Tiingo）；交叉核验器 | 按 S-08 入库原始价（Yahoo 还原 + 东财 `fqt=0` 核验）、拆股与现金分红，复权序列派生；按 `dataset_version` 固定查询可复现（S-09） | 单源复权异常或缺失拆股/分红时检出跳空差异并标记 `partial/warning`；连接器超时/取消/异常响应被 `delta-app` 作业控制器安全隔离（AC-16） | FR-DATA-03、FR-MKT-04、FR-LED-08；AC-05、AC-06、AC-16 |
-| M1-W05（a 导入与账本核心 / b 估值与对账） | 账单导入（3.1 节必做格式：**富途牛牛 CSV**、**欧易 OKX CSV**、通用 CSV、IBKR Flex XML、币安 CSV）：映射、预览、幂等提交、冲销更正；FIFO 成本、第三资产手续费、跨账户搬移、多币种净资产/损益分解 | AC-01～07、AC-22 精确对齐手算值；富途与欧易账单夹具完整走通入账与费用分摊 | 同文件重导幂等跳过；跨文件同秒同价生成疑似重复待核对；超卖、未知成本或预览后文件被篡改明确拒绝 | FR-DATA-01/02/05、FR-LED-01～06/08；AC-01～07、AC-22 |
-| M1-W06 | 自动化编排（导入富途/欧易等账单后自动订阅所需标的与汇率对 → 日历水位线增量同步 → 新 `dataset_version` → 对账/损益报告）；Rust 指标与截断测试；**AC-20 子集**：`delta export`（账本/行情/汇率 CSV + JSON 清单与哈希）、`delta library delete` 预览与确认、诊断日志脱敏；纯 Rust 阶段验证入口 `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（包 `delta-cli`、二进制名 `delta`；live 探针为 `#[ignore]` 测试，只由 `verify-stage --live` 运行并单独统计）；锁定 `Cargo.lock` 后生成依赖与许可清单（`OSS-06`） | 一条 CLI 流程完成“建库 → 导入 → 自动同步 → 报告 → 备份恢复校验”；向未来注入极端哨兵值不影响当前指标；导出可被独立复核 | 后台同步作业超时/取消/故障隔离后主程序保持可用且结果不标成功（AC-16）；删除预览与实际删除范围一致、无残留引用；日志无 Token、完整账户号；构建、测试、文档门禁零警告；S-10 全部自动证据通过：窗口哨兵零窗口、注入崩溃子进程无对话框且报告 failed、空 `stdin` 下确认命令在超时内退出、控制字符转义、非回环绑定扫描为零，报告记录实际优先级与并发数 | FR-MKT-02、FR-OPS-03/04、NFR-02/05/07/10；AC-11、AC-16、AC-20 |
-| M1-EXT | 3.1 节扩展层（老虎 Tiger / 长桥 Longbridge / 嘉信 Schwab / 东财 / IBKR Activity CSV 预设、Alpaca REST、POC-D06、扩展指标） | 各扩展项有回放/夹具测试与 live 探针记录 | 未完成项逐项登记 `LOOP-03`（原因、归属、触发条件） | 同上述对应 FR |
+| M2-W01 应用宿主、查询契约与 schema 4 | `AnalysisScope`、`ResultEnvelope`、`EvidenceRef`、能力目录；`AppHost`；收拢 `store()`；schema 4 迁移（S-17 笔记表、S-21 会话表、自选组、手工估值、`trade_plan`）与迁移前自动备份；计算版本按实际公式变化升级（如 `m2-ledger-1`） | 同 scope/版本两次查询结果逐字段一致；迁移幂等；迁移前备份可恢复 | 未知 scope/版本、陈旧 generation 拒绝；迁移中断无半写库并可从备份恢复 | AC-09、AC-23 |
+| M2-W02 账本与报告扩展 | 账户（银行/券商/交易所/钱包/手工）与统计组合 CRUD，组合内去重；按 scope 与期间的损益分解（期初净资产、净外部资金流、投资损益、期末净资产；已实现、未实现、分红利息、费用、汇率影响、未归因项及原因）；基础回撤；手工资产/负债估值（估值日期与方式）；人工余额快照对账；更正后旧报告标过期；`LEDGER-01` 现金换汇（USD→USDT 等保留兑换成本与汇兑损益，之后可作报价腿） | AC-02/04/07 在账户、组合、期间范围下与手工期望一致；组合内同账户不重复计入；USD→USDT→BTC 链路金额守恒 | 缺价/缺汇率/成本未知显示“已知部分估值”与未纳入项，指标 unavailable 不显示为 0；更正后报告提示过期 | AC-02～AC-07、AC-22 |
+| M2-W03 桌面骨架、首次使用与数据中心 | `delta-desktop`：Dock 工作台、导航、布局持久化、设置（报表币种、界面时区、数据目录只读展示、涨跌配色）；首次使用向导（建库、添加账户、导入或载入离线示例库）；导入预览界面（原始行、规范化值、错误、疑似重复、held 行确认/排除、映射修订）；数据中心（数据源能力与条款类别、覆盖区间与缺口、同步记录、质量问题、一键同步作业的进度/取消）；底部任务面板 | 首次使用到导入提交全程键盘可操作；同一文件重导提示已导入；同步作业进度与终态真实 | 空库、同步中、部分缺失、离线、限流/鉴权失败、取消、恢复失败均有原因与下一步；取消后 UI ≤1 s 响应 | AC-01、AC-16、AC-17、AC-21 |
+| M2-W04 总览与资产视图 | 总览 `MetricCard`（净资产、净投入、区间损益、数据覆盖、待对账）与下钻；资产页：账户、持仓、FIFO 批次、流水（`DataTable` 虚拟滚动）、对账差异、来源批次与原始行；从统计进入流水保留范围与筛选 | 10 万条流水虚拟滚动；下钻数值与 W02 查询一致 | 缺失值显示为缺失而非 0；范围切换在页面可见 | AC-02～AC-07、AC-22、AC-26 |
+| M2-W05 市场与 K 线 | 标的搜索（别名、场所与交易对区分）、自选组；`KlineViewport` + 自绘主图/成交量/MA/EMA/MACD/RSI 副图（参数可配、预热为空）；跳到日期、缩放、平移、十字光标；成交与笔记标记点击打开详情；复权/时区/过期/缺失/未完成 K 线标识；保存与恢复 `chart_context` | 10 万根按窗口加载；不同窗口同日指标一致；由笔记返回图表恢复上下文且锚点居中 | 向未来注入哨兵值不影响当前可见指标与标记（`visible_until`）；缺数据区间显示缺口而非连线 | AC-08、AC-11、AC-21、AC-26 |
+| M2-W06 日志与笔记 | Markdown 编辑与预览、交易前/中/后模板（判断、失效条件、计划风险、实际执行、情绪、结论）、标签、搜索；一篇笔记关联多个成交/计划/图表，关联对象更正后提示；附件内容寻址与存在性校验；模型访问开关 | 自动保存状态诚实；分批建仓/减仓关联数量不超额；双向跳转 | 写失败保留缓冲并可重试；附件缺失被检出；崩溃恢复到最近修订 | AC-08、AC-09 |
+| M2-W07 模型客户端与 AI 复盘 | `delta-model` 两协议适配与回环测试服务；`delta-app::ai` 运行时、工具网关、证据与数值校验、会话/压缩；模型连接配置（协议、base URL、model ID、keyring 凭据引用、超时与预算）、连通性与能力检测；右侧 AI 面板（发送前显示模型、账户、期间、是否含笔记；可固定范围；生成中标识；取消；证据可点击打开） | AC-02 场景问答数值 68 及分项正确、引用可打开；两协议文本流、工具配对、取消、错误均通过 | 越权指令笔记不扩权；伪造引用被拦截；模型离线/未配置时本地功能不受影响；半流不重放、迟到事件丢弃 | AC-10、AC-19、AC-23～AC-25 |
+| M2-W08 运维、打包、性能与阶段门禁 | 备份/恢复/导出（账本 CSV/JSON、笔记 Markdown、附件、配置与数据清单）/删除预览 UI；日志不含密钥、完整账户号与笔记正文；按用户安装包（两通道）；产品锁文件逐包许可清单与通知（含 MPL-2.0 处理，`OSS-11`）；NFR-03/04/05 固定规模基准（硬件、次数、分位数）；`verify-stage --stage M2 --plan-version 1.0`（含 M1 回归） | 恢复后账本/笔记/附件引用一致；安装后无需开发环境可运行；基准报告真实 | 删除范围可确认且无残留引用；未测性能项写 not-run 不宣称达标 | AC-09、AC-20、AC-26、AC-27 |
 
-## 6. 结束标准、不得缩减项与明确边界
+用例清单见 [m2-stage-cases.json](m2-stage-cases.json)（`automated` / `manual` / `live`）；B 可以拆分或补充用例，但不得删除已有用例覆盖的需求/AC。
 
-- **B 完成判定**：M1-W01～W06 全部完成且 `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6` 通过；扩展层已完成或逐项登记 `LOOP-03`；所有可达免 Key 端点的 live 探针已实跑并记录（含失败码）；需 Token 的 live 验证标 not-run 并引用 `ACT-03`。
-- **不得缩减**：100% 纯 Rust 实现（无 Python 运行期依赖）、用户两大最高频主力（富途牛牛 CSV + 欧易 OKX 行情/CSV）必做支持、Decimal 金额精度、S-08 原始价口径、S-09 按版本可复现、S-10 前台无干扰（窗口哨兵零窗口）、S-11 通道与数据位置隔离、AC-01～07 及 AC-09/11/16/17/20（子集）/21/22 的核心断言、`USD`/`USDT`/`USDC` 独立估值、拆股/分红与复权口径一致性、水位线原子推进、一致性备份与恢复、S-02 异步边界、S-04 凭据规则。
-- **本阶段不建**：GPUI 或任何桌面窗口、任何 Python 子进程或脚本包、Parquet/DuckDB 行情仓（`OSS-10`）、自由画线工具、K 线训练交互（M3）、策略回测（M4）、AI 聊天界面与模型客户端（M2）。
-- **在线与录制分离声明**：所有连接器的解析、分页、限流、去重与交叉核验必须由受控回环服务与真实结构录制夹具 100% 自动验证；live 探针默认关闭、以显式开关运行，结果单独记录，绝不把回放写成真实在线验收。录制夹具不得含任何账户标识或 Token。`verify-stage` 调用 `python scripts/check_docs.py` 属开发期文档门禁，不构成产品运行期 Python 依赖（D-22 约束产品代码与运行期）。
-- **真正的人工依赖**：本机 Rust/MSVC 工具链（`ACT-07`）已就绪无阻塞；Tiingo（及扩展层 Alpaca/Longport）Token 的 live 验证与真实个人去标识账单样本（`ACT-03`）不阻塞 M1 工程收敛。
+## 6. 不得缩减项
 
-## 7. 交付产物与可复制 A → B 执行 Prompt
+1. 金额与指标只由 `delta-core` / `delta-app` 计算；UI 与 AI 不得自行计算或改写金融数值；缺失不得显示为 0。
+2. UI 与 AI 同 scope/版本结果一致（AC-23）；AI 工具只读、范围由宿主执行、引用与数值经宿主校验。
+3. 保存、同步、导入、AI 运行的状态必须诚实：失败不显示成功，取消不显示完成，部分结果标明不完整。
+4. 正式版/开发版数据隔离（D-26）、静音测试（D-25）、凭据只在 keyring、日志不含秘密与笔记正文。
+5. 备份/恢复/导出/删除覆盖笔记、附件与会话数据。
+6. M1 全部 AC 回归保持通过。
 
-B 完成后更新 `docs/delivery/status.md`、新建 `docs/delivery/stage-report.md`（在 `document-registry.json` 登记），同步受影响正本（数据模型、架构、台账），将全部修改 `git commit --amend` 进当前阶段提交，随后输出 B → A 审核 prompt。
+## 7. 真正依赖用户的事项（不阻塞工程）
+
+- `ACT-01`：真实 AI 模型连接配置（协议、base URL、model ID、凭据、预算）。未提供时两协议以受控回环服务完成自动验收，真实服务保持 not-run。
+- `ACT-03`：真实去标识账单样本 / 私有 Token（沿用 M1）。
+- `H-01`～`H-03`：中文输入法、键盘/缩放与干净机器安装的人工检查，B 交付安装包与检查步骤后执行；结果不影响 A 技术审核与远端授权请求。
+
+## 8. 检查命令
+
+| 命令 | 状态 |
+| --- | --- |
+| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked` | 已存在 |
+| `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 [--live]` | 已存在（M1 回归） |
+| `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]` | **已建立**：默认静音离线/无头检查；缺显式 UI 开关时 K02/K06/A20 与 overall 保持 not-run；`--live` 为公共探针，真实模型仍按 ACT-01 单独验证；显式窗口保持隐藏、不激活 |
+| 依赖边界检查（`cargo metadata` 断言 `delta-desktop` 直接依赖集合） | **已建立**，纳入 M2-G-06，逐包许可执行完整收集与回归 |
+| 安装包构建（`cargo packager` 或备选） | **已建立**：S-23 备选 `delta-cli package-build`，真实两通道 release 构建、静态 CRT 与 PE 导入检查、ZIP＋Rust 按用户安装器；执行事实见阶段报告 |
+
+报告与日志写入忽略目录 `.local/reports/m2/`，脱敏摘要回写 `docs/delivery/stage-report.md`；结果绑定源码指纹（沿用 M1 规则，指纹范围扩展到新 crate 与 M2 夹具）。
+
+## 9. 结束标准与收尾
+
+- **B 实现与自检完成**：W01～W08 全部可执行内容实现，`verify-stage --stage M2 --ui-smoke --ui-bench` 的必要离线/原生 UI 验证 passed，spike 结论与失败分支如实记录，`docs/delivery/stage-report.md`（登记 `retireAfter: M2`）、[执行状态](status.md)、受影响正本与[集中台账](../decisions/open-questions.md)已同步。
+- **A 技术审核通过**：A 对照本计划、实际 diff 与证据复验高风险项（金额一致性、范围隔离、AI 证据与数值校验、保存诚实、数据隔离与恢复），局部问题直接修复；工程阻断为零后在 [USER-ACTIONS](../../USER-ACTIONS.md) 登记本阶段 push / PR 的具体授权请求。
+- **产品验收**：人工检查 `H-01`～`H-03` 与真实服务 `ACT-01` / `ACT-03` 独立推进，未测保持 not-run。
+
+## 10. A → B 交接 prompt
 
 ```text
-你是 DELTA 的 Agent B。执行唯一计划 docs/delivery/stage-plan.md（M1 v2.6），以第 3 节 S-01～S-11、3.1 节必做/扩展分层与第 4～6 节为准，不重新选型、不缩减第 6 节必做项。
-入口：AGENTS.md、docs/delivery/status.md、本计划，以及计划引用的数据模型、金融规则、系统架构、质量门禁和 USER-ACTIONS.md。
-基线：分支 codex/m1-data-foundation，阶段父提交 8329f638536e4f303764045a2f10a2c1ab31fcd3，阶段提交完整 SHA 以交接消息为准并用 git rev-parse HEAD 核对；保留未跟踪的 workers/agent/ 不触碰；ACT-07 工具链已就绪。
-范围：按第 5 节依赖图连续完成 M1-W01～W06（先打通最薄端到端切片），再执行 M1-EXT，未完成扩展项登记 LOOP-03；不逐包询问。重点自证 S-08（AAPL 2020-08-28 还原原始收盘 499.23）、S-09 按版本查询、Binance 归档微秒时间戳、1990～2027 日历逐日对照、S-10 前台无干扰（窗口哨兵零窗口；你自己的构建与测试命令同样不弹窗、不打开浏览器或资源管理器）、S-11 数据位置（路径一律小写 delta；源码运行与测试不碰 %LOCALAPPDATA%\delta 正式数据，手工运行用 DELTA_DATA_DIR=.local/dev-data）。
-检查：建立并运行 cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6；live 探针以 --live 显式运行并如实记录（含失败码），Tiingo 与真实账单样本保持 not-run（ACT-03）；离线回放不得写成在线通过。
-交付：新建并登记 docs/delivery/stage-report.md，更新 status.md、受影响正本与台账，全部 git commit --amend 进当前 M1 阶段提交（父提交不变），给出新完整 SHA 与 B→A 审核 prompt。不执行 push / PR。
+你是 DELTA 的 Agent B。读 AGENTS.md、docs/delivery/status.md 与唯一计划 docs/delivery/stage-plan.md（M2 v1.0），用例见 docs/delivery/m2-stage-cases.json，A 的 gpui-kit spike 证据见 docs/evidence/2026-11-08-m2-gpui-kit-spike.md。
+分支 codex/m2-desktop-workbench，阶段父提交 0370b7e9103d0172a7ab47613ea253949d6a9b8b；完整 SHA 见交接消息。先核对 git status、父提交与现场，保留未跟踪 workers/agent/。
+按第 5 节依赖顺序连续完成 M2-W01～W08，先打通 M2-K01 最薄切片；第 3 节 S-12～S-24 已定案，不重新选型，spike 失败按第 4 节分支处理并记录。遵守不得缩减项、D-25 静音、D-26 通道隔离；离线/回环结果与真实服务分开声明。
+交付：建立 verify-stage --stage M2 并实跑，新建并登记 docs/delivery/stage-report.md，更新 status.md、受影响正本与台账，全部 git commit --amend -s 进当前 M2 阶段提交（父提交不变），给出新完整 SHA 与 B→A 审核 prompt。不 push、不操作 PR、不自动创建其他 Agent 会话。
 ```

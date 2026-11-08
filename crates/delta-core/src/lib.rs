@@ -257,4 +257,141 @@ mod tests {
         let rsi_clean = compute_rsi(&bars[0..15], 14, None);
         assert_eq!(rsi_truncated, rsi_clean);
     }
+
+    #[test]
+    fn m2_a06_ledger01_cash_exchange_usd_usdt_btc() {
+        // M2-A-06 / LEDGER-01:
+        // 1. Account ACC-1 deposits 2000 USD on 2026-01-01
+        // 2. Exchanges 1000 USDT at 1.00 USD/USDT with 2 USD fee on 2026-01-02 (cost = 1002 USD)
+        // 3. Buys 0.01 BTC at 50,000 USDT (500 USDT) with 1 USDT fee (total 501 USDT) on 2026-01-03 (when USDT/USD = 1.002)
+        // 4. Sells 0.004 BTC at 55,000 USDT (220 USDT) with 1 USDT fee (net 219 USDT) on 2026-01-04 (when USDT/USD = 1.00)
+        let d1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+        let d3 = NaiveDate::from_ymd_opt(2026, 1, 3).unwrap();
+        let d4 = NaiveDate::from_ymd_opt(2026, 1, 4).unwrap();
+
+        let events = vec![
+            LedgerEventInput {
+                event_id: "EV-DEP-USD".into(),
+                account_id: "ACC-1".into(),
+                event_type: EconomicEventType::Deposit,
+                occurred_at: Utc.from_utc_datetime(&d1.and_hms_opt(10, 0, 0).unwrap()),
+                sequence_no: 1,
+                asset_id: "USD".into(),
+                instrument_id: None,
+                quantity: parse_decimal_lossless("2000").unwrap(),
+                price: None,
+                quote_currency: "USD".into(),
+                fee_amount: Decimal::ZERO,
+                fee_currency: "USD".into(),
+                cost_known: true,
+                counterparty_account_id: None,
+                transfer_group_id: None,
+                correction_group_id: None,
+                revision: 1,
+                active_in_correction_group: true,
+                source_ref: None,
+            },
+            LedgerEventInput {
+                event_id: "EV-EX-USDT".into(),
+                account_id: "ACC-1".into(),
+                event_type: EconomicEventType::CashExchange,
+                occurred_at: Utc.from_utc_datetime(&d2.and_hms_opt(10, 0, 0).unwrap()),
+                sequence_no: 2,
+                asset_id: "USDT".into(),
+                instrument_id: None,
+                quantity: parse_decimal_lossless("1000").unwrap(),
+                price: Some(parse_decimal_lossless("1.00").unwrap()),
+                quote_currency: "USD".into(),
+                fee_amount: parse_decimal_lossless("2").unwrap(),
+                fee_currency: "USD".into(),
+                cost_known: true,
+                counterparty_account_id: None,
+                transfer_group_id: None,
+                correction_group_id: None,
+                revision: 1,
+                active_in_correction_group: true,
+                source_ref: None,
+            },
+            LedgerEventInput {
+                event_id: "EV-BUY-BTC".into(),
+                account_id: "ACC-1".into(),
+                event_type: EconomicEventType::Buy,
+                occurred_at: Utc.from_utc_datetime(&d3.and_hms_opt(10, 0, 0).unwrap()),
+                sequence_no: 3,
+                asset_id: "BTC".into(),
+                instrument_id: Some("OKX:BTC/USDT".into()),
+                quantity: parse_decimal_lossless("0.01").unwrap(),
+                price: Some(parse_decimal_lossless("50000").unwrap()),
+                quote_currency: "USDT".into(),
+                fee_amount: parse_decimal_lossless("1").unwrap(),
+                fee_currency: "USDT".into(),
+                cost_known: true,
+                counterparty_account_id: None,
+                transfer_group_id: None,
+                correction_group_id: None,
+                revision: 1,
+                active_in_correction_group: true,
+                source_ref: None,
+            },
+            LedgerEventInput {
+                event_id: "EV-SELL-BTC".into(),
+                account_id: "ACC-1".into(),
+                event_type: EconomicEventType::Sell,
+                occurred_at: Utc.from_utc_datetime(&d4.and_hms_opt(10, 0, 0).unwrap()),
+                sequence_no: 4,
+                asset_id: "BTC".into(),
+                instrument_id: Some("OKX:BTC/USDT".into()),
+                quantity: parse_decimal_lossless("0.004").unwrap(),
+                price: Some(parse_decimal_lossless("55000").unwrap()),
+                quote_currency: "USDT".into(),
+                fee_amount: parse_decimal_lossless("1").unwrap(),
+                fee_currency: "USDT".into(),
+                cost_known: true,
+                counterparty_account_id: None,
+                transfer_group_id: None,
+                correction_group_id: None,
+                revision: 1,
+                active_in_correction_group: true,
+                source_ref: None,
+            },
+        ];
+
+        let mut fx = HashMap::new();
+        fx.insert(("USDT".into(), d2), parse_decimal_lossless("1.00").unwrap());
+        fx.insert(
+            ("USDT".into(), d3),
+            parse_decimal_lossless("1.002").unwrap(),
+        );
+        fx.insert(("USDT".into(), d4), parse_decimal_lossless("1.00").unwrap());
+
+        let proj = replay_ledger_events("USD", &events, &fx, 1).expect("replay LEDGER-01");
+        // USD cash: 2000 - (1000 + 2) = 998 USD
+        assert_eq!(
+            proj.cash_balances
+                .get(&("ACC-1".into(), "USD".into()))
+                .copied(),
+            Some(parse_decimal_lossless("998").unwrap())
+        );
+        // USDT cash: 1000 - 501 + 219 = 718 USDT (settled quote leg once!)
+        assert_eq!(
+            proj.cash_balances
+                .get(&("ACC-1".into(), "USDT".into()))
+                .copied(),
+            Some(parse_decimal_lossless("718").unwrap())
+        );
+        // BTC holding: 0.01 - 0.004 = 0.006 BTC
+        let btc_holding = proj.holdings.get(&("ACC-1".into(), "BTC".into())).unwrap();
+        assert_eq!(
+            btc_holding.quantity,
+            parse_decimal_lossless("0.006").unwrap()
+        );
+        // BTC buy cost was 501 * 1.002 = 502.002 USD; 60% remaining = 301.2012 USD
+        assert_eq!(
+            btc_holding.carrying_cost,
+            parse_decimal_lossless("301.2012").unwrap()
+        );
+        // FX gain on disposing 501 USDT (carrying cost 501 * 1.002 = 502.002 vs 501/1000 * 1002 = 502.002 -> 0 when rate=1.002!)
+        assert!(proj.realized_pnl_by_account.get("ACC-1").unwrap() > &Decimal::ZERO);
+    }
 }

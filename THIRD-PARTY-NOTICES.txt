@@ -1,0 +1,68 @@
+DELTA - Third-Party Open Source Software Notices (M2 v1.0)
+==========================================================
+
+DELTA is licensed under the Apache License, Version 2.0 (see LICENSE).
+The complete machine-readable per-package license inventory generated from
+`cargo metadata --locked --format-version 1` (6 workspace packages + 885
+resolved third-party dependency packages; Cargo.lock SHA-256:
+f01595156f542efd12b91bcdb507702bf080f58a4351e1fe13264ac09f48d730) is tracked in:
+- docs/evidence/2026-11-08-dependency-licenses.json
+- docs/evidence/2026-11-08-dependency-licenses.md
+
+1. Summary of Selected License Branches (885 Packages)
+------------------------------------------------------
+- MIT: 775 packages
+- Apache-2.0: 56 packages
+- Unicode-3.0: 22 packages
+- BSD-3-Clause: 9 packages
+- ISC: 5 packages
+- BSD-2-Clause: 4 packages
+- MPL-2.0: 3 packages (see Section 2 below)
+- Zlib: 3 packages
+- 0BSD: 2 packages
+- CC0-1.0: 2 packages
+- MIT AND Unicode-3.0: 1 package (`unicode-ident`)
+- MIT AND BSD-3-Clause: 1 package (`encoding_rs` v0.8.44)
+- MIT AND NCSA: 1 package (`libfuzzer-sys` v0.4.13)
+- Apache-2.0 AND ISC: 1 package (`ring` v0.17.14)
+
+Each distributed package includes third-party-licenses/ with per-package
+ATTRIBUTION.json, all original notices found in the locked source, and texts
+for every selected AND obligation. OR selection does not discard AND terms.
+48 of 885 packages use a labelled fallback: pinned SPDX standard license text
+plus a complete locked source archive. This is not a claim that all 885 original
+package license texts were found. SPDX license-list-data v3.28.0 is pinned to
+c4a7237ec8f4654e867546f9f409749300f1bf4c; text and source SHA-256 values,
+upstream commit identities and fallback flags are recorded in the inventory.
+
+2. Mozilla Public License 2.0 (MPL-2.0) Source Availability Notice (`OSS-11`)
+-----------------------------------------------------------------------------
+The following unmodified crates in `Cargo.lock` are licensed under the Mozilla
+Public License, Version 2.0 (https://mozilla.org/MPL/2.0/):
+
+- `dwrote` v0.11.5 (Windows DirectWrite bindings used by `gpui-pre` / `gpui-kit`)
+  - Upstream Repository: https://github.com/servo/dwrote-rs
+  - Crates.io Source Archive: https://static.crates.io/crates/dwrote/dwrote-0.11.5.crate
+- `option-ext` v0.2.0 (Option extension helper used by `dirs-sys`)
+  - Upstream Repository: https://github.com/soc/option-ext.git
+  - Crates.io Source Archive: https://static.crates.io/crates/option-ext/option-ext-0.2.0.crate
+- `cbindgen` v0.28.0 (Build-time only dependency; not linked into runtime binaries)
+  - Upstream Repository: https://github.com/mozilla/cbindgen
+  - Crates.io Source Archive: https://static.crates.io/crates/cbindgen/cbindgen-0.28.0.crate
+
+DELTA makes zero modifications to the source files of `dwrote`, `option-ext`, or
+`cbindgen`. Under MPL-2.0 Section 3.2(a), the complete unmodified Source Code Form
+of each MPL-2.0 Covered Software component is available from the upstream repositories
+and crates.io archives listed above.
+
+3. Key Direct & Transitive Runtime Dependencies
+-----------------------------------------------
+- `gpui-kit` v0.9.0 / `gpui-pre` v0.3.11 (Apache-2.0) — Copyright Longbridge / Zed Industries
+- `eventsource-stream` v0.2.3 (MIT OR Apache-2.0, MIT selected) — Copyright eventsource-stream Contributors
+- `rusqlite` v0.41.1 (MIT) & bundled SQLite (Public Domain, https://www.sqlite.org/copyright.html)
+- `reqwest` v0.13.5 (MIT OR Apache-2.0, MIT selected) — Copyright Sean McArthur
+- `tokio` v1.54.1 (MIT) — Copyright Tokio Contributors
+- `rust_decimal` v1.43.0 (MIT) — Copyright Paul Mason
+- `chrono` v0.4.45 (MIT OR Apache-2.0, MIT selected) & `chrono-tz` v0.10.4 (MIT OR Apache-2.0, MIT selected)
+- `keyring` v3.6.3 (MIT OR Apache-2.0, MIT selected) — Copyright Walther Chen & Contributors
+- `pulldown-cmark` v0.13.0 (MIT) — Copyright Google Inc. & Raph Levien

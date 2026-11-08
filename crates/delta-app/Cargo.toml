@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 delta-core = { path = "../delta-core" }
 delta-data = { path = "../delta-data" }
+delta-model = { path = "../delta-model" }
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true

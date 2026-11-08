@@ -4,14 +4,14 @@
 
 DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
-面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台、AI、训练与策略评估仍属后续阶段。
+面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台与证据化 AI 属于 M2，训练与策略评估属于后续阶段。
 
-## 当前阶段（2026-11-07 重建）
+## 当前阶段（2026-11-08 M2 Agent B 自检完成、待 A 审核）
 
-项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md) 与 [M1 阶段计划](docs/delivery/stage-plan.md)。
+项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md)、[M2 阶段计划](docs/delivery/stage-plan.md) 与 [M2 阶段报告](docs/delivery/stage-report.md)。
 
-- **M1（当前阶段）**：已建立 `delta-core`、`delta-data`、`delta-app`、`delta-cli`。提供欧易 OKX / 币安公共现货日线与归档、Yahoo / 东方财富美股日线核验、Frankfurter 法币及 Coinbase / Bitstamp / Kraken 稳定币汇率、`XNYS` / `XNAS` / `CRYPTO_24_7` 日历；账本支持富途、OKX、币安、IBKR Flex 与通用模板、资金流水、FIFO、事件 FX 固定、不可变数据版本、报告、导出和备份恢复。实际验证与未完成边界见 [阶段报告](docs/delivery/stage-report.md)。
-- **M2（下一阶段）**：按 [D-21](docs/decisions/confirmed-decisions.md) 与 [ADR-0003](docs/decisions/0003-first-round-stack.md)，在 M1 数据底座之上采用最新 **GPUI Kit（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**构建桌面工作台（K 线与回放面板通过视口滑动窗口切片驱动）及只读 AI 证据复盘。
+- **M1（已完成，PR #1 合并）**：已建立 `delta-core`、`delta-data`、`delta-app`、`delta-cli`。提供欧易 OKX / 币安公共现货日线与归档、Yahoo / 东方财富美股日线核验、Frankfurter 法币及 Coinbase / Bitstamp / Kraken 稳定币汇率、`XNYS` / `XNAS` / `CRYPTO_24_7` 日历；账本支持富途、OKX、币安、IBKR Flex 与通用模板、资金流水、FIFO、事件 FX 固定、不可变数据版本、报告、导出和备份恢复。实际验证与未完成边界见 [M1 阶段报告](docs/evidence/2026-11-08-m1-stage-report.md)。
+- **M2（B 实现与自检完成 / ready-for-review，A 审核待执行）**：按 [D-21](docs/decisions/confirmed-decisions.md) 与 [ADR-0003](docs/decisions/0003-first-round-stack.md)，在 M1 数据底座之上新增 `delta-model` 与 `delta-desktop`（二进制 `delta`），采用最新 **GPUI Kit（`=0.9.0`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` 面板体系**及自建 `MetricCard`、`KlineViewport` / `KlineChartView`、`StatusBanner` 构建六页工作台，包含实际输入/后台操作、范围与期间隔离、`schema 4` 笔记/附件/FTS5 搜索、期间损益分解与现金换汇（`m2-ledger-1`）、双协议只读 AI 复盘和真实两通道静态 CRT 包。M2 全门禁与 M1 回归通过；实际证据和未测范围见阶段报告，产品验收未完成。
 
 ## 本地运行
 
@@ -32,6 +32,10 @@ cargo run -p delta-cli -- explain --as-of 2020-09-02
 
 `explain` 当前提供整库 inception→as-of 视图，TWR 使用日频近似；未知历史成本、缺行情或 FX 使相关损益/收益率 unavailable。平台预设是已声明的规范化模板，尚未验证全部真实原生导出格式；私有账户 API、Tiingo/Alpaca/Longport 的真实服务结果见 `ACT-03` 与 `LOOP-03`。样本范围见 [夹具来源](tests/fixtures/PROVENANCE.md)。
 
+使用上述隔离数据目录时，可执行 `cargo run -p delta-desktop --bin delta` 打开桌面；空资料库也可从界面载入离线示例。模型配置在设置页完成；未配置时总览、资产、图表和笔记照常可用。模型凭据进入 keyring，设置重启可恢复公开配置，留空密钥保留已有认证。
+
+Windows 包通过 `cargo run -p delta-cli -- package-build` 生成，索引为 `.local/reports/m2/packages/package-artifacts.json`。包静态链接 CRT 并检查 DLL 导入，安装与卸载不需要开发环境或另装 VC++ 可再发行组件；解压后分别用包内 CLI 执行 `package-install --channel release|dev --package-dir .`。关闭应用后，用解压目录中的外部 CLI 执行 `package-uninstall --channel release|dev`；卸载保留资料库和未知文件，安装目录内的运行中 CLI 会在删除前拒绝自卸载。真实干净机器步骤在 [USER-ACTIONS](USER-ACTIONS.md) H-03。
+
 ## 文档导航
 
 从 [文档导航](docs/README.md) 开始阅读。开发者和 AI 先读 [AGENTS](AGENTS.md)、[项目关键事实](docs/project-baseline.md)、[当前状态](docs/delivery/status.md) 与 [用户待办](USER-ACTIONS.md)。
@@ -48,11 +52,11 @@ cargo run -p delta-cli -- explain --as-of 2020-09-02
 
 ```powershell
 $env:DELTA_GATE_JOBS='4'
-cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6
-cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 --live
+cargo run -p delta-cli --locked -- verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench
+cargo run -p delta-cli --locked -- verify-stage --stage M1 --plan-version 2.6
 ```
 
-门禁实际执行文档、diff、格式、Clippy、工作区测试、百万行 SQLite 与跨进程隔离检查，保存日志和源码指纹至 `.local/reports/m1/`。`--live` 单列公共端点在线探针，不使用私人样本或私有凭据。静音与观测范围见 [质量门禁](docs/dev-rules/quality-gates.md)。
+门禁实际执行文档、diff、格式、Clippy、工作区测试、依赖许可、打包与隔离检查，M1 回归还执行百万行 SQLite POC；日志和源码指纹分别保存在 `.local/reports/m2/`、`m1/`。M2 的两个 UI 开关运行隐藏原生窗口、首屏/导航与 100k 图表/表格基准；缺开关时相应结果与 overall 保持 not-run。可显式追加 `--live` 单列公共端点在线探针；本轮未运行，不使用私人样本或私有凭据。静音与观测范围见 [质量门禁](docs/dev-rules/quality-gates.md)。
 
 ## 许可
 

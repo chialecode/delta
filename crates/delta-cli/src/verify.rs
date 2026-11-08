@@ -21,11 +21,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn failure(code: &str, error: impl std::fmt::Display) -> ErrorEnvelope {
+pub(super) fn failure(code: &str, error: impl std::fmt::Display) -> ErrorEnvelope {
     ErrorEnvelope::new(code, error.to_string(), false)
 }
 
-fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+pub(super) fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
         if fs::symlink_metadata(&path)?.file_type().is_symlink() {
@@ -56,6 +56,12 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             "rust-toolchain.toml",
             "clippy.toml",
             "scripts/check_docs.py",
+            "scripts/collect_third_party_licenses.py",
+            "scripts/test_collect_third_party_licenses.py",
+            "Packager.toml",
+            "LICENSE",
+            "THIRD-PARTY-NOTICES.txt",
+            "docs/delivery/m2-stage-cases.json",
         ]
         .map(|p| root.join(p)),
     );
@@ -87,7 +93,7 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
     Ok(hex::encode(hash.finalize()))
 }
 
-fn directory_snapshot(roots: &[PathBuf]) -> std::io::Result<BTreeSet<PathBuf>> {
+pub(super) fn directory_snapshot(roots: &[PathBuf]) -> std::io::Result<BTreeSet<PathBuf>> {
     fn walk(path: &Path, out: &mut BTreeSet<PathBuf>) -> std::io::Result<()> {
         if !path.exists() {
             return Ok(());
@@ -108,7 +114,7 @@ fn directory_snapshot(roots: &[PathBuf]) -> std::io::Result<BTreeSet<PathBuf>> {
     Ok(out)
 }
 
-fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
+pub(super) fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
     let mut paths = BTreeSet::new();
     for item in fs::read_dir(env::temp_dir())? {
         let item = item?;
@@ -120,6 +126,7 @@ fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
                 "delta_import_test_",
                 "delta_app_s11_",
                 "delta_live_test_",
+                "delta_m2_",
             ]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -130,7 +137,7 @@ fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
     Ok(paths)
 }
 
-fn record_tests(text: &str, tests: &mut BTreeMap<String, String>) {
+pub(super) fn record_tests(text: &str, tests: &mut BTreeMap<String, String>) {
     for line in text.lines() {
         if let Some(line) = line.strip_prefix("test ") {
             if let Some((name, status)) = line.split_once(" ... ") {
@@ -147,7 +154,7 @@ fn record_tests(text: &str, tests: &mut BTreeMap<String, String>) {
     }
 }
 
-fn case_from_tests(
+pub(super) fn case_from_tests(
     report: &mut VerifyStageReport,
     id: &str,
     package: &str,

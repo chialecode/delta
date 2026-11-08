@@ -1,0 +1,29 @@
+[package]
+name = "delta-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "delta"
+
+[lib]
+name = "delta_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "delta"
+path = "src/main.rs"
+
+[dependencies]
+delta-app = { path = "../delta-app" }
+gpui-kit.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }

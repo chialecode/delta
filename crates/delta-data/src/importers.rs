@@ -317,6 +317,36 @@ pub fn preview_statement_import(
                 .and_then(|id| reg.instruments.get(id))
             {
                 event.asset_id = instrument.base_asset_id.clone();
+            } else if delta_core::is_cash_or_stablecoin_currency(&event.asset_id)
+                && delta_core::is_cash_or_stablecoin_currency(&event.quote_currency)
+                && !delta_core::normalize_cash_currency_code(&event.asset_id).eq_ignore_ascii_case(
+                    &delta_core::normalize_cash_currency_code(&event.quote_currency),
+                )
+            {
+                if event.event_type == EconomicEventType::Buy {
+                    event.asset_id = delta_core::normalize_cash_currency_code(&event.asset_id);
+                    event.quote_currency =
+                        delta_core::normalize_cash_currency_code(&event.quote_currency);
+                    event.event_type = EconomicEventType::CashExchange;
+                } else if event.event_type == EconomicEventType::Sell {
+                    if let Some(price) = event.price.filter(|p| *p > Decimal::ZERO) {
+                        let old_asset = delta_core::normalize_cash_currency_code(&event.asset_id);
+                        let old_quote =
+                            delta_core::normalize_cash_currency_code(&event.quote_currency);
+                        event.asset_id = old_quote;
+                        event.quote_currency = old_asset;
+                        event.quantity = (event.quantity * price).normalize();
+                        event.price = Some(
+                            (Decimal::ONE / price)
+                                .round_dp_with_strategy(
+                                    10,
+                                    rust_decimal::RoundingStrategy::MidpointAwayFromZero,
+                                )
+                                .normalize(),
+                        );
+                        event.event_type = EconomicEventType::CashExchange;
+                    }
+                }
             }
             row.fingerprint = compute_content_fingerprint(event);
         }
@@ -498,6 +528,7 @@ pub(crate) fn parse_csv_by_preset(
                         "opening_balance" | "opening" => EconomicEventType::OpeningBalance,
                         "buy" => EconomicEventType::Buy,
                         "sell" => EconomicEventType::Sell,
+                        "cash_exchange" | "exchange" | "convert" => EconomicEventType::CashExchange,
                         "trade" => match side_str.as_str() {
                             "buy" => EconomicEventType::Buy,
                             "sell" => EconomicEventType::Sell,
@@ -2509,6 +2540,7 @@ pub fn load_all_ledger_events(store: &SqliteStore) -> Result<Vec<LedgerEventInpu
             "opening_balance" => EconomicEventType::OpeningBalance,
             "buy" => EconomicEventType::Buy,
             "sell" => EconomicEventType::Sell,
+            "cash_exchange" => EconomicEventType::CashExchange,
             "deposit" => EconomicEventType::Deposit,
             "withdrawal" => EconomicEventType::Withdrawal,
             "transfer_out" => EconomicEventType::TransferOut,
@@ -2669,10 +2701,15 @@ fn prepare_event_book_fx(
     )?;
     let mut out = Vec::new();
     for event in events {
-        for currency in [&event.quote_currency, &event.fee_currency] {
-            if currency == &event.fee_currency
+        let mut candidate_currencies =
+            vec![event.quote_currency.as_str(), event.fee_currency.as_str()];
+        if event.event_type == EconomicEventType::CashExchange {
+            candidate_currencies.push(event.asset_id.as_str());
+        }
+        for currency in candidate_currencies {
+            if currency == event.fee_currency
                 && event.fee_amount.is_zero()
-                && currency != &event.quote_currency
+                && currency != event.quote_currency
             {
                 continue;
             }

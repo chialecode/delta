@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -48,7 +48,7 @@ pub struct LibraryManifest {
     pub file_hashes: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncCheckpointRecord {
     pub provider: String,
     pub resource_kind: String,
@@ -93,6 +93,23 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// A consistent, private query copy. The live writer is never held across a model request.
+    pub fn query_snapshot(&self) -> Result<Self, StorageError> {
+        let mut conn = Connection::open_in_memory()?;
+        {
+            let backup = rusqlite::backup::Backup::new(&self.conn, &mut conn)?;
+            backup.run_to_completion(256, std::time::Duration::from_millis(1), None)?;
+        }
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(Self {
+            conn,
+            root_dir: self.root_dir.clone(),
+            db_path: PathBuf::from(":memory:"),
+        })
+    }
+}
+
+impl SqliteStore {
     pub fn open_or_init(
         root_dir: &Path,
         book_currency: &str,
@@ -100,7 +117,15 @@ impl SqliteStore {
         timezone: &str,
     ) -> Result<Self, StorageError> {
         fs::create_dir_all(root_dir)?;
-        for sub in ["raw", "imports", "attachments", "backups", "logs", "cache"] {
+        for sub in [
+            "raw",
+            "imports",
+            "attachments",
+            "backups",
+            "logs",
+            "cache",
+            "settings",
+        ] {
             fs::create_dir_all(root_dir.join(sub))?;
         }
         let db_path = root_dir.join("delta.sqlite");
@@ -821,6 +846,7 @@ impl SqliteStore {
                 )?;
             }
         }
+        crate::m2_schema::apply_schema_4_ddl(&tx, schema)?;
         tx.execute(
             "UPDATE library SET schema_version=?1",
             params![CURRENT_SCHEMA_VERSION],
@@ -1731,7 +1757,7 @@ impl SqliteStore {
         fs::create_dir_all(backup_dir)?;
         let target = fs::canonicalize(backup_dir)?;
         let source = fs::canonicalize(&self.root_dir)?;
-        if ["raw", "imports", "attachments"]
+        if ["raw", "imports", "attachments", "settings"]
             .iter()
             .any(|name| target.starts_with(source.join(name)))
         {
@@ -1739,7 +1765,7 @@ impl SqliteStore {
                 "backup target cannot be inside referenced library files".into(),
             ));
         }
-        for sub in ["raw", "imports", "attachments"] {
+        for sub in ["raw", "imports", "attachments", "settings"] {
             fs::create_dir_all(backup_dir.join(sub))?;
         }
 
@@ -1863,7 +1889,15 @@ impl SqliteStore {
 
         // Copy verified files to target_dir
         fs::create_dir_all(target_dir)?;
-        for sub in ["raw", "imports", "attachments", "backups", "logs", "cache"] {
+        for sub in [
+            "raw",
+            "imports",
+            "attachments",
+            "backups",
+            "logs",
+            "cache",
+            "settings",
+        ] {
             fs::create_dir_all(target_dir.join(sub))?;
         }
         for rel_path in manifest.file_hashes.keys() {
@@ -1938,7 +1972,7 @@ fn library_files(root: &Path) -> Result<Vec<(String, PathBuf)>, StorageError> {
         Ok(())
     }
     let mut files = Vec::new();
-    for dir in ["raw", "imports", "attachments"] {
+    for dir in ["raw", "imports", "attachments", "settings"] {
         walk(root, &root.join(dir), &mut files)?;
     }
     let settings = root.join("settings.json");
