@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "venue": "XNYS",
+  "aliases": ["XNAS", "NYSE", "NASDAQ"],
+  "verified_range": {
+    "start": "1990-01-02",
+    "end": "2027-12-31"
+  },
+  "adhoc_closings": [
+    { "date": "1994-04-27", "reason": "National Day of Mourning (President Richard Nixon)" },
+    { "date": "2001-09-11", "reason": "September 11 attacks" },
+    { "date": "2001-09-12", "reason": "September 11 attacks" },
+    { "date": "2001-09-13", "reason": "September 11 attacks" },
+    { "date": "2001-09-14", "reason": "September 11 attacks" },
+    { "date": "2004-06-11", "reason": "National Day of Mourning (President Ronald Reagan)" },
+    { "date": "2007-01-02", "reason": "National Day of Mourning (President Gerald Ford)" },
+    { "date": "2012-10-29", "reason": "Hurricane Sandy" },
+    { "date": "2012-10-30", "reason": "Hurricane Sandy" },
+    { "date": "2018-12-05", "reason": "National Day of Mourning (President George H.W. Bush)" },
+    { "date": "2025-01-09", "reason": "National Day of Mourning (President Jimmy Carter)" }
+  ],
+  "adhoc_early_closes": [
+    { "date": "1997-12-26", "close_et": "13:00:00", "reason": "Day after Christmas Friday early close (1997)" },
+    { "date": "1999-12-31", "close_et": "13:00:00", "reason": "Y2K Eve early close (1999)" },
+    { "date": "2003-12-26", "close_et": "13:00:00", "reason": "Day after Christmas Friday early close (2003)" }
+  ],
+  "venue_differences": []
+}

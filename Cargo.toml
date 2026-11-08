@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/delta-core",
+    "crates/delta-data",
+    "crates/delta-app",
+    "crates/delta-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["DELTA Contributors"]
+
+[workspace.dependencies]
+rust_decimal = { version = "1.43.0", features = ["serde", "serde-with-str", "maths"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+uuid = { version = "1.11", features = ["v4", "v5", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+csv = "1.4.0"
+quick-xml = { version = "0.37", features = ["serialize"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "gzip"] }
+keyring = { version = "3.6", features = ["windows-native"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+thiserror = "2.0"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.dev]
+opt-level = 1

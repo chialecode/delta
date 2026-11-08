@@ -1,0 +1,8 @@
+account,event_type,occurred_at,timezone,symbol,side,quantity,price,quote_currency,fee_amount,fee_currency,cost_known,counterparty_account,source_id
+ACC-GEN,deposit,2020-08-01 09:00:00,America/New_York,USD,buy,100000,1,USD,0,USD,true,ACC-BANK,GEN-0001
+ACC-GEN,deposit,2020-08-01 09:05:00,America/New_York,HKD,buy,77500,1,HKD,0,HKD,true,ACC-BANK,GEN-0002
+ACC-GEN,buy,2020-08-27 14:30:00,America/New_York,AAPL,buy,100,500.00,USD,10.00,USD,true,,GEN-0003
+ACC-GEN,split,2020-08-31 09:30:00,America/New_York,AAPL,buy,4,,USD,0,USD,true,,GEN-0004
+ACC-GEN,sell,2020-09-02 15:00:00,America/New_York,AAPL,sell,150,130.00,USD,5.00,USD,true,,GEN-0005
+ACC-GEN,cash_dividend,2020-09-10 09:00:00,America/New_York,AAPL,buy,205.00,,USD,0,USD,true,,GEN-0006
+ACC-GEN,transfer_out,2020-09-15 10:00:00,America/New_York,USD,sell,5000,1,USD,0,USD,true,ACC-SAVINGS,GEN-0007

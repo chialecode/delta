@@ -1,0 +1,5 @@
+account,billid,timestamp,instrument,type,side,size,price,quotecurrency,fee,feecurrency
+ACC-OKX,OKX-BILL-2001,2025-01-01 00:00:00,USDT,deposit,buy,50000,1.0,USDT,0,USDT
+ACC-OKX,OKX-BILL-2002,2025-01-01 01:00:00,OKB-USDT,trade,buy,10,50.0,USDT,0,USDT
+ACC-OKX,OKX-BILL-2003,2025-03-01 10:00:00,BTC-USDT,trade,buy,0.5,84000.0,USDT,1.0,OKB
+ACC-OKX,OKX-BILL-2004,2025-03-02 12:00:00,BTC-USDT,trade,sell,0.2,86000.0,USDT,0.5,OKB

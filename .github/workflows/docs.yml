@@ -1,0 +1,15 @@
+name: Documentation
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Repository Actions allowlist only permits actions/checkout and actions/setup-node;
+      # check_docs.py is dependency-free, so use the runner's preinstalled python3.
+      - run: python3 --version && python3 scripts/check_docs.py
