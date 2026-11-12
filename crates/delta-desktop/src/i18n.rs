@@ -349,6 +349,35 @@ const FORM_COPY: &[(&str, &str, &str)] = &[
     ),
     ("action.probe_model", "检查连通性", "Probe connection"),
     ("action.backup", "创建一致性备份", "Create backup"),
+    ("settings.about", "关于", "About"),
+    ("settings.update", "软件更新", "Software update"),
+    ("update.ready", "更新就绪", "Update ready"),
+    (
+        "update.busy_confirm",
+        "更新待确认",
+        "Update needs confirmation",
+    ),
+    ("action.check_update", "检查更新", "Check for updates"),
+    (
+        "action.apply_update",
+        "安装更新并重启",
+        "Install update and restart",
+    ),
+    (
+        "action.apply_update_busy",
+        "停止进行中的任务并更新",
+        "Stop running work and update",
+    ),
+    (
+        "action.auto_check_on",
+        "自动检查：开",
+        "Automatic checks: on",
+    ),
+    (
+        "action.auto_check_off",
+        "自动检查：关",
+        "Automatic checks: off",
+    ),
     ("action.export", "导出开放格式", "Export library"),
     ("action.restore", "恢复并校验", "Restore and verify"),
     ("action.ai_send", "发送复盘问题", "Send review question"),
@@ -595,7 +624,7 @@ impl I18nCatalog {
             }
             "state.auth_or_rate_limit.title" => "Auth Failed or Rate Limited",
             "state.auth_or_rate_limit" => {
-                "Provider or model endpoint returned 401/403/429. Check credentials in keyring or retry later."
+                "Provider or model endpoint returned 401/403/429. Check the saved API key in Settings or retry later."
             }
             "state.save_failed.title" => "Autosave Failed",
             "state.save_failed" => {

@@ -26,12 +26,12 @@ use delta_app::{
     AiReportVerificationStatus, AiReviewReport, AnalysisScope, AppHost, AppService, AttachmentDto,
     AutosaveStatus, BarRecord, BuildChannel, ChartContextDto, ChartMarkerDto, CommitImportReceipt,
     DataQualitySummaryDto, ErrorEnvelope, EvidenceRef, HoldingsAndLotsDto, ImportPreview,
-    InstrumentSearchHit, JobId, JobSnapshot, JobState, KlineViewport, KlineWindowSliceDto,
-    ManualValuation, MarkerKind, ModelConnection, ModelProtocol, NoteDto, NoteEditorSession,
-    NoteTemplateKind, OverviewMetricsDto, PeriodBreakdownReport, PortfolioRecord,
-    PreSendScopeSummary, QualityStatus, QuietJobObject, ReconciliationIssueRecord, ResultEnvelope,
-    SavedReportStatusDto, ScopeTarget, StatementPreset, StructuredNoteFields, TransactionFilterDto,
-    TransactionRowDto, WatchlistGroupDto,
+    InstallIdentity, InstrumentSearchHit, JobId, JobSnapshot, JobState, KlineViewport,
+    KlineWindowSliceDto, ManualValuation, MarkerKind, ModelConnection, ModelProtocol, NoteDto,
+    NoteEditorSession, NoteTemplateKind, OverviewMetricsDto, PeriodBreakdownReport,
+    PortfolioRecord, PreSendScopeSummary, QualityStatus, QuietJobObject, ReconciliationIssueRecord,
+    ResultEnvelope, SavedReportStatusDto, ScopeTarget, StatementPreset, StructuredNoteFields,
+    TransactionFilterDto, TransactionRowDto, WatchlistGroupDto,
 };
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::{
@@ -741,7 +741,7 @@ impl WorkbenchSharedState {
         Ok((preview, receipt))
     }
 
-    fn start_verification_cancellation_job(
+    pub(crate) fn start_verification_cancellation_job(
         &mut self,
         duration_ms: u64,
     ) -> Result<JobId, ErrorEnvelope> {
@@ -2343,6 +2343,8 @@ pub struct DeltaWorkbench {
     last_scope_descriptor: String,
     _subscription: Subscription,
     _poll_task: Task<()>,
+    pending_exit: Option<crate::lifecycle::PendingExit>,
+    last_update_status: String,
 }
 
 impl DeltaWorkbench {
@@ -2463,7 +2465,7 @@ impl DeltaWorkbench {
         );
         let tick_controller = controller.clone();
         let executor = cx.background_executor().clone();
-        let poll_task = cx.spawn_in(window, async move |_, cx| loop {
+        let poll_task = cx.spawn_in(window, async move |workbench, cx| loop {
             executor.timer(Duration::from_millis(100)).await;
             if tick_controller
                 .update_in(cx, |ctl, window, cx| {
@@ -2473,6 +2475,11 @@ impl DeltaWorkbench {
                     }
                 })
                 .is_err()
+                || workbench
+                    .update_in(cx, |workbench, window, cx| {
+                        workbench.tick_lifecycle(window, cx)
+                    })
+                    .is_err()
             {
                 break;
             }
@@ -2490,6 +2497,8 @@ impl DeltaWorkbench {
             last_scope_descriptor: String::new(),
             _subscription: subscription,
             _poll_task: poll_task,
+            pending_exit: None,
+            last_update_status: String::new(),
         }
     }
 
@@ -2631,6 +2640,17 @@ impl Render for DeltaWorkbench {
         };
         let ai_open = state.layout.right_ai_open;
         let tasks_open = state.layout.bottom_tasks_open;
+        let update_badge =
+            crate::lifecycle::update_state().and_then(|update| match update.status {
+                crate::lifecycle::UpdateStatus::Ready { version } => Some((
+                    format!("{} {version}", I18nCatalog::tr("update.ready")),
+                    false,
+                )),
+                crate::lifecycle::UpdateStatus::BusyConfirm { .. } => {
+                    Some((I18nCatalog::tr("update.busy_confirm").to_string(), true))
+                }
+                _ => None,
+            });
         let toggle = |id: &'static str, icon: IconName, tip: &'static str, on: bool| {
             Button::new(id)
                 .icon(icon)
@@ -2713,6 +2733,20 @@ impl Render for DeltaWorkbench {
                                     })),
                             ),
                     )
+                    .when_some(update_badge, |bar, (label, warning)| {
+                        bar.child(
+                            Button::new("update-ready-badge")
+                                .small()
+                                .when(!warning, |button| button.primary())
+                                .when(warning, |button| button.warning())
+                                .label(label)
+                                .on_click(cx.listener(|workbench, _, window, cx| {
+                                    workbench.controller.update(cx, |ctl, cx| {
+                                        ctl.navigate("nav.settings", window, cx)
+                                    })
+                                })),
+                        )
+                    })
                     .child(div().w(px(1.)).h(px(18.)).bg(cx.theme().border))
                     .child(
                         toggle("dock-toggle-ai", IconName::Bot, "nav.ai_panel", ai_open).on_click(
@@ -2824,6 +2858,215 @@ impl Render for DeltaWorkbench {
 }
 
 impl DeltaWorkbench {
+    /// Drain control-pipe requests and advance a pending save-then-exit (`S-29`, `S-31`).
+    pub(crate) fn tick_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::lifecycle::{
+            emit_event, next_control_request, options, ExitReason, PendingExit, APPLY_REQUESTED,
+        };
+        use delta_app::{ControlCommand, ControlReply, ControlStatus};
+        while let Some((command, reply)) = next_control_request() {
+            match command {
+                ControlCommand::Focus => {
+                    if options().is_some_and(|options| options.allow_focus) {
+                        window.activate_window();
+                    }
+                    emit_event("control-focus", json!({}));
+                    let _ = reply.send(ControlReply::new(ControlStatus::Ok, "focused"));
+                }
+                ControlCommand::QuitForUpdate if self.pending_exit.is_some() => {
+                    let _ = reply.send(ControlReply::new(
+                        ControlStatus::Busy,
+                        "an exit is already in progress",
+                    ));
+                }
+                ControlCommand::QuitForUpdate => {
+                    emit_event("control-quit-for-update", json!({}));
+                    self.pending_exit = Some(PendingExit::new(ExitReason::Control(reply)));
+                }
+            }
+        }
+        if APPLY_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+            && self.pending_exit.is_none()
+        {
+            self.pending_exit = Some(PendingExit::new(ExitReason::ApplyUpdate));
+        }
+        let status = crate::lifecycle::update_state()
+            .map(|state| format!("{:?}", state.status))
+            .unwrap_or_default();
+        if status != self.last_update_status {
+            self.last_update_status = status;
+            cx.notify();
+        }
+        if let Some(mut exit) = self.pending_exit.take() {
+            if !self.advance_exit(&mut exit, window, cx) {
+                self.pending_exit = Some(exit);
+            }
+        }
+    }
+
+    /// One step of the exit sequence. Returns true when the sequence has ended (exited,
+    /// refused as busy, or failed); the app is never terminated with unsaved work.
+    fn advance_exit(
+        &mut self,
+        exit: &mut crate::lifecycle::PendingExit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        use crate::lifecycle::{
+            emit_event, options, ExitPhase, ExitReason, UpdateStatus, APPLY_CONFIRMED_BUSY,
+        };
+        use delta_app::{ControlReply, ControlStatus};
+        fn refuse(
+            exit: &crate::lifecycle::PendingExit,
+            status: ControlStatus,
+            reason: String,
+        ) -> bool {
+            crate::lifecycle::emit_event(
+                "exit-refused",
+                json!({"status": status, "reason": reason}),
+            );
+            match &exit.reason {
+                crate::lifecycle::ExitReason::Control(reply) => {
+                    let _ = reply.send(ControlReply::new(status, reason));
+                }
+                crate::lifecycle::ExitReason::ApplyUpdate => {
+                    crate::lifecycle::set_update_failed("UPDATE_BUSY", &reason);
+                }
+            }
+            true
+        }
+        if exit.timed_out() {
+            return refuse(
+                exit,
+                ControlStatus::Busy,
+                "保存未在期限内完成，应用保持运行".into(),
+            );
+        }
+        let busy = {
+            let state = self.state.lock().unwrap();
+            if state.active_sync_job.is_some() {
+                Some("同步任务进行中")
+            } else if self.controller.read(cx).ai_running {
+                Some("AI 正在生成")
+            } else {
+                None
+            }
+        };
+        match exit.phase {
+            ExitPhase::CheckBusy => {
+                if let Some(reason) = busy {
+                    if matches!(exit.reason, ExitReason::ApplyUpdate)
+                        && APPLY_CONFIRMED_BUSY.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        // The user explicitly chose to stop running work and update.
+                        self.controller.update(cx, |ctl, cx| {
+                            ctl.cancel_sync(cx);
+                            ctl.cancel_ai(cx);
+                        });
+                        exit.dispatched = true;
+                        return false;
+                    }
+                    if exit.dispatched {
+                        return false; // Waiting for the confirmed cancellation to finish.
+                    }
+                    if matches!(exit.reason, ExitReason::ApplyUpdate) {
+                        let version = crate::lifecycle::update_state()
+                            .and_then(|state| state.offer.map(|offer| offer.manifest.version))
+                            .unwrap_or_default();
+                        emit_event("update-busy-prompt", json!({"detail": reason}));
+                        crate::lifecycle::set_update_status(UpdateStatus::BusyConfirm {
+                            version,
+                            detail: reason.into(),
+                        });
+                        return true;
+                    }
+                    return refuse(exit, ControlStatus::Busy, reason.into());
+                }
+                if !self.controller.read(cx).is_idle() {
+                    // An import commit or another queued write is still running: wait for it
+                    // to finish instead of exiting mid-write (bounded by the exit deadline).
+                    return false;
+                }
+                exit.phase = ExitPhase::SaveNote;
+                exit.dispatched = false;
+                false
+            }
+            ExitPhase::SaveNote => {
+                let editor = self.state.lock().unwrap().note_editor.clone();
+                if exit.dispatched
+                    && matches!(editor.status, delta_app::AutosaveStatus::SaveFailed { .. })
+                {
+                    return refuse(
+                        exit,
+                        ControlStatus::SaveFailed,
+                        "笔记保存失败，应用保持运行以免丢失编辑".into(),
+                    );
+                }
+                if crate::controller::note_is_dirty(&editor) {
+                    if !exit.dispatched {
+                        exit.dispatched = true;
+                        self.controller.update(cx, |ctl, cx| {
+                            ctl.dispatch(UiAction::SaveNote(editor), window, cx)
+                        });
+                    }
+                    return false;
+                }
+                if !self.controller.read(cx).is_idle() {
+                    return false;
+                }
+                emit_event("exit-note-saved", json!({}));
+                exit.phase = ExitPhase::SaveLayout;
+                exit.dispatched = false;
+                false
+            }
+            ExitPhase::SaveLayout => {
+                if !exit.dispatched {
+                    exit.dispatched = true;
+                    self.controller
+                        .update(cx, |ctl, cx| ctl.dispatch(UiAction::SaveLayout, window, cx));
+                    return false;
+                }
+                if !self.controller.read(cx).is_idle() {
+                    return false;
+                }
+                exit.phase = ExitPhase::Finish;
+                false
+            }
+            ExitPhase::Finish => {
+                match &exit.reason {
+                    ExitReason::Control(reply) => {
+                        let mut answer = ControlReply::new(ControlStatus::Ok, "saved; exiting");
+                        answer.relaunch_args = options()
+                            .map(|options| options.relaunch_args.clone())
+                            .unwrap_or_default();
+                        emit_event("exit-for-update", json!({}));
+                        let _ = reply.send(answer);
+                        cx.quit();
+                    }
+                    ExitReason::ApplyUpdate => {
+                        crate::lifecycle::set_update_status(UpdateStatus::Applying {
+                            version: crate::lifecycle::update_state()
+                                .and_then(|state| state.offer.map(|offer| offer.manifest.version))
+                                .unwrap_or_default(),
+                        });
+                        let host = self.state.lock().unwrap().host.clone();
+                        match crate::lifecycle::backup_and_launch_installer(&host) {
+                            Ok(()) => {
+                                emit_event("exit-for-update", json!({}));
+                                cx.quit();
+                            }
+                            Err(error) => crate::lifecycle::set_update_failed(
+                                error.code(),
+                                &error.to_string(),
+                            ),
+                        }
+                    }
+                }
+                true
+            }
+        }
+    }
+
     fn rail_button(
         &self,
         key: &'static str,
@@ -2889,6 +3132,9 @@ pub struct UiBenchReport {
     pub interaction_p95_us: u64,
     pub interaction_p99_us: u64,
     pub workbench_measurement: String,
+    /// Windows power-throttling state of the measuring process (`EXECUTION_SPEED_OPT_OUT`).
+    #[serde(default)]
+    pub power_throttling: String,
 }
 
 /// Verification owns a newly created child, never the caller's supplied root.
@@ -2949,7 +3195,10 @@ fn run_fixed_scale_bench_in_owned_directory(
     data_dir: &Path,
 ) -> Result<UiBenchReport, ErrorEnvelope> {
     apply_process_quiet_guards();
+    // The hidden benchmark window must not be measured under OS background throttling.
+    let power_throttling = delta_app::opt_out_of_execution_speed_throttling();
     let mut report = crate::ui_verification::run_native_benchmark()?;
+    report.power_throttling = power_throttling;
     let executable = std::env::current_exe()
         .map_err(|e| ErrorEnvelope::new("BENCH_EXECUTABLE", e.to_string(), false))?;
     for _ in 0..5 {
@@ -3054,35 +3303,47 @@ pub fn run_desktop_entrypoint() -> ExitCode {
         let _ = j.assign_current_process();
     });
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // The installer restarts the app with its previous arguments, hex-encoded (`S-31`).
+    if let Some(position) = args.iter().position(|a| a == "--restore-args") {
+        match args
+            .get(position + 1)
+            .and_then(|encoded| delta_app::update::decode_relaunch_args(encoded))
+        {
+            Some(restored) if !restored.iter().any(|a| a == "--restore-args") => args = restored,
+            _ => {
+                eprintln!("invalid --restore-args");
+                return ExitCode::from(2);
+            }
+        }
+    }
     let has_flag = |f: &str| args.iter().any(|a| a == f);
     let parse_flag = |f: &str| args.windows(2).find(|w| w[0] == f).map(|w| w[1].clone());
 
     if has_flag("--build-info") {
-        println!(
-            "{}",
-            json!({"product":"delta-desktop", "version":env!("CARGO_PKG_VERSION"), "channel":BuildChannel::current().as_str()})
-        );
+        println!("{}", delta_app::build_info("delta-desktop"));
         return ExitCode::SUCCESS;
     }
 
     if has_flag("--version") || has_flag("-V") {
         println!(
             "{} {} ({})",
-            BuildChannel::current().dir_name(),
-            env!("CARGO_PKG_VERSION"),
+            InstallIdentity::current()
+                .map(InstallIdentity::name)
+                .unwrap_or("delta-source"),
+            delta_app::app_version(),
             BuildChannel::current().as_str()
         );
         return ExitCode::SUCCESS;
     }
     if has_flag("--help") || has_flag("-h") {
         println!(
-            "delta (M2 v1.0) - GPUI desktop investment review workbench\n\
+            "delta (M3 v1.0) - GPUI desktop investment review workbench\n\
              Flags:\n\
              - --data-dir <dir>\n\
              - --ui-smoke [--data-dir <dir>]\n\
              - --ui-bench [--data-dir <dir>]\n\
-             - --version | --help"
+             - --build-info | --version | --help"
         );
         return ExitCode::SUCCESS;
     }
@@ -3115,7 +3376,8 @@ pub fn run_desktop_entrypoint() -> ExitCode {
             return ExitCode::from(1);
         }
         return match res {
-            Ok(v) => {
+            Ok(mut v) => {
+                v["build_info"] = delta_app::build_info("delta-desktop");
                 println!("{}", sanitize_terminal_output(&v.to_string()));
                 ExitCode::SUCCESS
             }
@@ -3144,7 +3406,56 @@ pub fn run_desktop_entrypoint() -> ExitCode {
         };
     }
 
-    // Default interactive desktop window launch
+    // Gate-only hidden resident mode: never available to the user's release/dev identities.
+    let resident = has_flag("--verification-resident");
+    let identity = InstallIdentity::current();
+    if resident && identity.is_some_and(|identity| !identity.is_test()) {
+        eprintln!("verification mode is restricted to test identities");
+        return ExitCode::from(2);
+    }
+
+    // Single instance (`S-29`): a second start only signals the running instance.
+    let _instance = match identity.map(delta_app::SingleInstance::acquire) {
+        None => None,
+        Some(Ok(instance)) => Some(instance),
+        Some(Err(delta_app::InstanceError::AlreadyRunning(_))) => {
+            let identity = identity.unwrap();
+            let reply = delta_app::send_control_command(
+                identity,
+                delta_app::ControlCommand::Focus,
+                Duration::from_secs(10),
+            );
+            println!(
+                "{}",
+                json!({"status": "signalled-existing-instance", "identity": identity.name(),
+                    "reply": reply.as_ref().ok(), "error": reply.as_ref().err().map(|e| e.code())})
+            );
+            return ExitCode::SUCCESS;
+        }
+        Some(Err(error)) => {
+            eprintln!("{}", sanitize_terminal_output(&error.to_string()));
+            return ExitCode::from(1);
+        }
+    };
+    #[cfg(windows)]
+    if let Some(identity) = identity {
+        let aumid: Vec<u16> = identity
+            .app_user_model_id()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(aumid.as_ptr());
+        }
+    }
+    let (control_sender, control_receiver) = std::sync::mpsc::channel();
+    crate::lifecycle::install_control_receiver(control_receiver);
+    let _control = identity.and_then(|identity| {
+        delta_app::ControlServer::start(identity, crate::lifecycle::bridge_handler(control_sender))
+            .map_err(|error| eprintln!("{}", sanitize_terminal_output(&error.to_string())))
+            .ok()
+    });
+
     let paths = match resolve_app_paths(None, cli_data_dir.as_deref()) {
         Ok(paths) => paths,
         Err(error) => {
@@ -3152,6 +3463,58 @@ pub fn run_desktop_entrypoint() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let mut relaunch_args = Vec::new();
+    if let Some(dir) = &cli_data_dir {
+        relaunch_args.extend(["--data-dir".to_string(), dir.display().to_string()]);
+    }
+    if resident {
+        relaunch_args.push("--verification-resident".into());
+        if let Some(seconds) = parse_flag("--verification-max-seconds") {
+            relaunch_args.extend(["--verification-max-seconds".into(), seconds]);
+        }
+    }
+    crate::lifecycle::install_options(crate::lifecycle::LifecycleOptions {
+        relaunch_args,
+        allow_focus: !resident,
+        backup_root: paths.default_backup_dir.clone(),
+        emit_events: resident,
+        event_log: resident.then(|| paths.data_dir.join("verification-events.jsonl")),
+    });
+    if resident {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            crate::lifecycle::emit_event("resident-panic", json!({"message": info.to_string()}));
+            previous(info);
+        }));
+        crate::lifecycle::emit_event(
+            "resident-started",
+            json!({"args": std::env::args().skip(1).collect::<Vec<_>>()}),
+        );
+    }
+    if resident {
+        let options = crate::ui_verification::ResidentOptions {
+            seed: has_flag("--verification-seed"),
+            pending_note: parse_flag("--verification-pending-note"),
+            busy_sync_ms: parse_flag("--verification-busy-sync-ms").and_then(|v| v.parse().ok()),
+            apply_update: has_flag("--verification-apply-update"),
+            ignore_control: has_flag("--verification-ignore-control"),
+            max_seconds: parse_flag("--verification-max-seconds")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(240),
+        };
+        return match crate::ui_verification::run_native_resident(paths, options) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                crate::lifecycle::emit_event(
+                    "resident-failed",
+                    json!({"code": error.code, "message": error.message}),
+                );
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    // Default interactive desktop window launch
     let data_dir = paths.data_dir.clone();
     let host = match AppHost::spawn(paths, "USD", "USD", "UTC") {
         Ok(host) => host,
@@ -3160,6 +3523,7 @@ pub fn run_desktop_entrypoint() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    crate::lifecycle::initialize_updates(data_dir.clone(), false);
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.run(move |cx| {
         gpui_kit::init(cx);
@@ -3167,10 +3531,11 @@ pub fn run_desktop_entrypoint() -> ExitCode {
         let as_of = Utc::now().date_naive();
         let options = WindowOptions {
             titlebar: Some(gpui_kit::TitlebarOptions {
-                title: Some(SharedString::from(match BuildChannel::current() {
-                    BuildChannel::Release => "DELTA",
-                    _ => "DELTA Dev",
-                })),
+                title: Some(SharedString::from(
+                    identity
+                        .map(InstallIdentity::display_name)
+                        .unwrap_or("DELTA Dev"),
+                )),
                 ..Default::default()
             }),
             window_bounds: Some(gpui_kit::WindowBounds::Windowed(

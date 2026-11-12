@@ -1,24 +1,27 @@
 # 当前执行状态
 
-更新：2026-11-09；维护：Agent A / Agent B。当前阶段：**M2 v1.0 / A 技术审核通过，待远端授权（ACT-09）**。A 修复 F-08（AI 数值校验绕过）与 F-09（图标资源/面板标题），并按用户要求完成长桥风格界面重设计；最终源码 M2 全门禁（含 `--ui-smoke --ui-bench`）与 M1 v2.6 回归通过，无工程阻断。唯一计划见 [M2 v1.0](stage-plan.md)，问题与本轮证据见 [阶段报告](stage-report.md)。
+更新：2026-11-09；维护：Agent A / Agent B。当前阶段：**M3 v1.0 / A 集中技术审核通过（工程阻断 0），待用户授权推送与 PR（ACT-12）**。按用户指示与 [D-31](../decisions/confirmed-decisions.md)，M2 之后先补齐 Windows 安装包、版本与自动更新，原 M3～M5 顺延为 M4～M6。唯一计划见 [M3 阶段计划](stage-plan.md)，用例见 [m3-stage-cases.json](m3-stage-cases.json)，实际证据见 [M3 阶段报告](stage-report.md)。
 
 ## 基线与判断
 
-- M1 v2.6 已按 `ACT-08` 授权，经 [PR #1](https://github.com/chialecode/delta/pull/1) squash 合并为 `main` `0370b7e9103d0172a7ab47613ea253949d6a9b8b`；历史证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)。
-- 当前分支 `codex/m2-desktop-workbench`，固定阶段父提交 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`。复核基点 `6dfa28c69c11d2764bc2233e407eb4827dd4812d`；最终 amend 后的完整 SHA 见交接消息与 `git rev-parse HEAD`。
-- B 实现与自检：完成；A 集中技术审核：**通过**（2026-11-09，B 轮指纹 `e2ba2bdc…5a71` 经 A 独立重算一致）；产品验收：未完成。最终被测源码指纹 `3c6a16dceea9515b5deb4942d26ae7bfa1181af1f4c4621b2064dc3cb34293d9`；工作区 95 passed、2 ignored（live 探针与显式截图），M2 必需 26 项与 6 个 spike 全 passed。真实模型、个人账单与人工检查状态按 [USER-ACTIONS](../../USER-ACTIONS.md) 维护，不由离线/回环测试代替。
-- 既有未跟踪 `workers/agent/` 保持原样，未读取、构建、修改或暂存。本轮只做本地开发、检查和阶段 Git 保存。
+- M1 v2.6 经 [PR #1](https://github.com/chialecode/delta/pull/1) 合并为 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`；证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)。
+- M2 v1.0 按 `ACT-09` 授权经 [PR #2](https://github.com/chialecode/delta/pull/2) squash 合并为 `main` `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`；证据与 A 审核结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)。M2 产品验收仍未完成：真实模型（ACT-01）、真实个人账单（ACT-03）与 H-01、H-02 保持 not-run（H-03 改为 M3 安装器步骤）。
+- 当前分支 `codex/m3-installer-update`，固定阶段父提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`；A 计划与 B 实现在同一阶段提交中，完整 SHA 见 B→A 交接消息与 `git rev-parse HEAD`。
+- **B 实现：完成**（M3-W01～W06）。**A 集中技术审核：通过**：修正 TEST-03 测量口径（隐藏窗口 EcoQoS 节流）、M2 便携迁移预检、安装包固定输出到 `dist/` 与产物清理，并按用户 [D-32](../decisions/confirmed-decisions.md) 把凭据与签名私钥改为文件；最终源码指纹 `77dd43c8…` 下 M3 `--installer --ui-smoke`、M2 `--ui-smoke --ui-bench`、M1 回归全部 passed。产品验收：未开始（H-03、H-04、真实发布 not-run）。
+- 既有未跟踪 `workers/agent/` 保持原样，未读取、构建、修改或暂存。未执行 push、PR、GitHub Release 或远端设置变更。
 
-## 本轮实现
+## 本轮（A 审核）
 
-工作台实际导航、输入、表单、保存、导入、图表和 AI 操作经 `WorkbenchController` 在后台调用同一 `delta-app` 服务。修复保存期间输入覆盖、保存失败后范围切换、设置输入被轮询覆盖和旧 AI 展示问题。真实同步使用宿主作业、实际记录进度和在途网络取消；取消接受与资源释放分别记录。
-
-冻结范围保留零行情版本、空账户集与笔记权限指纹；AI 工具读取一致内存快照。笔记 owner、复盘日期、事件和图表锚点均由宿主校验，历史截止还限制真实保存时间。图表缓存绑定完整内容/指标/截止，控制与标记点击已接通。
-
-模型两协议修复 wire 名称、完整工具配对、reasoning、累计预算和 SSE 上限；报告要求结构化内容、显式引用和保持符号的数值校验。模型凭据由通道与资料库身份隔离，真实 keyring 读取、空密钥保留、重启恢复和失败回滚已有回归；审计日志只写白名单元数据。
-
-打包改为独立正式/开发通道 release 构建、静态 CRT、普通/延迟 PE 导入检查、完整文件哈希、安装身份与卸载所有权核验。包内 CLI 安装、外部卸载、自卸载拒绝和两包全部 ZIP 文件校验通过；原生首屏/导航/绘制与取消基准通过，缺显式 UI 验证时门禁保持 not-run。许可收集 885/885、0 errors，明确保留 AND 义务和 48 包的标准正文/源码回退；OSS-08/09/11 关闭。
+- 对照计划第 5、6 节复核身份隔离、数据保留、不强杀、更新传输与签名、私钥边界、分离启动与 M2 迁移，结论见 [阶段报告](stage-report.md#a-集中技术审核2026-11-09)。
+- 用户要求：构建产物只留最新（`dist/`、`scripts/clean_artifacts.py`、dev profile；`target/` 32 GB → 约 3.5 GB）；凭据不用凭据管理器（D-32）；mbx 评估登记 `LOOP-05`。
+- TEST-01、TEST-03 关闭。未执行 push、PR、GitHub Release 或远端设置变更；`workers/agent/` 未触碰。
 
 ## 接续
 
-首选下一步：用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 对 `ACT-09`（推送 `codex/m2-desktop-workbench` 并创建到 `main` 的 PR）给出明确授权；授权后 A 核对 CI 与审查反馈，合并另需授权。界面重设计请在实际窗口确认（`cargo run -p delta-desktop`）；`ACT-01`、`ACT-03`、`H-01`～`H-03` 独立推进，不是远端动作前提，也不等于产品验收。
+首选下一步：用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 授权 `ACT-12`（推送 `codex/m3-installer-update` 并创建 PR）。ACT-10（生成并备份签名密钥文件）、ACT-11（v0.1.1 发布）、Q-04、Q-05 与 H-03、H-04 独立推进，不阻塞推送/PR。
+
+## B 实现记录
+
+- 新增安装身份、版本推算、单实例与本身份控制管道、Ed25519 签名更新（`delta-app`），保存后退出序列、工具栏“更新就绪”、设置页“关于/更新”（`delta-desktop`），Inno Setup 7.1.1 按用户安装器模板、`package-build` / `install-dev` / `release-build` / `release-keygen` / `release-key-export` / `control` / `update-test-source` 与 M2 便携安装迁移（`delta-cli`），Δ 图标与 `VERSIONINFO`。
+- `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` 只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；回环演练不是 GitHub 发布。M1 v2.6、M2 v1.0 回归在同一源码指纹下实跑。
+- `M3-A-10` 的静音、隔离、清理部分在同一次运行中已通过；未通过的只有 M2 回归前置条件。spike 结论、门禁中发现并修复的问题（Inno 零尺寸辅助窗口、卸载第二阶段被作业终止、控制管道关闭竞态、分离启动继承调用方标准句柄）与 not-run 边界见阶段报告。

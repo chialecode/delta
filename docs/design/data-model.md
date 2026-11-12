@@ -1,6 +1,6 @@
 # DELTA 数据模型设计
 
-版本 0.6 · 2026-11-08 · 本文为完整产品逻辑模型；M1–M2 实际持久化子集见第 11 节，不能由目标表推定 M3/M4 功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
+版本 0.6 · 2026-11-08 · 本文为完整产品逻辑模型；M1–M2 实际持久化子集见第 11 节，不能由目标表推定 M4/M5 功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
 
 ## 1. 通用规则
 
@@ -164,7 +164,7 @@ M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与
 
 ## 11. M1–M2 实际持久化契约
 
-当前 SQLite schema 为 4（从 schema 3 升级前自动创建一致性备份，故障注入不留半写库），规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1–M2 提供账本、账户与统计组合（嵌套防环去重）、手工资产/负债估值、日线、FX、公司行动、自选组、交易计划、图表上下文、Markdown 笔记修订/附件/FTS5 `trigram` 索引、AI 会话与单事务压缩检查点、质量诊断与报告；历史训练（M3）与策略实验（M4）仍属后续目标。
+当前 SQLite schema 为 4（从 schema 3 升级前自动创建一致性备份，故障注入不留半写库），规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1–M2 提供账本、账户与统计组合（嵌套防环去重）、手工资产/负债估值、日线、FX、公司行动、自选组、交易计划、图表上下文、Markdown 笔记修订/附件/FTS5 `trigram` 索引、AI 会话与单事务压缩检查点、质量诊断与报告；历史训练（M4）与策略实验（M5）仍属后续目标。
 
 | 实体 | 当前关键字段 / 不变量 |
 | --- | --- |
@@ -175,7 +175,7 @@ M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与
 | analysis_report | scope 保存账户快照、as-of/cutoff、记账及报表币种、FIFO、费用口径、估值源、`m1-ledger-3` / `m2-ledger-1`；身份包含 scope，事件更正使旧报告标为 stale 并提供重算入口 |
 | portfolio_group_link / manual_valuation | 统计组合支持嵌套子组合并在解析时防环去重；手工估值记录 `as_of` 与 `method` |
 | note / note_revision / note_link / attachment / note_fts | 笔记修订只追加、保存校验期望修订，失败不提交部分链接；owner 与 `review_date` 定义账户/期间范围；附件存于 `attachments/` 并校验 SHA-256 与磁盘存在性；FTS5 `trigram`（3 字及以上）与有界 `LIKE` 回退（1～2 字），候选 10,000/返回 100 上限以 Partial 提示 |
-| model_connection / ai_session / ai_run / ai_message / ai_tool_call / ai_checkpoint | 凭据引用绑定通道，keyring account 由 `(library.id, connection.id)` 哈希派生；`ai_tool_call` 按 `(run_id, call_id)` 唯一幂等；run 保存完整连接指纹；会话压缩在单事务内写入 `ai_checkpoint` 并切换 `active_checkpoint_id`，故障自动回滚保留上一有效检查点 |
+| model_connection / ai_session / ai_run / ai_message / ai_tool_call / ai_checkpoint | 凭据引用（`credential://`，DPAPI 加密文件，D-32）绑定通道，account 由 `(library.id, connection.id)` 哈希派生；`ai_tool_call` 按 `(run_id, call_id)` 唯一幂等；run 保存完整连接指纹；会话压缩在单事务内写入 `ai_checkpoint` 并切换 `active_checkpoint_id`，故障自动回滚保留上一有效检查点 |
 | provider_connection / dataset_version | 实际端点、capabilities 和 source/terms_class；条款取 public_open / official_free_personal / unofficial_personal；限额为 0 表示尚无确定每分钟配额，不表示无限量 |
 
 资金/持仓在途投影保存两端账户、原始 lot 日期与成本。整库 scope 由实际事件账户和登记 active 账户组成；外部目的地不自动加入。未知历史成本贯穿处置，损益不可用；未知成本处置的 journal 差额进入 COST_PENDING 清算项，不是已实现收益。

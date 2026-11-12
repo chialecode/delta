@@ -46,8 +46,10 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
     source_files(&root.join("tests/fixtures"), &mut files)
         .map_err(|e| failure("fingerprint", e))?;
     files.retain(|p| {
-        p.extension()
-            .is_some_and(|e| e == "rs" || e == "toml" || e == "json" || e == "csv" || e == "xml")
+        p.extension().is_some_and(|e| {
+            ["rs", "toml", "json", "csv", "xml", "iss", "ico", "svg"]
+                .contains(&e.to_str().unwrap_or_default())
+        })
     });
     files.extend(
         [
@@ -62,6 +64,8 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             "LICENSE",
             "THIRD-PARTY-NOTICES.txt",
             "docs/delivery/m2-stage-cases.json",
+            "docs/delivery/m3-stage-cases.json",
+            "scripts/generate_icon.py",
         ]
         .map(|p| root.join(p)),
     );
@@ -75,6 +79,13 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             .to_string_lossy()
             .replace('\\', "/");
         let raw = fs::read(&path).map_err(|e| failure("fingerprint", e))?;
+        if path.extension().is_some_and(|e| e == "ico") {
+            hash.update((name.len() as u64).to_le_bytes());
+            hash.update(name.as_bytes());
+            hash.update((raw.len() as u64).to_le_bytes());
+            hash.update(raw);
+            continue;
+        }
         // Every fingerprinted file is text with `eol=lf` in .gitattributes. Git treats a
         // CRLF working copy as unchanged, so hash the normalized bytes that are committed.
         let mut bytes = Vec::with_capacity(raw.len());
@@ -127,6 +138,7 @@ pub(super) fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
                 "delta_app_s11_",
                 "delta_live_test_",
                 "delta_m2_",
+                "delta_m3_",
             ]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -556,7 +568,8 @@ fn cross_process_checks(
     let exe = env::current_exe().map_err(|e| failure("exe", e))?;
     let started = Instant::now();
     let prefix = format!("delta-test-{run_id}");
-    let credentials = CredentialStore::with_custom_prefix(&prefix);
+    let credential_dir = temp.join("credential-probe");
+    let credentials = CredentialStore::new(&credential_dir, &prefix);
     let secret = format!("synthetic-{run_id}");
     credentials
         .set_secret("tiingo", "verify_user", &secret)
@@ -564,7 +577,9 @@ fn cross_process_checks(
     let read = run_quiet_command(
         exe.as_os_str(),
         [
-            "__internal-keyring-read",
+            "__internal-credential-read",
+            "--data-dir",
+            &credential_dir.display().to_string(),
             "--prefix",
             &prefix,
             "--provider",
@@ -585,7 +600,7 @@ fn cross_process_checks(
     {
         return Err(failure(
             "credential_probe",
-            "cross-process keyring assertion failed",
+            "cross-process credential file assertion failed",
         ));
     }
     report.case_results.push(CaseResultRecord {
@@ -595,7 +610,7 @@ fn cross_process_checks(
         status: "passed".into(),
         elapsed_ms: started.elapsed().as_millis() as u64,
         evidence: format!(
-            "Native keyring cross-process write/read/delete; synthetic prefix {prefix} cleaned"
+            "DPAPI credential file cross-process write/read/delete (D-32); synthetic prefix {prefix} cleaned"
         ),
     });
     let started = Instant::now();

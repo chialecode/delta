@@ -26,7 +26,7 @@ use crate::host::{
 use crate::service::{AppService, ErrorEnvelope};
 
 // A connection ID is local to a library. Hash the tuple to avoid ambiguous IDs and
-// prevent two libraries in the same build channel from sharing a keyring account.
+// prevent two libraries in the same build channel from sharing a credential account.
 fn model_credential_account(
     svc: &AppService,
     connection_id: &str,
@@ -1085,7 +1085,7 @@ impl AgentRuntime {
         self.pinned_scope.as_ref()
     }
 
-    /// Configure and persist a `ModelConnection` (with optional API key stored in keyring).
+    /// Configure and persist a `ModelConnection` (with optional API key in the encrypted credential file, D-32).
     /// Switching connection, model, or protocol advances `AppHost` generation (`S-21`, `M2-A-15`).
     pub fn configure_model_connection(
         &mut self,
@@ -1219,7 +1219,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Restores public settings without reading or exposing the keyring secret.
+    /// Restores public settings without reading or exposing the stored secret.
     /// Callers run this on their background executor, like the other host queries.
     pub fn model_connection_settings(&self) -> Result<Option<ModelConnection>, ErrorEnvelope> {
         let id = self.active_connection_id.clone();

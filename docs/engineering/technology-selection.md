@@ -7,7 +7,7 @@
 1. **全项目 100% 纯 Rust 实现（D-22）**：
    - 采用 **纯 Rust 核心（`delta-core` / `delta-data` / `delta-app` / `delta-cli`）+ SQLite 单库（控制面、事务账本与日线行情）**；不引入 `workers/python` 或任何运行期 Python 子进程。
    - 调研中核查的 Python 库（如 `yfinance`、`akshare`、`exchange_calendars`）仅借用其**公开 HTTP 端点参数语义与日历规则对照**，在 DELTA 中全部由 Rust `reqwest` + `serde_json` 与 `chrono` + `chrono-tz` 原生实现。
-   - Parquet/DuckDB 推迟到 M4 批量扫描或实测性能不足时引入（`OSS-10`）。
+   - Parquet/DuckDB 推迟到 M5 批量扫描或实测性能不足时引入（`OSS-10`）。
 2. **优先解决金融数据来源与本地自动化数据平面（M1，D-20）**：
    - **M1 零桌面 GUI 依赖**：先把美股/ETF、加密现货、法币/稳定币汇率、公司行动（拆股/分红）、交易日历及券商/交易所账单导入与增量同步跑通并验证。
    - **与 M2 GPUI 兼容的异步边界**：`delta-app` 对外只提供同步命令/查询与后台作业句柄，不暴露 `tokio`/`reqwest` 类型；GPUI 自带执行器，可直接调用而无需桥接两个运行时。
@@ -35,10 +35,10 @@
 | 能力 | M1 首选 | 备选 / 取舍 | DELTA 自研边界 |
 | --- | --- | --- | --- |
 | 控制面、事务账本、日线行情 | **SQLite + rusqlite 0.41.1**（bundled，WAL，Backup API） | SQLx 0.9 适合多数据库后端，单机无需双驱动；不用 ORM 隐藏金额语义 | 迁移事务、幂等批次、冲销更正、水位线 `sync_checkpoint`、`dataset_version` / `dataset_partition`（M1 仅 `sqlite` 位置）与一致性备份恢复 |
-| 大规模批量扫描（M4+） | 推迟：**Parquet 60.1.0 + DuckDB 1.20000.1**（`OSS-10`） | Polars 0.55.2 | 通过 `dataset_partition.location_kind` 抽象接入，不改变上层查询契约；触发条件为 M4 扫描需求或实测性能不足 |
+| 大规模批量扫描（M5+） | 推迟：**Parquet 60.1.0 + DuckDB 1.20000.1**（`OSS-10`） | Polars 0.55.2 | 通过 `dataset_partition.location_kind` 抽象接入，不改变上层查询契约；触发条件为 M5 扫描需求或实测性能不足 |
 | 金额与十进制精度 | **rust_decimal 1.43.0** | bigdecimal 0.4.10 | FIFO 成本批次、费用分摊、第三资产扣费、跨账户搬移成本与多币种折算；禁止 SQL `REAL` 求和 |
-| 技术指标与策略评估 | **Rust 原生确定性实现**（MA/EMA/MACD/RSI，手算夹具；M4 受控类型化条件/策略引擎） | `ta 0.5.0` / `yata 0.7.0` | 固定数据版本起点计算，保证不同观察窗口同日期指标值完全一致；受控策略带步数/超时配额与取消隔离（AC-16） |
-| 私有 Token | **keyring**（Windows 凭据管理器） | 开发/CI 显式受控环境变量引用 | 不进命令行、配置明文与日志 |
+| 技术指标与策略评估 | **Rust 原生确定性实现**（MA/EMA/MACD/RSI，手算夹具；M5 受控类型化条件/策略引擎） | `ta 0.5.0` / `yata 0.7.0` | 固定数据版本起点计算，保证不同观察窗口同日期指标值完全一致；受控策略带步数/超时配额与取消隔离（AC-16） |
+| 私有 Token 与模型密钥 | **数据目录内 DPAPI 加密文件**（`windows-sys` `CryptProtectData`，[D-32](../decisions/confirmed-decisions.md)，2026-11-09 起取代 `keyring` 与 Windows 凭据管理器） | 开发/CI 显式受控环境变量引用 | 不进命令行、配置明文与日志；加密不可用时拒绝保存 |
 
 ## 4. 桌面、CLI 与 AI 栈比较
 
@@ -85,6 +85,8 @@
 | K 线 | 自研 `KlineViewport` + 自绘 GPUI 元素；`CandlestickChart` 仅作候选 | 同上 | 官方 `CandlestickChart` 无视口、光标与标记层，数值为 `f64`；Decimal 只在绘制时转换 |
 | UI 测试 | `gpui-kit` `test-support` 无头窗口 | 上游 `crates/kit/TESTING.md` | 本机实测 0 可见窗口、焦点不变，满足 D-25 |
 | SSE | `eventsource-stream 0.2.3`；备选 `sse-stream 0.3.x` | crates.io（前者 2022-02，Codex 当前同版本；后者 2026-09） | 均为 MIT OR Apache-2.0；B 验证与 `reqwest 0.13` 流的兼容 |
-| 安装包 | `cargo-packager 0.11.x` NSIS 当前用户安装；备选 `cargo-wix 0.3.x` / 便携 zip | crates.io 2025-11；仓库 2026-11 仍活跃 | Apache-2.0 OR MIT；NSIS 为构建期工具，运行期仍为单一 Rust 二进制（D-22） |
+| 安装包 | **Inno Setup 7.1.x**（门禁固定小版本并记录哈希）按用户安装（`PrivilegesRequired=lowest`）；图标与版本资源 `winresource`；版本比较 `semver` 1.x；更新签名 `ed25519-dalek` 2.x。未采用：`cargo-packager`（NSIS，单通道 AppId/互斥量与静默升级控制需另写钩子）、Velopack（安装根固定在自身目录结构，与 D-26 路径冲突）、MSIX（需签名证书） | jrsoftware.org：7.1.1 发布于 2026-10-28，7.x 为推荐线（2026-11-09 核对）；Zed 官方 Windows 打包同样用 Inno Setup 按用户安装、按通道区分 AppId/AppMutex；crates.io `cargo-packager` 0.11.8（2025-11-27） | Inno Setup 自有许可允许免费商用，为构建期工具，不随包分发其源码义务；`winresource` MIT、`semver` MIT OR Apache-2.0、`ed25519-dalek` BSD-3-Clause；运行期仍为单一 Rust 二进制（D-22） |
 
-B 的兼容版本锁定为 `gpui-kit =0.9.0` / `gpui-pre =0.3.11`、`reqwest 0.13.5` / `eventsource-stream 0.2.3`，具体运行证据见 [M2 阶段报告](../delivery/stage-report.md)。本机缺少 NSIS/WiX 工具，S-23 落地为 `package-build` 便携 ZIP＋Rust 按用户安装器；两通道分别编译，build-info、源码指纹和文件哈希可复验。Windows 目标显式设置 `x86_64-pc-windows-msvc` 与 `+crt-static`，同时覆盖 `CARGO_ENCODED_RUSTFLAGS`，避免继承 flags 取消静态运行库；显式 target 让该设置只用于目标代码，不施加给 host proc-macro。构建和安装检查普通/延迟 PE 导入并保存 `binary-imports.json`，拒绝外部 MSVC 运行库依赖。当前机器的包内 CLI 安装/外部卸载与 H-03 干净机器验证分开记录，不能以开发机已有运行库或复制 source 二进制宣称包可交付。
+B 的兼容版本锁定为 `gpui-kit =0.9.0` / `gpui-pre =0.3.11`、`reqwest 0.13.5` / `eventsource-stream 0.2.3`，具体运行证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)。M2 时本机缺少 NSIS/WiX 工具，S-23 落地为 `package-build` 便携 ZIP＋Rust 按用户安装器；M3 起改为 Inno Setup 安装程序（见 [M3 计划](../delivery/stage-plan.md) S-25～S-35），便携 ZIP 仅保留为测试与迁移诊断产物；两通道分别编译，build-info、源码指纹和文件哈希可复验。Windows 目标显式设置 `x86_64-pc-windows-msvc` 与 `+crt-static`，同时覆盖 `CARGO_ENCODED_RUSTFLAGS`，避免继承 flags 取消静态运行库；显式 target 让该设置只用于目标代码，不施加给 host proc-macro。构建和安装检查普通/延迟 PE 导入并保存 `binary-imports.json`，拒绝外部 MSVC 运行库依赖。当前机器的包内 CLI 安装/外部卸载与 H-03 干净机器验证分开记录，不能以开发机已有运行库或复制 source 二进制宣称包可交付。
+
+**M3 安装与更新落地（B，2026-11-09）**：Inno Setup 锁定 **7.1.1**，构建机用 `winget install --id JRSoftware.InnoSetup.7 --version 7.1.1 --scope user --silent --disable-interactivity` 安装到 `%LOCALAPPDATA%\Programs\Inno Setup 7`（官方安装包 SHA-256 `8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0`，`ISCC.exe` SHA-256 `e0f9f1dc32032650c6629f6dee41eb6d20ba140e4e3c07c25d8a24f9ba781644`）。`ISCC.exe` 不带可读的文件版本资源，因此版本由模板内 ISPP `Ver` 检查强制为 7.1.x，安装后的 HKCU 键记录 `Inno Setup: Setup Version`，门禁据此核对；`DELTA_ISCC` 可指定编译器路径，找不到时 `package-build` / `release-build` / `--installer` 明确失败，不回退 ZIP。Inno Setup License 允许含商用的使用与再分发，要求保留其版权与网址（安装器“关于”框原样保留），致谢写入 `THIRD-PARTY-NOTICES.txt`。Rust 侧锁定 `winresource 0.1.34`（MIT，图标与 `VERSIONINFO`）、`semver 1.0.28`（MIT OR Apache-2.0）、`ed25519-dalek 2.2.0`（BSD-3-Clause，依赖 `curve25519-dalek 4.1.3`）与 `getrandom 0.3.4`（MIT OR Apache-2.0，密钥生成），更新下载沿用已锁定的 `reqwest 0.13.5`。

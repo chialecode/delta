@@ -2120,7 +2120,7 @@ fn map_http_status_error(
         401 => (
             ModelErrorCode::Unauthorized,
             false,
-            "HTTP 401 unauthorized: check model API key in keyring".to_string(),
+            "HTTP 401 unauthorized: check the saved model API key".to_string(),
         ),
         403 => (
             ModelErrorCode::Forbidden,

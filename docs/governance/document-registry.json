@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M2",
+  "currentStage": "M3",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -151,20 +151,29 @@
       "kind": "plan",
       "status": "active",
       "owner": "Agent A",
-      "scope": "M2 v1.0 资产复盘桌面工作台、证据化 AI 复盘与 Windows 打包实施计划（100% 纯 Rust，gpui-kit 0.9.0）",
-      "reviewed": "2026-11-08",
-      "basis": "M2 v1.0: existing checks, static-CRT package command and explicit UI completion semantics; scope/version unchanged",
-      "retireAfter": "M2"
+      "scope": "M3 v1.0 Windows 安装包、版本与自动更新实施计划（delta / delta-dev，Inno Setup 按用户安装）",
+      "reviewed": "2026-11-09",
+      "basis": "M3 v1.0: A plan after M2 merge; installer/update research dated 2026-11-09",
+      "retireAfter": "M3"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
-      "owner": "Agent B",
-      "scope": "M2 v1.0 阶段验证与交付报告（工作包 M2-W01～W08、技术门槛 M2-K01～K06、25 项阶段用例与门禁实测）",
-      "reviewed": "2026-11-08",
-      "basis": "M2 v1.0 B final evidence: F-01..07 resolved, 94 passing tests, real native raw percentiles, static-CRT packages and archive hashes",
-      "retireAfter": "M2"
+      "owner": "Agent B / Agent A",
+      "scope": "M3 v1.0 阶段验证与交付报告（安装包、版本、单实例、install-dev、签名更新与回环演练）",
+      "reviewed": "2026-11-09",
+      "basis": "M3 v1.0 B 实现与自检：verify-stage --stage M3 --installer --ui-smoke 与 M1/M2 回归实跑结果",
+      "retireAfter": "M3"
+    },
+    {
+      "path": "docs/evidence/2026-11-09-m2-stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B / Agent A",
+      "scope": "M2 v1.0 阶段验证与交付报告（已经 PR #2 集成；M3 开始时自 docs/delivery/stage-report.md 迁入证据）",
+      "reviewed": "2026-11-09",
+      "basis": "M2 v1.0 B 修复 F-01～F-07、A 审核修复 F-08/F-09 与界面重设计；源码指纹 3c6a16dc；ACT-09 合并为 main 5f30f6e"
     },
     {
       "path": "docs/evidence/2026-11-08-m1-stage-report.md",

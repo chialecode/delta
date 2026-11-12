@@ -1502,8 +1502,58 @@ impl CenterWorkspacePanel {
 
     pub(crate) fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.lock().unwrap().clone();
+        let update = crate::lifecycle::update_state();
+        let update_text = update
+            .as_ref()
+            .map(crate::lifecycle::describe_update)
+            .unwrap_or_else(|| "此构建不提供在线更新（源码运行）".into());
+        let update_ready = update
+            .as_ref()
+            .is_some_and(|u| matches!(u.status, crate::lifecycle::UpdateStatus::Ready { .. }));
+        let update_busy = update.as_ref().is_some_and(|u| {
+            matches!(u.status, crate::lifecycle::UpdateStatus::BusyConfirm { .. })
+        });
+        let update_available = update.as_ref().is_some_and(|u| {
+            !matches!(u.status, crate::lifecycle::UpdateStatus::Unavailable { .. })
+        });
+        let auto_check = update.as_ref().is_some_and(|u| u.auto_check);
+        let identity = delta_app::InstallIdentity::current();
+        let about = format!(
+            "{} {} · 通道 {} · 源码指纹 {} · {}: {}",
+            identity
+                .map(delta_app::InstallIdentity::display_name)
+                .unwrap_or("DELTA (源码运行)"),
+            delta_app::app_version(),
+            identity
+                .map(delta_app::InstallIdentity::name)
+                .unwrap_or("source"),
+            &delta_app::build_source_fingerprint()
+                [..delta_app::build_source_fingerprint().len().min(12)],
+            I18nCatalog::tr("form.data_directory"),
+            state.data_dir.display()
+        );
+        let data_dir = state.data_dir.clone();
+        let data_dir_toggle = state.data_dir.clone();
         v_flex().id("settings-form").w_full().gap_3()
-            .child(div().text_xs().child(format!("{}: {}", I18nCatalog::tr("form.data_directory"), state.data_dir.display())))
+            .child(section_title(I18nCatalog::tr("settings.about"), cx))
+            .child(div().id("settings-about").text_xs().child(about))
+            .child(section_title(I18nCatalog::tr("settings.update"), cx))
+            .child(div().id("settings-update-status").text_xs().child(update_text))
+            .when(update_available, |form| form.child(h_flex().gap_2()
+                .child(Button::new("update-check").small().label(I18nCatalog::tr("action.check_update"))
+                    .on_click(move |_, _, _| crate::lifecycle::start_check(data_dir.clone())))
+                .child(Button::new("update-auto-check").small()
+                    .label(I18nCatalog::tr(if auto_check { "action.auto_check_on" } else { "action.auto_check_off" }))
+                    .on_click(move |_, _, _| crate::lifecycle::set_auto_check(data_dir_toggle.clone(), !auto_check)))
+                .when(update_ready, |row| row.child(Button::new("update-apply").small().primary()
+                    .label(I18nCatalog::tr("action.apply_update"))
+                    .on_click(|_, _, _| crate::lifecycle::APPLY_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst))))
+                .when(update_busy, |row| row.child(Button::new("update-apply-busy").small().warning()
+                    .label(I18nCatalog::tr("action.apply_update_busy"))
+                    .on_click(|_, _, _| {
+                        crate::lifecycle::APPLY_CONFIRMED_BUSY.store(true, std::sync::atomic::Ordering::SeqCst);
+                        crate::lifecycle::APPLY_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    })))))
             .child(self.fields.row(&["form.report_currency", "form.timezone"]))
             .child(h_flex().gap_2()
                 .child(self.button("settings-save", "action.save_settings", |panel, window, cx| {

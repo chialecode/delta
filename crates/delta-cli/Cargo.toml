@@ -3,6 +3,7 @@ name = "delta-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [[bin]]
 name = "delta-cli"
@@ -24,6 +25,11 @@ hex.workspace = true
 rusqlite.workspace = true
 zip.workspace = true
 thiserror.workspace = true
+semver.workspace = true
+ed25519-dalek.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[build-dependencies]
+winresource.workspace = true

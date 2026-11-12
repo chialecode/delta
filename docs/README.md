@@ -18,7 +18,7 @@
 | 协作 | [A/B](dev-rules/development-workflow.md)、[Git](dev-rules/git-workflow.md)、[门禁](dev-rules/quality-gates.md)、[审核](../REVIEW.md) | 完整阶段计划、连续实现、自检/审核、收敛后用户授权与集成 |
 | 技术与数据源 | [选型](engineering/technology-selection.md)、[2026-11-07 调研证据](evidence/2026-11-07-stack-and-data-research.md) | GPUI 合理性复盘、美股/加密数据源比较、待测与替换 |
 | 决定 | [索引](decisions/README.md)、[确认/假设](decisions/confirmed-decisions.md)、[集中台账](decisions/open-questions.md) | 不依赖聊天的决定与待办 |
-| 交付 | [路线/AC](engineering/delivery-plan.md)、[逐需求追踪](delivery/traceability.json)、[当前状态](delivery/status.md) | M1～M5 演进、验收定义、实际执行 |
+| 交付 | [路线/AC](engineering/delivery-plan.md)、[逐需求追踪](delivery/traceability.json)、[当前状态](delivery/status.md) | M1～M6 演进、验收定义、实际执行 |
 | 证据 | [证据索引](evidence/README.md) | 版本化观察和验证范围 |
 | 模板 | [变更](templates/change-proposal.md)、[ADR](templates/decision-record.md)、[模块](templates/module-spec.md)、[验证](templates/validation-report.md)、[交接](templates/agent-handoff.md) | 按规模选用，不全套强制 |
 

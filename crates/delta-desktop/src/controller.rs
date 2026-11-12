@@ -204,6 +204,11 @@ impl WorkbenchController {
         self.pump(window, cx);
     }
 
+    /// No action running or queued and no scope switch pending (`S-29` save-then-exit).
+    pub fn is_idle(&self) -> bool {
+        !self.busy && self.queue.is_empty() && self.pending_scope.is_none()
+    }
+
     pub fn navigate(&mut self, nav: &str, window: &mut Window, cx: &mut Context<Self>) {
         if !crate::i18n::is_in_scope_nav_key(nav) {
             return;
@@ -988,7 +993,7 @@ fn new_note_editor(template: NoteTemplateKind) -> NoteEditorSession {
     )
 }
 
-fn note_is_dirty(editor: &NoteEditorSession) -> bool {
+pub(crate) fn note_is_dirty(editor: &NoteEditorSession) -> bool {
     !matches!(editor.status, delta_app::AutosaveStatus::Saved { .. })
         && (editor.last_persisted_revision.is_some()
             || !editor.body_buffer.is_empty()

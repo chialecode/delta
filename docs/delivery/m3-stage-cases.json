@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "stage": "M3",
+  "planVersion": "1.0",
+  "cases": [
+    {
+      "id": "M3-A-01",
+      "title": "Version derivation and VERSIONINFO for release, dev and test identities",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W01"
+      ],
+      "requirements": [
+        "NFR-07",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Clean checkout at the stage commit; tags v0.1.0 and v0.1.1 in a temporary repository fixture.",
+      "steps": [
+        "Derive versions for release, dev and test identities from the tag fixture and a fixed UTC build time.",
+        "Build delta.exe with DELTA_VERSION injected and read --build-info and the PE VERSIONINFO.",
+        "Attempt a build with an invalid tag and with a version lower than the latest tag."
+      ],
+      "expected": "Release is 0.1.N from the tag, dev and test are <next>-dev.<UTC>; build-info, VERSIONINFO and the About page agree; invalid or downgraded versions fail the build.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-01"
+    },
+    {
+      "id": "M3-A-02",
+      "title": "Single instance and control pipe per channel",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W01"
+      ],
+      "requirements": [
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Test identity build; isolated data root; hidden window.",
+      "steps": [
+        "Start the test identity app, then start it again.",
+        "Send focus and quit-for-update over the channel pipe while a note autosave is pending.",
+        "Connect using another identity pipe name, and send quit-for-update while a sync job runs."
+      ],
+      "expected": "The second start only signals the first; quit-for-update waits for the save and exits with a receipt; busy returns busy without exiting; cross-channel commands are rejected.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-02"
+    },
+    {
+      "id": "M3-A-03",
+      "title": "Inno Setup per-user silent install and uninstall of the test identity (M3-K01)",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W02"
+      ],
+      "requirements": [
+        "NFR-07",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-27",
+        "AC-30"
+      ],
+      "precondition": "Pinned Inno Setup 7.1.x present; test identity setup.exe built; developer delta/delta-dev installs untouched.",
+      "steps": [
+        "Run setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART for delta-test and delta-dev-test.",
+        "Check install directories, Start menu shortcut, HKCU uninstall keys and the installed --build-info.",
+        "Run the installed --ui-smoke, then uninstall silently."
+      ],
+      "expected": "No UAC prompt and no visible window; both test identities coexist; files and uninstall keys are removed on uninstall while the data roots and an unknown file in them remain; developer installs are byte-identical before and after.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-03"
+    },
+    {
+      "id": "M3-A-04",
+      "title": "In-place upgrade preserves data and never kills a running app",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W02",
+        "M3-W03"
+      ],
+      "requirements": [
+        "NFR-06",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-30"
+      ],
+      "precondition": "Test identity v1 installed with an AC-02 library, a note and an attachment.",
+      "steps": [
+        "Run the app hidden, then install v2 with the installer while it runs.",
+        "Repeat with quit-for-update answering busy and with an app that never exits within 30 s."
+      ],
+      "expected": "The installer waits for a saved exit and upgrades; library, notes, attachments and settings are unchanged; a busy or stuck app is never force-killed and the installation stays at v1 with a reported reason.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-04"
+    },
+    {
+      "id": "M3-A-05",
+      "title": "M2 portable installation migration",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W02"
+      ],
+      "requirements": [
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Test identity installed with the M2 package-install layout plus one modified and one unknown file.",
+      "steps": [
+        "Run the M3 test identity setup.exe over the M2 layout."
+      ],
+      "expected": "Manifest files with matching hashes and the two manifests are removed before the new files are copied; modified manifest files are kept renamed to <name>.m2-modified and unknown files are kept untouched; both are listed in the setup log; the app starts from the new installation and uninstalling it leaves the kept files.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-05"
+    },
+    {
+      "id": "M3-A-06",
+      "title": "install-dev updates only the dev channel",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W03"
+      ],
+      "requirements": [
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Dev-test identity used in place of delta-dev through the command test hook; a release-identity and an older package are also available.",
+      "steps": [
+        "Run install-dev with a running dev-test app and a newer package.",
+        "Run install-dev with a release package and with a package older than the installed version."
+      ],
+      "expected": "The running app saves and exits, the package installs silently, the installed version matches, and the app restarts because it was running; release packages and downgrades are refused without changes.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-06"
+    },
+    {
+      "id": "M3-A-07",
+      "title": "Update signature, downgrade and transport policy",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W04"
+      ],
+      "requirements": [
+        "NFR-11",
+        "NFR-10"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Unit fixtures with a test Ed25519 key pair; release identity policy and test identity policy.",
+      "steps": [
+        "Verify valid, tampered, missing, cross-version and cross-channel signatures.",
+        "Offer equal and lower versions.",
+        "Offer http://, a non-allowlisted redirect host, a size above 512 MiB and a SHA-256 mismatch."
+      ],
+      "expected": "Only the valid signature for a higher version over HTTPS from allowlisted hosts is accepted; every other case is rejected with a specific reason; loopback HTTP is accepted only by the test identity policy.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-07"
+    },
+    {
+      "id": "M3-A-08",
+      "title": "Loopback online update rehearsal (M3-K03)",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W04",
+        "M3-W05"
+      ],
+      "requirements": [
+        "NFR-11",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-30"
+      ],
+      "precondition": "127.0.0.1 HTTP release source serving latest.json, setup.exe and .sig signed by a test key; test identity v1 installed with data.",
+      "steps": [
+        "Check for updates, interrupt the download once and resume with Range.",
+        "Confirm the update while idle and once while a sync job is busy."
+      ],
+      "expected": "The busy case asks and does nothing without confirmation; the idle case makes a consistent backup, re-verifies the signature, installs silently, restarts, reports the new version and keeps all data; the backup restores.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-08"
+    },
+    {
+      "id": "M3-A-09",
+      "title": "release-build produces signed artifacts and refuses without a key",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W05"
+      ],
+      "requirements": [
+        "NFR-07",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-27",
+        "AC-30"
+      ],
+      "precondition": "Test signing key in a test credential namespace; no real release key.",
+      "steps": [
+        "Run release-build for a test version with the key, then without it."
+      ],
+      "expected": "setup.exe, latest.json and .sig are consistent and verify with the matching public key; PE imports have no MSVC runtime; without a key the command fails and leaves no publishable artifacts; the private key never appears in logs.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-09"
+    },
+    {
+      "id": "M3-A-10",
+      "title": "M3 gate quietness and isolation (M3-K04) plus M2/M1 regression",
+      "mode": "automated",
+      "work_packages": [
+        "M3-W06"
+      ],
+      "requirements": [
+        "NFR-07",
+        "NFR-08"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "precondition": "Full M3 gate with --installer --ui-smoke on the final source fingerprint.",
+      "steps": [
+        "Run verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke.",
+        "Run verify-stage --stage M2 --plan-version 1.0 and --stage M1 --plan-version 2.6."
+      ],
+      "expected": "Below-normal priority, zero visible windows, foreground unchanged, developer delta/delta-dev installs and data roots untouched, test roots removed; M2 and M1 regressions pass.",
+      "evidence": ".local/reports/m3/verify-stage-report.json#case_results/M3-A-10"
+    },
+    {
+      "id": "M3-M-01",
+      "title": "Clean machine installation of both channels (H-03)",
+      "mode": "manual",
+      "work_packages": [
+        "M3-W02",
+        "M3-W06"
+      ],
+      "requirements": [
+        "NFR-07",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-27"
+      ],
+      "precondition": "Clean Windows VM or Windows Sandbox without Rust/MSVC/Python or VC++ redistributables; the two setup.exe from the stage report.",
+      "steps": [
+        "Install DELTA and DELTA Dev without administrator rights, run both offline, check Start menu and Apps & features.",
+        "Uninstall DELTA Dev from Apps & features."
+      ],
+      "expected": "Both install and run side by side; SmartScreen behaviour recorded; uninstalling one channel keeps the other and both data roots.",
+      "evidence": "USER-ACTIONS.md#H-03"
+    },
+    {
+      "id": "M3-M-02",
+      "title": "Release update experience (H-04)",
+      "mode": "manual",
+      "work_packages": [
+        "M3-W04"
+      ],
+      "requirements": [
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "Release-channel test build pointed at the loopback source of the stage report rehearsal.",
+      "steps": [
+        "Observe the update-ready badge, the settings update page, the busy confirmation and the restart."
+      ],
+      "expected": "Wording, timing and the restart are clear; no data loss; the user can disable automatic checks.",
+      "evidence": "USER-ACTIONS.md#H-04"
+    },
+    {
+      "id": "M3-L-01",
+      "title": "First public release v0.1.1 on GitHub (ACT-11)",
+      "mode": "live",
+      "work_packages": [
+        "M3-W05"
+      ],
+      "requirements": [
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-30"
+      ],
+      "precondition": "User authorization ACT-11 and the backed-up signing key ACT-10.",
+      "steps": [
+        "Create tag v0.1.1 and the GitHub Release with setup.exe, latest.json and .sig.",
+        "Let an installed release build check for updates against the real source."
+      ],
+      "expected": "The real source returns the signed release and the client verifies it; until authorized this case stays not-run.",
+      "evidence": "USER-ACTIONS.md#ACT-11"
+    }
+  ]
+}

@@ -6,6 +6,7 @@ mod chart_canvas;
 pub mod components;
 pub mod controller;
 pub mod i18n;
+pub mod lifecycle;
 pub mod theme;
 mod ui_forms;
 mod ui_verification;

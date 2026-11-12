@@ -20,11 +20,19 @@
 | 本地参考索引、提案、用户参考图 | 仓库外 `reference/delta/` | 不入库、不推送；图放 `design/`，截图结果放 `evidence/`；不放易清理的 dist |
 | 共享外部源码 | 仓库外共享 `external/github.com/<org>/<repo>` | 不在项目内复制整仓；默认只读；确需复制代码按实际许可保留声明 |
 | 测试日志、阶段机器报告、临时目录 | 忽略的 `.local/`（如 `.local/reports/`、`.local/tmp/`） | 可再生；只把必要脱敏结论提炼进版本化报告 |
-| target、dist、依赖缓存 | `.gitignore` 中的生成目录 | 不是备份或个人资料目录；产物旧则重新构建 |
+| target、dist、依赖缓存 | `.gitignore` 中的生成目录 | 不是备份或个人资料目录；产物旧则重新构建；按下文[构建产物](#build-artifacts)只保留最新 |
 | 密钥、个人数据库、真实金融样本 | 已忽略且获得用途授权的位置 | 不打印、提交、复制到测试 fixtures 或用户待办；忽略不等于可读取 |
 | 他人未跟踪文件 | 原位置 | 先查归属；不以未跟踪为理由删除或纳入阶段提交 |
 
 共享忽略规则放 `.gitignore`；纯个人工具文件可用 `.git/info/exclude`。用 `git check-ignore -v -- <路径>`核对规则，用 `git ls-files -- <路径>`判断是否已跟踪。`.gitignore` 不会让已跟踪文件自动退库；需要移除时先保留内容、核对消费方，再执行精确路径的索引变更。禁止用 `git add .`、`git clean -fdx` 或通配删除处理未知文件。
+
+<a id="build-artifacts"></a>
+
+## 构建产物与清理
+
+- **安装包只在 `dist/`**：`delta-cli package-build` 把 `setup.exe` 与同名 `.package.json` 写到仓库根 `dist/`，成功后删除同一身份的旧安装包，每个身份只留最新一个；`install-dev` 默认取这里最新的 `delta-dev` 包。构建日志、`cargo metadata` 和许可收集等过程文件放 `.local/reports/m3/packages/`，许可暂存目录在构建结束后删除。正式版 `release-build` 按版本输出到 `.local/reports/m3/release/<身份>-<版本>/`，不自动删除。
+- **编译缓存**：`[profile.dev]` 对工作区代码只保留行号表（`debug = "line-tables-only"`），依赖不带调试信息（`[profile.dev.package."*"] debug = false`），以减小 `target/` 并缩短 PDB 链接时间；需要逐变量调试依赖时在本机临时覆盖，不提交。打包使用独立的 `.local/target-packages/`（静态 CRT 与身份环境不同，不能与 `target/` 共用产物）。
+- **清理命令**：`python scripts/clean_artifacts.py` 先列出可删项与大小（默认只看不删），`--apply` 执行，`--cargo` 另外删除整个 `target/` 与 `.local/target-packages/`。只处理可重建或已被取代的类别：增量编译缓存、`dist/` 旧安装包、每阶段最新一次以外且未被跟踪文档引用的门禁日志、打包暂存目录、M2 门禁重复生成的便携包（保留最新一次及跟踪文档引用的源码指纹）、`.local/tmp/`。其余 `.local/` 内容只列出大小，由人按上文阶段整理规则决定；不触碰跟踪文件与 `workers/`。门禁运行期间不要执行 `--apply`。
 
 ## 公开内容与来源
 
@@ -36,7 +44,7 @@
 
 先列 `git ls-files`、`git status --short` 和被忽略目录的类别，再按内容执行四分类判断（**原样保留 / 精炼 / 提炼后删除 / 直接删除**）。有效决定、未关闭缺陷、验证事实和用户答复先回写正本，改入链并验证后才能退役文件。
 
-Git 历史可归档已经保存的阶段材料，不能替代未跟踪数据的备份。未关闭验收、仍被测试引用的用例、许可证和用户资料不清理；不能因目录叫“旧”就批量删掉。当前研发阶段与产品 `M1`～`M5` 验收范围对应，不为模仿其他工程去掉有效 FR/AC 和金融验收标签。
+Git 历史可归档已经保存的阶段材料，不能替代未跟踪数据的备份。未关闭验收、仍被测试引用的用例、许可证和用户资料不清理；不能因目录叫“旧”就批量删掉。当前研发阶段与产品 `M1`～`M6` 验收范围对应，不为模仿其他工程去掉有效 FR/AC 和金融验收标签。
 
 报告记录文件类别、归属、处理、提炼去向及保留理由。新阶段优先复用固定的 `docs/delivery/stage-plan.md` 与 `stage-report.md`；既有有效报告允许保留，直到其证据和入链能够完整迁移。
 

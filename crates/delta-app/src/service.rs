@@ -574,7 +574,7 @@ impl AppService {
             paths: self.paths.clone(),
             _lock: self._lock.clone(),
             store,
-            credentials: CredentialStore::for_channel(self.paths.channel),
+            credentials: CredentialStore::for_paths(&self.paths),
             jobs: Arc::new(JobController::new()),
             runtime,
             sync_control: None,
@@ -632,11 +632,7 @@ impl AppService {
         let store =
             SqliteStore::open_or_init(&paths.data_dir, book_currency, report_currency, timezone)
                 .map_err(|e| ErrorEnvelope::new("storage_open_failed", e.to_string(), false))?;
-        let credentials = if paths.credential_prefix.starts_with("delta-test-") {
-            CredentialStore::with_custom_prefix(&paths.credential_prefix)
-        } else {
-            CredentialStore::for_channel(paths.channel)
-        };
+        let credentials = CredentialStore::for_paths(&paths);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

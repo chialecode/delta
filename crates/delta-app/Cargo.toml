@@ -19,8 +19,11 @@ hex.workspace = true
 rusqlite.workspace = true
 csv.workspace = true
 tokio.workspace = true
-keyring.workspace = true
 thiserror.workspace = true
+semver.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
