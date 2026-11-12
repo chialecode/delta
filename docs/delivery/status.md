@@ -1,6 +1,6 @@
 # 当前执行状态
 
-更新：2026-11-09；维护：Agent A / Agent B。当前阶段：**M3 v1.0 / A 集中技术审核通过（工程阻断 0），待用户授权推送与 PR（ACT-12）**。按用户指示与 [D-31](../decisions/confirmed-decisions.md)，M2 之后先补齐 Windows 安装包、版本与自动更新，原 M3～M5 顺延为 M4～M6。唯一计划见 [M3 阶段计划](stage-plan.md)，用例见 [m3-stage-cases.json](m3-stage-cases.json)，实际证据见 [M3 阶段报告](stage-report.md)。
+更新：2026-11-12；维护：Agent A / Agent B。当前阶段：**M3 v1.0 已合并（PR #3，`main` `6f0aff3`）；内置正式版公钥（ACT-10）后发布 v0.1.1（ACT-11）**。按用户指示与 [D-31](../decisions/confirmed-decisions.md)，M2 之后先补齐 Windows 安装包、版本与自动更新，原 M3～M5 顺延为 M4～M6。唯一计划见 [M3 阶段计划](stage-plan.md)，用例见 [m3-stage-cases.json](m3-stage-cases.json)，实际证据见 [M3 阶段报告](stage-report.md)。
 
 ## 基线与判断
 
@@ -18,7 +18,9 @@
 
 ## 接续
 
-首选下一步：用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 授权 `ACT-12`（推送 `codex/m3-installer-update` 并创建 PR）。ACT-10（生成并备份签名密钥文件）、ACT-11（v0.1.1 发布）、Q-04、Q-05 与 H-03、H-04 独立推进，不阻塞推送/PR。
+- 2026-11-12：M3 按 `ACT-12` 经 [PR #3](https://github.com/chialecode/delta/pull/3) squash 合并为 `main` `6f0aff3`。正式版签名密钥已生成（ACT-10，私钥在仓库外，待用户备份），公钥内置于 `crates/delta-app/src/release-signing-key.json`。
+
+首选下一步：内置公钥合入 `main` 后，按已授权的 `ACT-11` 在干净工作树上 `release-build --version 0.1.1` 并发布 `v0.1.1`。Q-04、Q-05 与 H-03、H-04 独立推进。
 
 ## B 实现记录
 

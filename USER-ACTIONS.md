@@ -1,8 +1,8 @@
 # 用户待办
 
-核对日期：2026-11-09。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
+核对日期：2026-11-12。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
 
-2026-11-09 M2 已按 `ACT-09` 授权推送、经 PR #2 squash 合并为 `main` `5f30f6e`，阶段分支已清理；按你的指示当前进入 **M3（Windows 安装包、版本与自动更新）**，唯一计划见 [M3 计划](docs/delivery/stage-plan.md) v1.0，阶段编号顺延见 [D-31](docs/decisions/confirmed-decisions.md)。M3 已完成 B 实现与 A 集中技术审核（工程阻断 0），等你对 **ACT-12（推送并创建 PR）** 授权；Q-04、Q-05 有默认值，不回复也不阻塞；ACT-10、ACT-11 与 H-03、H-04 可独立推进。
+2026-11-09 M2 已按 `ACT-09` 授权推送、经 PR #2 squash 合并为 `main` `5f30f6e`，阶段分支已清理；按你的指示当前进入 **M3（Windows 安装包、版本与自动更新）**，唯一计划见 [M3 计划](docs/delivery/stage-plan.md) v1.0，阶段编号顺延见 [D-31](docs/decisions/confirmed-decisions.md)。2026-11-12 你授权完成剩余远端操作直到正式版发布成功：M3 已按 ACT-12 经 PR #3 squash 合并为 `main` `6f0aff3`；ACT-10 的签名密钥已由 Agent 生成，公钥已内置，**私钥文件请你备份**；ACT-11（v0.1.1 发布）按同一授权执行。Q-04、Q-05 有默认值，不回复也不阻塞；H-03、H-04 可独立推进。
 
 ## 决定与真实条件
 
@@ -45,20 +45,26 @@
 - **不包含**：合并、发布、改远端设置；这些需你另行授权。授权后 A 核对 CI（`docs`、DCO）与审查反馈。回复“ACT-09 授权推送并创建 PR”即可。
 - 人工检查 H-01～H-03 不是本动作前提，可顺延；合并也不代表产品已验收。
 
-### ACT-12 / pending（M3 推送与 PR，等待你授权）
+### ACT-12 / done（M3 推送与 PR，2026-11-12 已执行）
+
+- **2026-11-12 用户授权**：推送、建 PR、CI 通过后 squash 合并。结果：[PR #3](https://github.com/chialecode/delta/pull/3) 的 `docs` 与 DCO 一次通过，squash 合并为 `main` `6f0aff3`，远端与本地阶段分支已删除。以下为当时的授权请求原文。
 
 - **A 技术审核已收敛（2026-11-09）**：结论与证据见 [M3 阶段报告](docs/delivery/stage-report.md#a-集中技术审核2026-11-09)。本地分支 `codex/m3-installer-update` 仅含一个阶段提交（父提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`，带 DCO 签名），最终被测源码指纹 `77dd43c8798e0b97b93f4a970a1d89b79bc3416f49e75c3142458afa91c09622`；完整 SHA 以交接消息和 `git rev-parse HEAD` 为准。
 - **请求授权的具体动作**：① `git push -u origin codex/m3-installer-update`；② 创建 PR：来源 `codex/m3-installer-update` → 目标 `main`，标题 `feat(m3): Windows installers, versioning, single instance and signed updates (M3 v1.0)`，正文列明 M3-W01～W06 实际行为、A 审核修正（TEST-03 节流根因与测量口径、迁移预检、`dist/` 安装包与产物清理、D-32 凭据与签名私钥改为文件）、实际检查与 not-run 边界（H-03、H-04、真实发布 ACT-10/ACT-11）。
 - **不包含**：合并、创建标签或 GitHub Release、改远端设置；这些需你另行授权。授权后 A 核对 CI（`docs`、DCO）与审查反馈。回复“ACT-12 授权推送并创建 PR”即可（若希望 CI 通过后直接 squash 合并，请一并写明）。
 - 人工检查 H-03、H-04 不是本动作前提，可顺延；合并也不代表产品已验收。
 
-### ACT-10 / pending（M3，首个正式版前；A 审核已通过）：生成并备份正式版更新签名私钥
+### ACT-10 / 待你备份（M3）：生成并备份正式版更新签名私钥
+
+- **2026-11-12 已生成**（按你“授权剩余操作”的指示由 Agent 执行）：私钥在 `%APPDATA%\delta-release\update-signing.key`，同目录 `update-signing.pub` 是公钥；公钥 `134f8fc09c9f0c0827427a6eccc923aeb5de2cf2bca5a53b58bf60309e0a86ba` 已写入 `crates/delta-app/src/release-signing-key.json`。**剩下只有备份这一步要你做**（见下文第 2 条）。以下为原说明。
 
 - 命令已由 B 实现（M3-W05），按 D-32 用文件保存。在本机仓库根目录执行一次：`cargo run -p delta-cli -- release-keygen`。私钥写进仓库外的 `%APPDATA%\delta-release\update-signing.key`，终端只显示文件路径与公钥（`public_key_hex`）；文件已存在时命令拒绝覆盖，也拒绝写进仓库。
 - 备份：把这个文件复制到离线介质（例如加密 U 盘）或密码管理器的附件里。私钥丢失后，已安装的正式版无法再验证新更新，只能手动下载安装。
 - 把终端显示的公钥交给 Agent（公钥可公开，不要发私钥），由 Agent 写入 `crates/delta-app/src/release-signing-key.json` 并随下一阶段提交审核；`release-build` 会拒绝与内置公钥不一致的私钥。首次公开发布（ACT-11）前完成；不影响开发版与本地演练。
 
-### ACT-11 / pending（M3，A 审核通过后登记具体请求）：首个正式版 v0.1.1 发布
+### ACT-11 / 已授权（2026-11-12）：首个正式版 v0.1.1 发布
+
+- 你 2026-11-12 授权完成剩余操作直到发布成功；内置公钥合入 `main` 后，Agent 在 `main` 的干净工作树上执行下面的动作，结果写进[执行状态](docs/delivery/status.md)。
 
 - 动作：在 ACT-10 完成、内置公钥已提交后，用 `cargo run -p delta-cli -- release-build --version 0.1.1` 在 `.local/reports/m3/release/delta-0.1.1/` 生成 `delta-setup-0.1.1-x64.exe`、`latest.json` 与 `.sig`，再创建标签 `v0.1.1` 并用 `gh release create` 上传这三个文件。A 审核通过后在这里写明提交 SHA、文件哈希与命令，等你回复授权后执行；未授权前用例 `M3-L-01` 保持 not-run。门禁里的回环更新演练（`M3-A-08`）不是 GitHub 发布。
 
