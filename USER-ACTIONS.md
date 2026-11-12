@@ -62,9 +62,9 @@
 - 备份：把这个文件复制到离线介质（例如加密 U 盘）或密码管理器的附件里。私钥丢失后，已安装的正式版无法再验证新更新，只能手动下载安装。
 - 把终端显示的公钥交给 Agent（公钥可公开，不要发私钥），由 Agent 写入 `crates/delta-app/src/release-signing-key.json` 并随下一阶段提交审核；`release-build` 会拒绝与内置公钥不一致的私钥。首次公开发布（ACT-11）前完成；不影响开发版与本地演练。
 
-### ACT-11 / 已授权（2026-11-12）：首个正式版 v0.1.1 发布
+### ACT-11 / done（2026-11-12）：首个正式版 v0.1.1 发布
 
-- 你 2026-11-12 授权完成剩余操作直到发布成功；内置公钥合入 `main` 后，Agent 在 `main` 的干净工作树上执行下面的动作，结果写进[执行状态](docs/delivery/status.md)。
+- **已发布**：内置公钥经 PR #4 合入（`main` `3bb97e6`）后，Agent 在该提交上 `release-build --version 0.1.1`，创建标签 `v0.1.1` 与 [GitHub Release](https://github.com/chialecode/delta/releases/tag/v0.1.1)，上传 `delta-setup-0.1.1-x64.exe`（SHA-256 `5e632ceac86776f24aac53692cd14fbf6e8123ae5e3ed6883e7176ba70c91351`）、`latest.json` 与 `.sig`。发布后按正式版更新器的方式从 `releases/latest` 取回三份文件，大小、SHA-256 与内置公钥验签全部通过。以下为原说明。
 
 - 动作：在 ACT-10 完成、内置公钥已提交后，用 `cargo run -p delta-cli -- release-build --version 0.1.1` 在 `.local/reports/m3/release/delta-0.1.1/` 生成 `delta-setup-0.1.1-x64.exe`、`latest.json` 与 `.sig`，再创建标签 `v0.1.1` 并用 `gh release create` 上传这三个文件。A 审核通过后在这里写明提交 SHA、文件哈希与命令，等你回复授权后执行；未授权前用例 `M3-L-01` 保持 not-run。门禁里的回环更新演练（`M3-A-08`）不是 GitHub 发布。
 
