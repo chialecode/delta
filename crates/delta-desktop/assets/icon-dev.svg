@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="256" height="256">
+  <!-- DELTA Dev mark: the release mark with an amber "DEV" badge (development identities). Rasterized by scripts/generate_icon.py. -->
+  <rect x="48" y="48" width="928" height="928" rx="200" fill="#3C4043"/>
+  <path d="M320 250H467A265 265 0 0 1 467 780H320A28 28 0 0 1 292 752V278A28 28 0 0 1 320 250ZM402 360V670H467A155 155 0 0 0 467 360Z" fill="#FFFFFF" fill-rule="evenodd"/>
+  <rect x="560" y="800" width="400" height="160" rx="52" fill="#F3A115"/>
+  <path fill="#202124" fill-rule="evenodd" d="M636 839H670A40 40 0 0 1 710 879V885A40 40 0 0 1 670 925H636ZM654 857V907H670A22 22 0 0 0 692 885V879A22 22 0 0 0 670 857ZM726 839H782V857H744V873H776V891H744V907H782V925H726ZM796 839H815L840 903L865 839H884L850 925H830Z"/>
+</svg>

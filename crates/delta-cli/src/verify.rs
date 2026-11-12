@@ -47,8 +47,11 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
         .map_err(|e| failure("fingerprint", e))?;
     files.retain(|p| {
         p.extension().is_some_and(|e| {
-            ["rs", "toml", "json", "csv", "xml", "iss", "ico", "svg"]
-                .contains(&e.to_str().unwrap_or_default())
+            // `isl`: the installer's own wizard messages next to `delta.iss`.
+            [
+                "rs", "toml", "json", "csv", "xml", "iss", "isl", "ico", "svg",
+            ]
+            .contains(&e.to_str().unwrap_or_default())
         })
     });
     files.extend(
@@ -60,11 +63,11 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             "scripts/check_docs.py",
             "scripts/collect_third_party_licenses.py",
             "scripts/test_collect_third_party_licenses.py",
-            "Packager.toml",
             "LICENSE",
             "THIRD-PARTY-NOTICES.txt",
             "docs/delivery/m2-stage-cases.json",
             "docs/delivery/m3-stage-cases.json",
+            "docs/delivery/m4-stage-cases.json",
             "scripts/generate_icon.py",
         ]
         .map(|p| root.join(p)),
@@ -139,6 +142,8 @@ pub(super) fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
                 "delta_live_test_",
                 "delta_m2_",
                 "delta_m3_",
+                "delta_m4_",
+                "delta-m4-",
             ]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -704,6 +709,7 @@ fn cross_process_checks(
     report.case_results.push(CaseResultRecord{case_id:"M1-A-14".into(),work_package:"M1-W06".into(),tier:"required".into(),status:"passed".into(),elapsed_ms:started.elapsed().as_millis() as u64,evidence:format!("Process-tree timeout killed parent and descendant (both locks reacquired); injected crash exit {:?}; initialized non-TTY library refused; nested synthetic file added exactly 1 file/22 bytes to preview and explicit delete matched it",crash.status_code)});
     let lock_dir = temp.join("lock-probe");
     fs::create_dir(&lock_dir).map_err(|e| failure("lock_probe", e))?;
+    let began = Instant::now();
     let mut holder = spawn_quiet_child(
         exe.as_os_str(),
         [
@@ -711,16 +717,31 @@ fn cross_process_checks(
             "--data-dir",
             &lock_dir.display().to_string(),
             "--ms",
-            "800",
+            "1200",
         ],
         &BTreeMap::new(),
     )
     .map_err(|e| failure("lock_probe", e))?;
-    let began = Instant::now();
-    let mut acquired = false;
-    while began.elapsed() < Duration::from_secs(2) {
-        if InstanceLock::acquire(&lock_dir).is_err() {
-            acquired = true;
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    if let Some(stdout) = holder.stdout.take() {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if line.trim() == "LOCKED" {
+                    let _ = ready_tx.send(());
+                    break;
+                }
+            }
+        });
+    }
+    let cold_start_deadline = Instant::now() + Duration::from_secs(15);
+    let mut signaled_locked = false;
+    while Instant::now() < cold_start_deadline {
+        if ready_rx.recv_timeout(Duration::from_millis(20)).is_ok() {
+            signaled_locked = true;
             break;
         }
         if holder
@@ -730,13 +751,24 @@ fn cross_process_checks(
         {
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
-    let status = holder.wait().map_err(|e| failure("lock_probe", e))?;
-    if !acquired || !status.success() {
+    let startup_ms = began.elapsed().as_millis() as u64;
+    if !signaled_locked {
+        let _ = holder.kill();
+        let _ = holder.wait();
         return Err(failure(
             "lock_probe",
-            "holder did not acquire or exit cleanly",
+            format!("holder did not emit LOCKED ready signal within 15s (elapsed {startup_ms} ms)"),
+        ));
+    }
+    let contended = InstanceLock::acquire(&lock_dir).is_err();
+    let status = holder.wait().map_err(|e| failure("lock_probe", e))?;
+    if !contended || !status.success() {
+        return Err(failure(
+            "lock_probe",
+            format!(
+                "holder lock contention={contended} or exit status={status:?} failed after ready signal ({startup_ms} ms)"
+            ),
         ));
     }
     drop(InstanceLock::acquire(&lock_dir).map_err(|e| failure("lock_probe", e))?);
@@ -746,9 +778,9 @@ fn cross_process_checks(
         tier: "required".into(),
         status: "passed".into(),
         elapsed_ms: began.elapsed().as_millis() as u64,
-        evidence:
-            "Cross-process exclusive lock rejected second writer, recovered after holder exit"
-                .into(),
+        evidence: format!(
+            "Holder emitted explicit LOCKED signal in {startup_ms} ms (15s cold-start ceiling, TEST-02); cross-process exclusive lock rejected second writer and recovered after holder exit"
+        ),
     });
     Ok(())
 }

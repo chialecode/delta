@@ -1,8 +1,10 @@
 # 用户待办
 
-核对日期：2026-11-12。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
+核对日期：2026-11-13。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
 
 2026-11-09 M2 已按 `ACT-09` 授权推送、经 PR #2 squash 合并为 `main` `5f30f6e`，阶段分支已清理；按你的指示当前进入 **M3（Windows 安装包、版本与自动更新）**，唯一计划见 [M3 计划](docs/delivery/stage-plan.md) v1.0，阶段编号顺延见 [D-31](docs/decisions/confirmed-decisions.md)。2026-11-12 你授权完成剩余远端操作直到正式版发布成功：M3 已按 ACT-12 经 PR #3 squash 合并为 `main` `6f0aff3`；ACT-10 的签名密钥已由 Agent 生成，公钥已内置，**私钥文件请你备份**；ACT-11（v0.1.1 发布）按同一授权执行。Q-04、Q-05 有默认值，不回复也不阻塞；H-03、H-04 可独立推进。
+
+2026-11-12 按你的指示开启 **M4（K 线训练）**，唯一计划见 [M4 计划](docs/delivery/stage-plan.md) v1.0，B 实现与 A 集中技术审核均已完成（见 [M4 阶段报告](docs/delivery/stage-report.md)），**ACT-13 已于 2026-11-14 授权（推送、PR、检查通过后 squash 合并并清理分支）**。真实模型复盘沿用可选的 ACT-01，人工检查 H-05 可顺延，都不是 ACT-13 的前提。
 
 ## 决定与真实条件
 
@@ -12,7 +14,7 @@
 | Q-03 / resolved | 确认后续 M2 桌面界面的技术栈方向（基于本次 GPUI 复盘结论） | **已确认（D-21，2026-11-07）**：① M1 纯做 100% Rust 数据底座与 CLI（D-22 已彻底移除 Python）；② M2 继续使用 GPUI，摒弃旧 `0.6.6` 锁定，升级至长桥最新 `gpui-kit`（`0.8.x` / `0.9.x`），直接按照长桥官方提供的 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系构建桌面工作台，并通过视口滑动窗口（Viewport Slicing）驱动交互式 K 线与回放面板 | 已关闭；无阻塞 |
 | ACT-07 / resolved | 自行安装 Rust 开发环境（Visual Studio Build Tools + `rustup`） | **已复核通过（2026-11-07）**：本机已就绪 Visual Studio Build Tools 2026（`18.11.12328.437`，`MSVC 14.51.36231` `Hostx64/x64/cl.exe` 与 `link.exe`、Windows SDK `10.0.26100.0`）及 `rustup`（`stable-x86_64-pc-windows-msvc`，`rustc 1.99.1`、`cargo 1.99.1`、`clippy 0.1.99`、`rustfmt 1.10.0-stable`），最小编译与 MSVC 链接实测通过 | 已关闭；M1 构建阻塞已解除 |
 | ACT-03 / open | （可选）提供富途牛牛、欧易（OKX）、IBKR、币安、老虎、长桥、嘉信的去标识导出 CSV/Flex 样本，或免费行情 API Token（Tiingo；扩展层 Alpaca / Longport） | 若只提供一部分，**优先富途牛牛与欧易（OKX）导出样本**：这两个是 M1 必做导入器，但没有公开格式规范，目前只能按帮助文档构造合成样本。真实样本放忽略目录 `.local/private-samples/`；Token 用 `delta-cli credential set --stdin` 录入，保存为本机数据目录里的加密文件（D-32），开发期也可设环境变量 `DELTA_TIINGO_API_KEY`；不要粘贴到聊天或提交 Git | 真实个人账户账单与 Tiingo 在线端到端验收；缺样本/Token 时 M1 先用免 Key 公共源与公开标准结构夹具验证，真实样本/Tiingo live 保持 not-run |
-| ACT-01 / open（M2，可选） | 真实 AI 模型连接测试配置：协议（`openai-responses` 或 `openai-chat-completions`）、base URL、model ID、凭据与测试预算 | 不提供也不阻塞：M2 用受控回环服务对两种协议做全套自动验收，真实服务保持 not-run。提供时密钥只在设置页录入，保存为本机数据目录里的加密文件（D-32），不要粘贴到聊天或提交 Git | 用例 `M2-L-02`：你配置的协议/模型的真实可用性声明 |
+| ACT-01 / open（M2/M4，可选） | 真实 AI 模型连接测试配置：协议（`openai-responses` 或 `openai-chat-completions`）、base URL、model ID、凭据与测试预算 | 不提供也不阻塞：M2 与 M4 均用受控回环服务对两种协议做全套自动验收，真实服务保持 not-run。提供时密钥只在设置页录入，保存为本机数据目录里的加密文件（D-32），不要粘贴到聊天或提交 Git | 用例 `M2-L-02` 与 `M4-L-01`：你配置的协议/模型的真实可用性声明 |
 | Q-02 / resolved | 首次对外分发前选择项目许可证 | **已确认（D-24，2026-11-07）**：采用 **Apache-2.0**，已添加根 [LICENSE](LICENSE)（标准原文）。B 在 M1 锁定依赖后生成传递许可清单，并检查与 Apache-2.0 分发的兼容性 | 已关闭；无阻塞 |
 | Q-04 / open（M3，可选） | 是否购买 Windows 代码签名证书（Authenticode） | **默认不买**：安装时 Windows SmartScreen 会提示“未知发布者”，需点“更多信息→仍要运行”；更新包另用 Ed25519 签名保证完整性与来源。个人开发者证书每年约数百美元且需身份验证 | 不阻塞；只影响首次安装的提示 |
 | Q-05 / open（M3，可选） | 正式版是否默认自动检查更新 | **默认开启**：启动时最多每 24 小时访问一次 GitHub Releases，只下载签名正确的更高版本，安装前需你确认；设置页可随时关闭或手动检查。开发版不联网检查，用 `install-dev` 更新 | 不阻塞 |
@@ -49,10 +51,18 @@
 
 - **2026-11-12 用户授权**：推送、建 PR、CI 通过后 squash 合并。结果：[PR #3](https://github.com/chialecode/delta/pull/3) 的 `docs` 与 DCO 一次通过，squash 合并为 `main` `6f0aff3`，远端与本地阶段分支已删除。以下为当时的授权请求原文。
 
-- **A 技术审核已收敛（2026-11-09）**：结论与证据见 [M3 阶段报告](docs/delivery/stage-report.md#a-集中技术审核2026-11-09)。本地分支 `codex/m3-installer-update` 仅含一个阶段提交（父提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`，带 DCO 签名），最终被测源码指纹 `77dd43c8798e0b97b93f4a970a1d89b79bc3416f49e75c3142458afa91c09622`；完整 SHA 以交接消息和 `git rev-parse HEAD` 为准。
+- **A 技术审核已收敛（2026-11-09）**：结论与证据见 [M3 阶段报告](docs/evidence/2026-11-12-m3-stage-report.md#a-集中技术审核2026-11-09)。本地分支 `codex/m3-installer-update` 仅含一个阶段提交（父提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`，带 DCO 签名），最终被测源码指纹 `77dd43c8798e0b97b93f4a970a1d89b79bc3416f49e75c3142458afa91c09622`；完整 SHA 以交接消息和 `git rev-parse HEAD` 为准。
 - **请求授权的具体动作**：① `git push -u origin codex/m3-installer-update`；② 创建 PR：来源 `codex/m3-installer-update` → 目标 `main`，标题 `feat(m3): Windows installers, versioning, single instance and signed updates (M3 v1.0)`，正文列明 M3-W01～W06 实际行为、A 审核修正（TEST-03 节流根因与测量口径、迁移预检、`dist/` 安装包与产物清理、D-32 凭据与签名私钥改为文件）、实际检查与 not-run 边界（H-03、H-04、真实发布 ACT-10/ACT-11）。
 - **不包含**：合并、创建标签或 GitHub Release、改远端设置；这些需你另行授权。授权后 A 核对 CI（`docs`、DCO）与审查反馈。回复“ACT-12 授权推送并创建 PR”即可（若希望 CI 通过后直接 squash 合并，请一并写明）。
 - 人工检查 H-03、H-04 不是本动作前提，可顺延；合并也不代表产品已验收。
+
+### ACT-13 / 已授权（M4，2026-11-14）：推送阶段分支、创建 PR 并合并
+
+- **A 技术审核已收敛（2026-11-13）**：结论与证据见 [M4 阶段报告](docs/delivery/stage-report.md#a-集中技术审核2026-11-13)。本地分支 `codex/m4-kline-training` 仅含一个阶段提交（父提交 `45ac8c527ab5b51217d5f712deebd704e9d539ef`，带 DCO 签名），A 审核时指纹 `96254d7d…`；阶段内追加（快捷方式、图标、开发版安装时机）后最终被测源码指纹 `02d0f1bdb3084b9e5d43d5f5e7ae1e05eab94a88049fc23ee9b28c13c69c727e`；完整 SHA 以 `git rev-parse HEAD` 为准。同一指纹下 M1～M4 四阶段门禁全部 passed。
+- **请求授权的具体动作**：① `git push -u origin codex/m4-kline-training`；② 创建 PR：来源 `codex/m4-kline-training` → 目标 `main`，标题 `feat(m4): K-line training replay, simulated orders, report and AI review (M4 v1.0)`，正文列明 M4-W01～W07 实际行为（SQL 层未来数据截断与哨兵、`m4-sim-1` 撮合与费用、`schema 5` 迁移前备份与账本隔离、原子提交与三路确定性重放、`m4-report-1` 训练报告、结束后只读 AI 复盘、训练工作区与 `delta-cli training`、`Packager.toml` 退役与 TEST-02 修复）、A 审核修正 F-01（恢复重放读取失败不再误标损坏）、实际检查与 not-run 边界（H-05、ACT-01 真实模型）。
+- **授权（2026-11-14）**：你授权逐个推送、创建 PR，检查没问题后 squash 合并，然后清理分支；A 按此执行。
+- **不包含**：创建标签或 GitHub Release（v0.1.2）、改远端设置；这些需你另行授权。
+- 人工检查 H-05 与可选 ACT-01 不是本动作前提，可顺延；合并也不代表产品已验收。
 
 ### ACT-10 / 待你备份（M3）：生成并备份正式版更新签名私钥
 
@@ -68,22 +78,25 @@
 
 - 动作：在 ACT-10 完成、内置公钥已提交后，用 `cargo run -p delta-cli -- release-build --version 0.1.1` 在 `.local/reports/m3/release/delta-0.1.1/` 生成 `delta-setup-0.1.1-x64.exe`、`latest.json` 与 `.sig`，再创建标签 `v0.1.1` 并用 `gh release create` 上传这三个文件。A 审核通过后在这里写明提交 SHA、文件哈希与命令，等你回复授权后执行；未授权前用例 `M3-L-01` 保持 not-run。门禁里的回环更新演练（`M3-A-08`）不是 GitHub 发布。
 
-## 人工检查（M2/M3，B 交付安装包与检查步骤后执行，可顺延）
+## 人工检查（M2～M4，B 交付安装包与检查步骤后执行，可顺延）
 
 | 编号 / 状态 | 需要你做什么 | 说明 | 不影响 |
 | --- | --- | --- | --- |
 | H-01 / pending | 中文输入法检查：在笔记、搜索、导入字段映射中用拼音等输入法选词、组合态按回车 | 用例 `M2-M-01`；记录输入法名称与版本 | A 技术审核与远端授权请求 |
 | H-02 / pending | 键盘、焦点、Esc、125%/150% 缩放、小窗口与涨跌配色检查 | 用例 `M2-M-02` | 同上 |
 | H-03 / pending | 干净机器（虚拟机或 Windows 沙盒）用 `setup.exe` 安装正式版与开发版、离线运行、在“应用和功能”卸载一个通道 | M3 起为用例 `M3-M-01`（取代 `M2-M-03` 的便携包步骤）；验证无需管理员、两通道并存、卸载保留数据，记录 SmartScreen 提示。步骤见下文 H-03 | 同上 |
+| H-05 / pending（M4） | 训练实机体验：完成一次隐藏模式美股训练和一次加密训练，试用快捷键、各类委托、暂停恢复、报告与揭示 | 用例 `M4-M-01`；重点看会不会误下单、隐藏模式是否好读、报告是否看得懂；步骤见下文 H-05 | 同上 |
 | H-04 / pending（M3） | 正式版更新体验：观察“更新就绪”提示、设置页“关于/更新”、忙碌时的确认和重启 | 用例 `M3-M-02`；最自然的时机是 v0.1.1 发布后再发布 v0.1.2 时；之前可按下文 H-04 用测试身份和本机回环源体验 | 同上 |
 
-H-01、H-02 所用安装包和源码指纹以 [M2 阶段报告](docs/evidence/2026-11-09-m2-stage-report.md) 的产物为准（也可改用 M3 开发版安装包）；H-03、H-04 以 [M3 阶段报告](docs/delivery/stage-report.md) 为准。M3 安装包静态链接 CRT、检查普通/延迟 DLL 导入，并附带 `README.txt`、`build-info.json` 与全部第三方许可。
+H-01、H-02 所用安装包和源码指纹以 [M2 阶段报告](docs/evidence/2026-11-09-m2-stage-report.md) 的产物为准（也可改用最新开发版安装包）；H-03、H-04 以 [M3 阶段报告](docs/evidence/2026-11-12-m3-stage-report.md) 为准；H-05 以 [M4 阶段报告](docs/delivery/stage-report.md) 的开发版安装包与源码指纹为准。M3 起的安装包静态链接 CRT、检查普通/延迟 DLL 导入，并附带 `README.txt`、`build-info.json` 与全部第三方许可。
 
 - **H-01**：在开发版日志页编辑正文/结构字段，输入中文并在候选组合态按 Enter；在市场搜索、笔记搜索和导入预设输入框重复。等待 1 秒或失焦后观察保存状态，重启核对已保存文字。记录输入法名称、版本与失败位置；任意拖拽字段映射编辑器尚未提供。
 - **H-02**：Tab/方向键遍历六页、表格、图表控制和操作按钮；检查可见焦点、Esc 清光标/退出临时交互；在 100%/125%/150% 和小窗口下检查长金额、主要按钮、红涨绿跌/绿涨红跌的符号文字。记录缩放与窗口尺寸。
-- **H-03（M3 起）**：在开发机生成两个安装包：`cargo run -p delta-cli -- package-build`（开发版，输出仓库根 `dist/delta-dev-setup-<版本>-x64.exe`，`dist/` 里每个身份只保留最新一个）；正式版在 ACT-10 后用 `release-build --version 0.1.1` 生成（只在本地，不发布）。把两个 `setup.exe` 复制到干净环境（Windows 沙盒或虚拟机，无 Rust/MSVC/Python、未另装 VC++ 运行库），分别双击安装：记录 SmartScreen 提示文字与是否需要管理员（应不需要）；从开始菜单启动“DELTA”和“DELTA Dev”，确认两个窗口可同时运行、离线可用、设置页“关于”显示各自版本与数据目录（`%LOCALAPPDATA%\delta`、`%LOCALAPPDATA%\delta-dev`）；关闭 DELTA Dev 后在“设置 → 应用 → 已安装的应用”卸载它，确认 DELTA 仍可运行、两个数据目录都还在。再运行一次正式版安装包（覆盖安装）时让 DELTA 保持打开，确认它被请求保存退出、安装完成后数据仍在。
+- **H-03（M3 起）**：在开发机生成两个安装包：`cargo run -p delta-cli -- package-build`（开发版，输出仓库根 `dist/delta-dev-setup-<版本>-x64.exe`，`dist/` 里每个身份只保留最新一个）；正式版在 ACT-10 后用 `release-build --version 0.1.1` 生成（只在本地，不发布）。把两个 `setup.exe` 复制到干净环境（Windows 沙盒或虚拟机，无 Rust/MSVC/Python、未另装 VC++ 运行库），分别双击安装：记录 SmartScreen 提示文字与是否需要管理员（应不需要）；向导的“附加任务”页有“创建开始菜单快捷方式”和“创建桌面快捷方式”，首次安装默认都勾选，取消哪个就不创建哪个；从开始菜单启动“DELTA”和“DELTA Dev”，确认两个窗口可同时运行、离线可用、设置页“关于”显示各自版本与数据目录（`%LOCALAPPDATA%\delta`、`%LOCALAPPDATA%\delta-dev`）；关闭 DELTA Dev 后在“设置 → 应用 → 已安装的应用”卸载它，确认 DELTA 仍可运行、两个数据目录都还在。再运行一次正式版安装包（覆盖安装）时让 DELTA 保持打开，确认它被请求保存退出、安装完成后数据仍在。
 
 - **H-04**：在开发机仓库根目录执行（全部使用测试身份 `delta-test`，不影响你的 `delta` / `delta-dev`）：① `cargo run -p delta-cli -- package-build --identity delta-test`，双击 `dist/` 中生成的 `delta-test-setup-*.exe` 安装；② `cargo run -p delta-cli -- release-keygen --key-file %TEMP%\delta-h04\test-signing.key`（一次性测试密钥，不要用正式密钥文件）；③ 稍等一分钟后执行 `cargo run -p delta-cli -- release-build --test-identity --key-file %TEMP%\delta-h04\test-signing.key`（测试身份自动取比①更新的开发版号）；④ `cargo run -p delta-cli -- update-test-source --release-dir <③输出的目录>`，命令显示 `DELTA_UPDATE_SOURCE` 与 `DELTA_UPDATE_PUBLIC_KEY` 并保持本机回环源运行；⑤ 在另一个 PowerShell 设置这两个环境变量后启动 `%LOCALAPPDATA%\Programs\delta-test\delta-test.exe`，在设置页手动检查更新，观察下载、“更新就绪”、忙碌确认（可先开始一次同步）、安装与重启后的版本。结束后在“已安装的应用”卸载 DELTA Test，并删除 `%TEMP%\delta-h04` 目录里的测试密钥。记录措辞是否清楚、耗时与是否有数据丢失。
+
+- **H-05（M4）**：在开发机仓库根目录更新并体验开发版（只影响 `delta-dev`，不影响正式版 `delta` 与真实账本）：① Agent 请你检查前已自动把最新开发版装到本机 **DELTA Dev**（见[开发流程](docs/dev-rules/development-workflow.md#dev-install-at-handoff)），不用自己安装；② 启动 **DELTA Dev**，在“设置 → 关于”记录版本号与 `source_fingerprint`（若资料库尚无足够行情，先在数据中心同步一段美股/ETF 与加密现货日线），然后打开左侧导航**“训练”**页；③ 分别新建并跑完**一次隐藏模式美股/ETF 训练**与**一次隐藏模式加密现货训练**（新建前可点一次“换一个”观察重抽，确认进入工作区后顶部常驻“模拟训练”标识且标的代码/日期显示为“标的 A（…）”与“第 n 根”）；④ 全程试用键盘快捷键与图表操作：`N` 与 `→` 推进下一根 K 线、`O` 聚焦委托数量、`J` 聚焦训练笔记理由、`P` 暂停运行（暂停后可关闭再重开 DELTA Dev 确认持仓/挂单/进度完整恢复）、`Esc` 退出输入框焦点并清除十字光标、`Ctrl+Enter` 提交委托——重点在焦点位于委托输入框时按 `N` 或 `→`，确认**绝不会误提交委托**；⑤ 依次试用市价单、限价单、止损市价单、OCO 止盈止损以及入场附带止盈/止损计划（`DAY` / `GTC`），在不下单与下单后各记录一条训练笔记；⑥ 点击“结束训练”，先在未揭示状态下阅读训练报告（收益率、最大回撤、胜率、MAE/MFE、计划执行率、同期买入持有基准与样本限制）并填写自主评分，再点击**“揭示”**查看后续 60 根行情与真实标的/日期，可选择归档一条训练笔记到“日志”页（确认标注“来自模拟训练”且“资产”页真实账本未混入模拟成交）；⑦（可选，若已配置 `ACT-01` 真实模型连接，同时覆盖 `M4-L-01`）在训练结束后发起右侧 AI 复盘，核对引用的 `SIM-ORD-*` / `SIM-FILL-*` / `TRN-NOTE-*` 可点击打开并记录协议、模型与用量。最后记录是否发生误触下单、隐藏模式与十字光标可读性、报告是否清晰易懂，以及所用构建的 `source_fingerprint`。
 
 资料库恢复/删除的人工观察可随 H-03 进行：先在资料库之外保存一致性备份；设置页“恢复”填写备份与新目标目录，成功后以该目录启动。删除预览要核对路径、账户/笔记/附件/会话数量并输入完整资料库 ID；外部备份、导出与模型服务留存需独立处理。不要在唯一真实资料库上尝试破坏性验证。
 

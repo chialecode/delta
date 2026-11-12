@@ -124,6 +124,7 @@ pub enum UiAction {
         preview: delta_app::DeleteLibraryPreviewDto,
         typed_id: String,
     },
+    Training(Box<crate::training_ui::TrainingUiAction>),
 }
 
 /// Workers mutate a private copy, never the mutex used by rendering. Only the foreground
@@ -358,8 +359,16 @@ impl WorkbenchController {
         let navigation_revision = self.navigation_revision;
         let chart_revision = self.chart_revision;
         let ai_scope_revision = self.ai_scope_revision;
+        let is_training_ai = matches!(
+            &action,
+            UiAction::Training(t)
+                if matches!(
+                    t.as_ref(),
+                    crate::training_ui::TrainingUiAction::RequestAiReview { .. }
+                )
+        );
         self.busy = true;
-        self.ai_running = matches!(action, UiAction::AiReview { .. });
+        self.ai_running = matches!(action, UiAction::AiReview { .. }) || is_training_ai;
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&self.cancel);
         let stream = Arc::clone(&self.stream_text);
@@ -394,6 +403,11 @@ impl WorkbenchController {
                         completed.layout.active_nav = current.layout.active_nav.clone();
                     }
                     preserve_layout_edits(&original.layout, &current.layout, &mut completed.layout);
+                    crate::training_ui::preserve_training_draft_edits(
+                        &original.training,
+                        &current.training,
+                        &mut completed.training,
+                    );
                     if controller.chart_revision != chart_revision {
                         completed.kline_viewport = current.kline_viewport.clone();
                         completed.kline_slice = current.kline_slice.clone();
@@ -442,7 +456,11 @@ impl WorkbenchController {
                     }
                     if let Err(error) = result {
                         if controller.ai_running {
-                            completed.last_ai_error = Some(error.clone());
+                            if is_training_ai {
+                                completed.training.training_ai_error = Some(error.clone());
+                            } else {
+                                completed.last_ai_error = Some(error.clone());
+                            }
                         }
                         if controller.pending_scope.is_some()
                             && note_is_dirty(&completed.note_editor)
@@ -940,6 +958,9 @@ fn apply_action(
                     ));
                 }
             }
+        }
+        UiAction::Training(action) => {
+            crate::training_ui::apply_training_action(state, *action, cancel, stream)?;
         }
     }
     Ok(())

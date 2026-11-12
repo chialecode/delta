@@ -1,6 +1,6 @@
 # DELTA 系统架构设计
 
-版本 1.3 · 2026-11-07 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 与 [ADR-0003](../decisions/0003-first-round-stack.md) 重构为“100% 纯 Rust 实现、金融数据平面优先、核心与桌面 UI 解耦”的本地优先架构；定案 M1 SQLite 单库、实测修正的纯 Rust 连接器路由（优先覆盖用户主力 **富途牛牛 + 欧易 OKX** 及常用老虎、IBKR、长桥、嘉信、东方财富、币安）与 `delta-app` 异步边界（[M1 计划第 3 节](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)）。公共能力详见 [统一接口](integration-contracts.md)，Rust 会话所有权详见 [上下文状态](context-state-management.md)。
+版本 1.4 · 2026-11-12 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 与 [ADR-0003](../decisions/0003-first-round-stack.md) 重构为“100% 纯 Rust 实现、金融数据平面优先、核心与桌面 UI 解耦”的本地优先架构；定案 M1 SQLite 单库、实测修正的纯 Rust 连接器路由（优先覆盖用户主力 **富途牛牛 + 欧易 OKX** 及常用老虎、IBKR、长桥、嘉信、东方财富、币安）与 `delta-app` 异步边界（M1 计划第 3 节（计划已归档于 Git 历史，结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)））。公共能力详见 [统一接口](integration-contracts.md)，Rust 会话所有权详见 [上下文状态](context-state-management.md)。
 
 ## 1. 架构目标与决策
 
@@ -62,7 +62,7 @@ MarketDataProvider
 
 - **美股与 ETF 路由（纯 Rust HTTP）**：
   - **配置免费 Token 时**：Rust 直连 **Tiingo REST** 为主（原始 OHLCV、复权 OHLCV、`divCash`、`splitFactor`），**Yahoo Finance Chart v8** 核验；扩展层可加 **Alpaca Market Data REST**（`/v1/corporate-actions`）。
-  - **零配置免 Key 路径**：Rust 直连 **Yahoo Finance Chart v8**（`query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&events=div,split`）为主（获取 `splits`、`dividends` 事件与**拆股调整后的** OHLCV、`adjclose`；原始价按 [M1 计划 S-08](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型) 以累计拆股因子还原），Rust 直连**东方财富美股日线接口**（`push2his.eastmoney.com/api/qt/stock/kline/get`，`secid=105.AAPL` 等，`fqt=0` 原始价、`fqt=1/2` 复权）核验。当两源收盘价或复权比例在某交易日出现超阈值跳变而缺少对应 `corporate_action` 记录时，自动生成 `data_quality_issue`，将区间标记为 `partial/warning`，绝不静默输出错误收益率。
+  - **零配置免 Key 路径**：Rust 直连 **Yahoo Finance Chart v8**（`query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&events=div,split`）为主（获取 `splits`、`dividends` 事件与**拆股调整后的** OHLCV、`adjclose`；原始价按 M1 计划 S-08（计划已归档于 Git 历史，结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)） 以累计拆股因子还原），Rust 直连**东方财富美股日线接口**（`push2his.eastmoney.com/api/qt/stock/kline/get`，`secid=105.AAPL` 等，`fqt=0` 原始价、`fqt=1/2` 复权）核验。当两源收盘价或复权比例在某交易日出现超阈值跳变而缺少对应 `corporate_action` 记录时，自动生成 `data_quality_issue`，将区间标记为 `partial/warning`，绝不静默输出错误收益率。
 - **加密现货与稳定币路由（纯 Rust HTTP）**：
   - **公共行情（完全免 Key，覆盖用户两大主力场所）**：① **欧易（OKX）公开现货 REST**（`www.okx.com/api/v5/market/candles` 与 `history-candles`，`bar=1Dutc` 原生对齐 UTC 日切，仅提交 `confirm="1"` 已完结 K 线）；② **币安（Binance）公开行情镜像** `data-api.binance.vision`（增量）与 `data.binance.vision` 归档（回填，校验 `.CHECKSUM` SHA-256）。美国网络出口下 `api.binance.com` 返回 HTTP 451，不作为数据源。多场所通用连接（官方 Rust `ccxt` crate）属于扩展层。
   - **稳定币独立定价**：`USDT/USD` 取 Coinbase Exchange 日线（主）与 Bitstamp（核验）；`USDC/USD` 取 Bitstamp（主）与 Kraken（核验，公开 OHLC 仅最近 720 根）；写入 `fx_rate`，满足 `FR-LED-02` 与 `AC-06`（不假设稳定币恒等于 1 USD）。
@@ -97,3 +97,10 @@ M1 的 AccountProvider 是离线录制实现：输入为 OKX/Binance 原生 data
 - **保存后退出**：`quit-for-update` 与“应用更新”走同一序列：检查忙碌（进行中的同步作业或 AI 复盘）→ 自动保存未保存的笔记（保存失败回执 `save-failed`）→ 保存布局 → 回执 `ok` 并附带重启参数 → 退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消同步与 AI 再继续。
 - **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 原参数重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
 - **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，之前在运行则以脱离作业的方式按原参数重启。
+
+## 8. K 线训练与模拟架构（M4）
+
+- **纯函数模拟核心**（`delta-core::sim` 与 `sim_report`）：`SimState` + `step` / `step_multi_bars`（引擎版本 `m4-sim-1`）与 `compute_training_report`（报告版本 `m4-report-1`）全程使用 `rust_decimal::Decimal` 与 `BTreeMap`/`BTreeSet`，零浮点、零系统时钟读取、零 IO，保证相同命令序列在从头重放、检查点恢复与跨进程重放下 `state_hash` 逐字节一致；多标的固定排序接口已就绪供 M5 回测复用。
+- **SQL 截断端口与独立 Schema 5 存储**（`delta-data::m4_schema`）：`schema 4 → 5` 升级前先创建 `before-schema-4-*` 一致性备份，8 张模拟/训练表与真实账本完全物理分离（训练读写、归档、删除均不修改 `ledger_revision`）；`query_run_visible_final_bars` / `query_next_training_step_bar` / `query_training_visible_corporate_actions` 在 SQL 层执行 `is_final = 1` 与 `visible_until` 截断。
+- **单写者宿主编排与结束后 AI 网关**（`delta-app::training` 与 `ai`）：`TrainingDataPort` 维护可见 K 线、时点拆股复权与指标增量缓存；每步命令经 `commit_simulation_step_atomic` 单 savepoint 提交并定期/暂停/结束写检查点，恢复时经 `verify_or_mark_run_damaged` 校验状态哈希；`ScopeTarget::TrainingRun(run_id)` 仅对 `finished` 运行开放 5 个 `training.*` 只读工具并核验 `SIM-ORD-*`/`SIM-FILL-*`/`TRN-NOTE-*` 引用。
+- **桌面与 CLI 同源消费**：`delta-desktop::training_ui`（“训练”页，复用 `KlineViewport` 与自绘 K 线画布，`Ctrl+Enter` 提交与 `N`/`→` 推进严格分离，release 隐藏原生窗口退出执行速度节流后 1,000 根历史＋默认指标 300 步“下一根”延迟满足 `p95 <= 100 ms`）与 `delta-cli training` / `verify-stage --stage M4` 共享同一同步 `AppHost` 契约。

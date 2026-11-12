@@ -1,0 +1,459 @@
+{
+  "schemaVersion": 1,
+  "stage": "M4",
+  "planVersion": "1.0",
+  "cases": [
+    {
+      "id": "M4-A-01",
+      "title": "Replay clock truncation with future sentinels",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W01"
+      ],
+      "requirements": [
+        "FR-TRN-01"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "precondition": "M1 fixture library with US equity and crypto daily bars; a training run created at a fixed seed.",
+      "steps": [
+        "Overwrite every bar and corporate action after the current clock with extreme sentinel values.",
+        "Read the chart slice, indicators, order validation, CLI show output and every AI tool output for the run.",
+        "Advance the clock and repeat."
+      ],
+      "expected": "No output contains a sentinel value or any bar with close_at later than visible_until; indicator warmup never ends after the clock; the clock cannot move backwards.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-01"
+    },
+    {
+      "id": "M4-A-02",
+      "title": "Deterministic sampling, candidate pool and hidden identity",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W01"
+      ],
+      "requirements": [
+        "FR-TRN-01",
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-15"
+      ],
+      "precondition": "Frozen dataset_version with instruments that have gaps, quality warnings and incomplete corporate actions.",
+      "steps": [
+        "Sample twice with the same seed and pool; sample with a different seed.",
+        "Redraw before start, then try to redraw after start.",
+        "Inspect desktop DTOs, CLI JSON and AI scope for an unfinished hidden run."
+      ],
+      "expected": "Same seed and pool hash give the same segment; excluded ranges are never chosen; redraws before start are recorded and redraw after start is refused; no DTO for an unfinished hidden run contains the real symbol or dates.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-02"
+    },
+    {
+      "id": "M4-A-03",
+      "title": "Point-in-time split adjustment and in-session corporate actions",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W01",
+        "M4-W02"
+      ],
+      "requirements": [
+        "FR-TRN-01",
+        "FR-TRN-02"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-12"
+      ],
+      "precondition": "Recorded Yahoo split and dividend fixtures inside a training range.",
+      "steps": [
+        "Show the chart before and after a split ex_date.",
+        "Hold a position and open orders across the split and across a cash dividend ex_date."
+      ],
+      "expected": "Before the ex_date the chart does not reflect the future split; at the ex_date quantity and unit cost change with total cost unchanged, open orders are cancelled with reason corporate_action_split, and the dividend is credited once with the ex-date assumption shown.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-03"
+    },
+    {
+      "id": "M4-A-04",
+      "title": "Market and limit fills, gaps and tick rounding",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W02"
+      ],
+      "requirements": [
+        "FR-TRN-02",
+        "FR-TRN-03"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "precondition": "Hand-calculated fixture bars with gap-up, gap-down and inside bars; fee profile with slippage and spread.",
+      "steps": [
+        "Submit market and limit buy/sell orders after bar t.",
+        "Advance through gap and non-gap bars.",
+        "Submit prices and quantities that violate tick_size or lot_size."
+      ],
+      "expected": "Orders become eligible at bar t+1 open; fill prices match the hand calculation, never worse than the limit, rounded adversely to tick; invalid inputs are rejected with the nearest valid values.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-04"
+    },
+    {
+      "id": "M4-A-05",
+      "title": "Stop and OCO path ordering and same-bar ambiguity",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W02"
+      ],
+      "requirements": [
+        "FR-TRN-02"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "precondition": "Long position with OCO take-profit and stop-loss; entry with attached bracket; fixture bars that touch both levels and that gap through the stop.",
+      "steps": [
+        "Advance through a bar that touches both levels.",
+        "Advance through a bar that gaps below the stop.",
+        "Fill an entry on the low segment and let the attached take-profit reach the high in the same bar."
+      ],
+      "expected": "The O-L-H-C path executes the stop first and counts an ambiguous fill; the gap fills at open plus adverse slippage, not at the stop price; the attached order fills only on path after the entry point; the other OCO leg is cancelled.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-05"
+    },
+    {
+      "id": "M4-A-06",
+      "title": "Fund and position reservation and rejections",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W02"
+      ],
+      "requirements": [
+        "FR-TRN-02"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "precondition": "Training account with limited cash and position.",
+      "steps": [
+        "Place buy orders whose reservations exceed cash; place sells exceeding the position.",
+        "Place a market buy that gaps up beyond the 10% buffer.",
+        "Advance through a zero-volume bar with DAY and GTC orders."
+      ],
+      "expected": "Rejections INSUFFICIENT_FUNDS, INSUFFICIENT_POSITION and INSUFFICIENT_FUNDS_AT_FILL with no partial quantity; cash and position never go negative; no fill on the zero-volume bar, DAY expires and GTC stays.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-06"
+    },
+    {
+      "id": "M4-A-07",
+      "title": "Fee components, per-order minimum across partial fills and rounding",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W02"
+      ],
+      "requirements": [
+        "FR-TRN-03"
+      ],
+      "acceptance": [
+        "AC-13"
+      ],
+      "precondition": "Fee profile fixtures: rate, per-unit, fixed, min/max per order, fee currency quote or received asset, rounding modes and per-fill/per-order tiers.",
+      "steps": [
+        "Settle orders made of one and several synthetic fills at the fee-engine level.",
+        "Compare each fee and rounding with hand calculation."
+      ],
+      "expected": "Per-order minimum is applied once when the order ends, not per fill; per-fill fees sum exactly; rounding mode and scale match the profile; fees in the received asset reduce that asset quantity.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-07"
+    },
+    {
+      "id": "M4-A-08",
+      "title": "Fee profile versioning and freezing",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W02",
+        "M4-W03"
+      ],
+      "requirements": [
+        "FR-TRN-03",
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-13",
+        "AC-15"
+      ],
+      "precondition": "A training run created with fee profile version v1.",
+      "steps": [
+        "Edit the profile to create v2.",
+        "Resume and replay the existing run; create a new run."
+      ],
+      "expected": "The existing run keeps v1 for all fills and its report; only the new run uses v2; versions are immutable once used; built-in platform presets carry an official source and retrieval date or are absent.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-08"
+    },
+    {
+      "id": "M4-A-09",
+      "title": "Pause, resume and crash recovery without duplicate fills",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W03"
+      ],
+      "requirements": [
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-14"
+      ],
+      "precondition": "Run with open orders and positions; checkpoints every 20 steps.",
+      "steps": [
+        "Pause, close the host and resume.",
+        "Kill the process in the middle of an advance transaction and reopen.",
+        "Corrupt a stored state hash and reopen."
+      ],
+      "expected": "Resumed state equals the state before pause; an interrupted advance leaves no half step and no duplicate fill; a hash mismatch marks the run damaged instead of continuing.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-09"
+    },
+    {
+      "id": "M4-A-10",
+      "title": "Deterministic replay and retry as a new run",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W03"
+      ],
+      "requirements": [
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-15"
+      ],
+      "precondition": "A finished run with a recorded command log.",
+      "steps": [
+        "Replay from scratch, from a checkpoint and in a second process.",
+        "Retry the run and play a different order sequence."
+      ],
+      "expected": "Every step hash and the final report are identical across the three replays; the retry is a new run referencing the original, and the original run, its orders and report are unchanged.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-10"
+    },
+    {
+      "id": "M4-A-11",
+      "title": "Library migration, ledger isolation, backup, export and delete",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W03"
+      ],
+      "requirements": [
+        "FR-TRN-04",
+        "NFR-06"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-14",
+        "AC-20"
+      ],
+      "precondition": "A schema 4 library created by the v0.1.1 code path with ledger, notes and AI sessions.",
+      "steps": [
+        "Open it with the M4 build; run a full training session.",
+        "Make a consistent backup and restore it; export; preview and delete a training run."
+      ],
+      "expected": "A backup is taken before migration and all existing data survives; ledger_revision and real fill tables are unchanged by training; backup, restore and export include training tables; delete removes only the chosen run after preview; the older build refuses the schema 5 library clearly.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-11"
+    },
+    {
+      "id": "M4-A-12",
+      "title": "Training report metrics against hand calculation",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W04"
+      ],
+      "requirements": [
+        "FR-TRN-05"
+      ],
+      "acceptance": [
+        "AC-18"
+      ],
+      "precondition": "Hand-calculated fixture runs: winning and losing trade groups, scaled entries, an open position at the end, a run with zero losses and a run with no trades.",
+      "steps": [
+        "Compute the report for each fixture."
+      ],
+      "expected": "Return, realized/unrealized, fees, max drawdown, exposure, win rate with zero-PnL separate, profit factor, expectancy with sample size, MAE/MFE per trade group, plan execution rate and buy-and-hold benchmark match; zero losses and no trades yield explicit states; sample limitations list ambiguity count, path, fee and hidden-mode assumptions.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-12"
+    },
+    {
+      "id": "M4-A-13",
+      "title": "Training notes and archive to journal",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W05"
+      ],
+      "requirements": [
+        "FR-TRN-06"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-19"
+      ],
+      "precondition": "A run with notes written during training, including a note without any order.",
+      "steps": [
+        "Finish the run and archive selected notes to the journal.",
+        "Inspect the journal, the ledger and the original run."
+      ],
+      "expected": "Archived notes are saved through the normal journal command and labelled as from simulated training; no simulated fill appears in the real ledger; the original run notes are unchanged.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-13"
+    },
+    {
+      "id": "M4-A-14",
+      "title": "AI review only after finish, with evidence and permission limits",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W05"
+      ],
+      "requirements": [
+        "FR-TRN-06",
+        "NFR-10"
+      ],
+      "acceptance": [
+        "AC-19"
+      ],
+      "precondition": "Loopback model server for both protocols; one unfinished and one finished run; a note containing an instruction to call other tools.",
+      "steps": [
+        "Call the training AI scope on the unfinished run.",
+        "Ask for a review of the finished run, including a fabricated citation from the model.",
+        "Stop the model server and use the training workflow."
+      ],
+      "expected": "The unfinished run is refused by the host; the finished review cites openable simulated orders, fills and notes; the fabricated citation is blocked; the note does not widen permissions; with the model offline, training and reports work.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-14"
+    },
+    {
+      "id": "M4-A-15",
+      "title": "CLI and UI parity on the same run",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W06"
+      ],
+      "requirements": [
+        "FR-TRN-02",
+        "FR-TRN-05",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-23"
+      ],
+      "precondition": "One run driven through delta-cli training commands.",
+      "steps": [
+        "Read the same run through the desktop DTOs and through CLI show and report."
+      ],
+      "expected": "Positions, cash, orders, fills and report values are identical and carry the same dataset, engine and fee versions.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-15"
+    },
+    {
+      "id": "M4-A-16",
+      "title": "Headless desktop training workflow and shortcuts",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W06"
+      ],
+      "requirements": [
+        "FR-TRN-01",
+        "FR-TRN-02",
+        "FR-TRN-06",
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-19"
+      ],
+      "precondition": "GPUI test platform with a fixture library.",
+      "steps": [
+        "Create a hidden run, place an order with the ticket, advance with N and the right arrow, add a note, finish, open the report, reveal and open AI review.",
+        "Press the advance keys while the order ticket is focused; trigger a background failure."
+      ],
+      "expected": "The simulated-training badge is always shown; no real name or date before reveal; advance keys never submit an order (Ctrl+Enter does); failures show a reason and are not marked successful.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-16"
+    },
+    {
+      "id": "M4-A-17",
+      "title": "Next-bar interaction latency",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W06",
+        "M4-W07"
+      ],
+      "requirements": [
+        "NFR-03"
+      ],
+      "acceptance": [
+        "AC-26"
+      ],
+      "precondition": "Release build, 1,000 visible history bars with default indicators, hidden native window with power throttling opted out.",
+      "steps": [
+        "Run 300 next-bar steps including save transaction, matching, indicators, slice and redraw.",
+        "Record hardware, raw samples and p50/p95/p99."
+      ],
+      "expected": "p95 is at most 100 ms; raw samples and measurement conditions are kept; a miss is reported as failed, not hidden.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-17"
+    },
+    {
+      "id": "M4-A-18",
+      "title": "Stage gate, quiet execution and regressions",
+      "mode": "automated",
+      "work_packages": [
+        "M4-W07"
+      ],
+      "requirements": [
+        "FR-TRN-01",
+        "FR-TRN-04",
+        "NFR-01"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-15"
+      ],
+      "precondition": "Final source fingerprint.",
+      "steps": [
+        "Run verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench.",
+        "Run M1 v2.6, M2 v1.0 --ui-smoke --ui-bench and M3 v1.0 --installer --ui-smoke at the same fingerprint."
+      ],
+      "expected": "All required M4 cases pass and bind to the fingerprint; no visible window or focus change during the gate; the three regressions pass; manual and live cases stay not-run.",
+      "evidence": ".local/reports/m4/verify-stage-report.json#case_results/M4-A-18"
+    },
+    {
+      "id": "M4-M-01",
+      "title": "Training hands-on experience",
+      "mode": "manual",
+      "work_packages": [
+        "M4-W06"
+      ],
+      "requirements": [
+        "FR-TRN-01",
+        "FR-TRN-02",
+        "FR-TRN-05",
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-14"
+      ],
+      "precondition": "Developer build installed with delta-cli install-dev (H-05).",
+      "steps": [
+        "Run one hidden US equity session and one crypto session to the end.",
+        "Use keyboard shortcuts, place each order type, pause and resume, read the report and reveal."
+      ],
+      "expected": "No accidental order submission; hidden mode stays readable; report and reveal are understandable; issues recorded with build fingerprint.",
+      "evidence": "USER-ACTIONS.md H-05"
+    },
+    {
+      "id": "M4-L-01",
+      "title": "AI review with a real model",
+      "mode": "live",
+      "work_packages": [
+        "M4-W05"
+      ],
+      "requirements": [
+        "FR-TRN-06"
+      ],
+      "acceptance": [
+        "AC-19"
+      ],
+      "precondition": "Real model connection configured by the user (ACT-01).",
+      "steps": [
+        "Finish a training run and request an AI review."
+      ],
+      "expected": "The review cites openable simulated evidence, respects the finished-only rule and reports usage; declared only for the configured protocol and model.",
+      "evidence": ".local/reports/m4/live-ai-review.json"
+    }
+  ]
+}

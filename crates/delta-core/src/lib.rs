@@ -2,12 +2,16 @@ pub mod decimal;
 pub mod indicators;
 pub mod ledger;
 pub mod model;
+pub mod sim;
+pub mod sim_report;
 pub mod valuation;
 
 pub use decimal::*;
 pub use indicators::*;
 pub use ledger::*;
 pub use model::*;
+pub use sim::*;
+pub use sim_report::*;
 pub use valuation::*;
 
 #[cfg(test)]

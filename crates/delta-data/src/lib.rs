@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod importers;
 pub mod m2_schema;
+pub mod m4_schema;
 pub mod providers;
 pub mod registry;
 pub mod storage;
@@ -8,6 +9,7 @@ pub mod storage;
 pub use calendar::*;
 pub use importers::*;
 pub use m2_schema::*;
+pub use m4_schema::*;
 pub use providers::*;
 pub use registry::*;
 pub use storage::*;

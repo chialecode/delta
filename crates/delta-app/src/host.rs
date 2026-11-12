@@ -49,6 +49,7 @@ pub enum ScopeTarget {
     AllAccounts,
     Accounts(Vec<String>),
     Portfolio(String),
+    TrainingRun(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +118,22 @@ impl AnalysisScope {
             start_date: None,
             as_of_date,
             report_currency: report_currency.into().to_ascii_uppercase(),
+            dataset_version: 0,
+            ledger_revision: 0,
+            visible_until: None,
+            include_notes: true,
+            versions_frozen: false,
+            journal_revision: String::new(),
+        }
+    }
+
+    pub fn for_training_run(run_id: impl Into<String>) -> Self {
+        Self {
+            target: ScopeTarget::TrainingRun(run_id.into()),
+            resolved_accounts: Vec::new(),
+            start_date: None,
+            as_of_date: NaiveDate::from_ymd_opt(1, 1, 1).expect("valid synthetic date"),
+            report_currency: String::new(),
             dataset_version: 0,
             ledger_revision: 0,
             visible_until: None,
@@ -239,6 +256,15 @@ pub const AI_READONLY_TOOL_IDS: &[&str] = &[
     "journal.search_notes",
 ];
 
+pub const AI_TRAINING_READONLY_TOOL_IDS: &[&str] = &[
+    "scope.describe",
+    "training.run_summary",
+    "training.orders_and_fills",
+    "training.report",
+    "training.notes",
+    "training.revealed_bars",
+];
+
 impl CapabilityCatalog {
     pub fn default_catalog() -> Self {
         let capabilities = vec![
@@ -336,6 +362,67 @@ impl CapabilityCatalog {
                     "additionalProperties": false
                 }),
             },
+            // M4 Read-only simulated training review tools (`S-45`, `M4-A-14`)
+            CapabilityDescriptor {
+                id: "training.run_summary".to_string(),
+                schema_version: 1,
+                is_read_only: true,
+                requires_scope: true,
+                description: "Summarize the finished simulated training run, fee profile version, step count, hidden-mode display label, and ending equity.".to_string(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            CapabilityDescriptor {
+                id: "training.orders_and_fills".to_string(),
+                schema_version: 1,
+                is_read_only: true,
+                requires_scope: true,
+                description: "List simulated orders and fills in the finished training run with openable SIM-ORD and SIM-FILL evidence IDs.".to_string(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            CapabilityDescriptor {
+                id: "training.report".to_string(),
+                schema_version: 1,
+                is_read_only: true,
+                requires_scope: true,
+                description: "Read the deterministic simulated training report, closed trade groups, MAE/MFE, Buy-and-Hold benchmark, plan execution rate, and sample limitations.".to_string(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            CapabilityDescriptor {
+                id: "training.notes".to_string(),
+                schema_version: 1,
+                is_read_only: true,
+                requires_scope: true,
+                description: "Read user training notes recorded during the finished simulated training run as untrusted free-text data.".to_string(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            CapabilityDescriptor {
+                id: "training.revealed_bars".to_string(),
+                schema_version: 1,
+                is_read_only: true,
+                requires_scope: true,
+                description: "Read post-finish 60-bar market context when the finished training run is unmasked or explicitly revealed.".to_string(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
             // Non-AI / mutating capabilities in the unified application catalog (`S-13`)
             CapabilityDescriptor {
                 id: "overview.metrics".to_string(),
@@ -424,8 +511,41 @@ impl CapabilityCatalog {
             .collect()
     }
 
+    /// Projects ONLY the `S-45` read-only simulated training review tools (`ScopeTarget::TrainingRun`).
+    pub fn ai_training_readonly_tools() -> Vec<ToolDefinition> {
+        let catalog = Self::default_catalog();
+        AI_TRAINING_READONLY_TOOL_IDS
+            .iter()
+            .filter_map(|id| {
+                catalog
+                    .capabilities
+                    .iter()
+                    .find(|c| c.id == *id && c.is_read_only)
+                    .map(|c| ToolDefinition {
+                        name: c.id.clone(),
+                        description: c.description.clone(),
+                        parameters_schema: c.parameters_schema.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    pub fn ai_tools_for_scope(scope: &AnalysisScope) -> Vec<ToolDefinition> {
+        if matches!(scope.target, ScopeTarget::TrainingRun(_)) {
+            Self::ai_training_readonly_tools()
+        } else {
+            Self::ai_readonly_tools()
+        }
+    }
+
     pub fn tool_schema_hash() -> String {
         let tools = Self::ai_readonly_tools();
+        let bytes = serde_json::to_vec(&tools).unwrap_or_default();
+        hex::encode(Sha256::digest(&bytes))
+    }
+
+    pub fn tool_schema_hash_for_scope(scope: &AnalysisScope) -> String {
+        let tools = Self::ai_tools_for_scope(scope);
         let bytes = serde_json::to_vec(&tools).unwrap_or_default();
         hex::encode(Sha256::digest(&bytes))
     }
@@ -557,12 +677,217 @@ impl AppService {
         }
         Ok(hex::encode(hash.finalize()))
     }
+    pub(crate) fn scope_journal_revision(
+        &self,
+        target: &ScopeTarget,
+    ) -> Result<String, ErrorEnvelope> {
+        if let ScopeTarget::TrainingRun(ref run_id) = target {
+            let mut hash = Sha256::new();
+            let trimmed_run_id = run_id.trim();
+            let run_meta: Option<(String, i64)> = self
+                .store()
+                .conn()
+                .query_row(
+                    "SELECT r.latest_state_hash, s.revealed
+                     FROM simulation_run r
+                     JOIN training_session s ON s.run_id = r.run_id
+                     WHERE r.run_id = ?1",
+                    params![trimmed_run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| ErrorEnvelope::new("JOURNAL_VERSION_FAILED", e.to_string(), false))?;
+            if let Some((latest_state_hash, revealed)) = run_meta {
+                let state_bytes = latest_state_hash.as_bytes();
+                hash.update((state_bytes.len() as u64).to_le_bytes());
+                hash.update(state_bytes);
+                hash.update(revealed.to_le_bytes());
+            }
+            let mut stmt = self
+                .store()
+                .conn()
+                .prepare(
+                    "SELECT note_id, visible_until, rationale, COALESCE(emotion_tag, ''), COALESCE(linked_order_id, ''), COALESCE(archived_journal_note_id, ''), updated_at
+                     FROM training_note
+                     WHERE run_id = ?1
+                     ORDER BY created_at ASC, note_id ASC",
+                )
+                .map_err(|e| ErrorEnvelope::new("JOURNAL_VERSION_FAILED", e.to_string(), false))?;
+            let columns = stmt.column_count();
+            let mut rows = stmt
+                .query(params![trimmed_run_id])
+                .map_err(|e| ErrorEnvelope::new("JOURNAL_VERSION_FAILED", e.to_string(), false))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| ErrorEnvelope::new("JOURNAL_VERSION_FAILED", e.to_string(), false))?
+            {
+                for index in 0..columns {
+                    let value = row.get_ref(index).map_err(|e| {
+                        ErrorEnvelope::new("JOURNAL_VERSION_FAILED", e.to_string(), false)
+                    })?;
+                    match value {
+                        rusqlite::types::ValueRef::Text(bytes) => {
+                            hash.update((bytes.len() as u64).to_le_bytes());
+                            hash.update(bytes);
+                        }
+                        rusqlite::types::ValueRef::Integer(value) => {
+                            hash.update(value.to_le_bytes())
+                        }
+                        _ => hash.update([0]),
+                    }
+                }
+            }
+            return Ok(hex::encode(hash.finalize()));
+        }
+        self.journal_revision()
+    }
+
     /// Validate `dataset_version`, `ledger_revision`, and resolve `ScopeTarget` into a
-    /// canonical, sorted, deduplicated account set (`S-13`, `M2-A-01`).
+    /// canonical, sorted, deduplicated account set (`S-13`, `M2-A-01`) or a verified
+    /// finished training run (`S-45`, `M4-A-14`).
     pub fn resolve_and_validate_scope(
         &self,
         scope: &AnalysisScope,
     ) -> Result<AnalysisScope, ErrorEnvelope> {
+        if let ScopeTarget::TrainingRun(ref raw_run_id) = scope.target {
+            let run_id = raw_run_id.trim();
+            if run_id.is_empty() {
+                return Err(ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    "training run id in scope is empty",
+                    false,
+                ));
+            }
+            if scope.dataset_version < 0 {
+                return Err(ErrorEnvelope::new(
+                    "UNPUBLISHED_DATASET",
+                    "dataset version is unpublished or invalid (negative)",
+                    false,
+                ));
+            }
+            let current_ledger_rev: i64 = self
+                .store()
+                .conn()
+                .query_row("SELECT ledger_revision FROM library LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| ErrorEnvelope::new("QUERY_LIBRARY_FAILED", e.to_string(), false))?;
+            if scope.ledger_revision < 0
+                || ((scope.versions_frozen || scope.ledger_revision > 0)
+                    && scope.ledger_revision != current_ledger_rev)
+            {
+                return Err(ErrorEnvelope::new(
+                    "REVISION_CONFLICT",
+                    format!(
+                        "ledger revision conflict: requested {}, current is {}",
+                        scope.ledger_revision, current_ledger_rev
+                    ),
+                    false,
+                ));
+            }
+
+            let run = self.store().get_simulation_run(run_id).map_err(|_| {
+                ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    format!("unknown simulated training run '{run_id}' in scope"),
+                    false,
+                )
+            })?;
+            let session = self.store().get_training_session(run_id).map_err(|_| {
+                ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    format!("missing training session for '{run_id}'"),
+                    false,
+                )
+            })?;
+            if run.status != delta_data::SimRunStatus::Finished {
+                return Err(ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    format!(
+                        "simulated training run '{run_id}' is '{}' — AI review is permitted only after the training session is finished",
+                        run.status.as_str()
+                    ),
+                    false,
+                ));
+            }
+            let _ = self.read_verified_sim_state(run_id)?;
+
+            if scope.dataset_version > 0 && scope.dataset_version != run.dataset_version {
+                return Err(ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    format!(
+                        "scope dataset_version {} does not match frozen training run dataset_version {}",
+                        scope.dataset_version, run.dataset_version
+                    ),
+                    false,
+                ));
+            }
+
+            let report_currency = run.quote_currency.trim().to_ascii_uppercase();
+            if !scope.report_currency.trim().is_empty()
+                && !scope
+                    .report_currency
+                    .trim()
+                    .eq_ignore_ascii_case(&report_currency)
+            {
+                return Err(ErrorEnvelope::new(
+                    "SCOPE_DENIED",
+                    format!(
+                        "scope report_currency '{}' does not match training quote_currency '{report_currency}'",
+                        scope.report_currency.trim()
+                    ),
+                    false,
+                ));
+            }
+
+            let masked = crate::training::is_run_identity_masked(&run, &session);
+            let (start_date, as_of_date, visible_until) = if masked {
+                (
+                    None,
+                    NaiveDate::from_ymd_opt(1, 1, 1).expect("valid synthetic date"),
+                    None,
+                )
+            } else {
+                (
+                    Some(delta_data::SqliteStore::effective_visible_ex_date(
+                        &session.real_instrument_id,
+                        session.history_start_at,
+                    )),
+                    delta_data::SqliteStore::effective_visible_ex_date(
+                        &session.real_instrument_id,
+                        session.visible_until,
+                    ),
+                    Some(session.visible_until),
+                )
+            };
+
+            let target = ScopeTarget::TrainingRun(run_id.to_string());
+            let journal_revision = self.scope_journal_revision(&target)?;
+            if scope.versions_frozen
+                && !scope.journal_revision.is_empty()
+                && scope.journal_revision != journal_revision
+            {
+                return Err(ErrorEnvelope::new(
+                    "JOURNAL_REVISION_CONFLICT",
+                    "training notes changed during analysis; start a new analysis snapshot",
+                    false,
+                ));
+            }
+
+            return Ok(AnalysisScope {
+                target,
+                resolved_accounts: Vec::new(),
+                start_date,
+                as_of_date,
+                report_currency,
+                dataset_version: run.dataset_version,
+                ledger_revision: current_ledger_rev,
+                visible_until,
+                include_notes: scope.include_notes,
+                versions_frozen: true,
+                journal_revision,
+            });
+        }
         if scope.start_date.is_some_and(|d| d > scope.as_of_date) {
             return Err(ErrorEnvelope::new(
                 "INVALID_ARGUMENT",
@@ -696,6 +1021,7 @@ impl AppService {
                 }
                 accounts
             }
+            ScopeTarget::TrainingRun(_) => unreachable!("handled above"),
         };
 
         let report_currency = if scope.report_currency.trim().is_empty() {
@@ -965,6 +1291,50 @@ impl AppService {
         generation: u64,
     ) -> Result<ResultEnvelope<Value>, ErrorEnvelope> {
         let resolved = self.resolve_and_validate_scope(scope)?;
+        if let ScopeTarget::TrainingRun(ref run_id) = resolved.target {
+            let summary = self.get_training_run_summary(run_id)?;
+            let val = json!({
+                "target": resolved.target,
+                "simulated_training": true,
+                "simulated_training_badge": crate::training::SIMULATED_TRAINING_BADGE,
+                "run_id": run_id,
+                "display_symbol": summary.display_symbol,
+                "current_bar_label": summary.current_bar_label,
+                "hidden_mode": summary.hidden_mode,
+                "revealed": summary.revealed,
+                "resolved_accounts": resolved.resolved_accounts,
+                "report_currency": resolved.report_currency,
+                "dataset_version": resolved.dataset_version,
+                "ledger_revision": resolved.ledger_revision,
+                "include_notes": resolved.include_notes,
+                "scope_hash": resolved.scope_hash(),
+            });
+            let evidence = vec![
+                EvidenceRef {
+                    kind: "fee_profile_version".to_string(),
+                    id: summary.fee_profile_version_id.clone(),
+                    revision: 1,
+                    label: format!("模拟费用配置 {}", summary.fee_profile_name),
+                },
+                EvidenceRef {
+                    kind: "dataset_version".to_string(),
+                    id: format!("DSV-{:06}", resolved.dataset_version),
+                    revision: resolved.dataset_version,
+                    label: format!("Dataset v{}", resolved.dataset_version),
+                },
+            ];
+            return Ok(ResultEnvelope::build_deterministic(
+                "scope.describe",
+                req_id,
+                generation,
+                val,
+                resolved,
+                QualityStatus::Exact,
+                Vec::new(),
+                evidence,
+                vec!["数据来自模拟训练，与真实账户账本隔离".to_string()],
+            ));
+        }
         let val = json!({
             "target": resolved.target,
             "resolved_accounts": resolved.resolved_accounts,

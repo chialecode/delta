@@ -5,6 +5,9 @@
 #ifndef Identity
   #error Identity must be defined by delta-cli package-build
 #endif
+#ifndef DesktopOnUpdate
+  #error DesktopOnUpdate must be defined by delta-cli package-build (1 for dev-like identities)
+#endif
 #if Ver < EncodeVer(7, 1, 0) || Ver >= EncodeVer(7, 2, 0)
   #error DELTA installers require Inno Setup 7.1.x (S-25)
 #endif
@@ -46,11 +49,17 @@ ShowLanguageDialog=no
 SetupLogging=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-Name: "english"; MessagesFile: "compiler:Default.isl"
+; delta-*.isl add the wizard text Inno does not ship (the Start-menu shortcut task).
+Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl,delta-zh-CN.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl,delta-en.isl"
 
+; Shortcuts. In the wizard both are optional: checked on a first install, otherwise as the
+; shortcuts are now. Silent installs decide in [Code] (WantStartMenuIcon / WantDesktopIcon):
+; a first install makes both; an over-install or update keeps the ones there and makes no new
+; one, except that dev-like identities make the desktop shortcut again as a sign of the update.
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "startmenuicon"; Description: "{cm:CreateStartMenuIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -58,8 +67,8 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 Source: "{#SourceDir}\{#CliExe}"; DestDir: "{tmp}"; DestName: "delta-migrate-helper.exe"; Flags: dontcopy
 
 [Icons]
-Name: "{autoprograms}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; AppUserModelID: "{#Aumid}"
-Name: "{autodesktop}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; AppUserModelID: "{#Aumid}"; Tasks: desktopicon
+Name: "{autoprograms}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; AppUserModelID: "{#Aumid}"; Check: WantStartMenuIcon
+Name: "{autodesktop}\{#DisplayName}"; Filename: "{app}\{#DesktopExe}"; AppUserModelID: "{#Aumid}"; Check: WantDesktopIcon
 
 [Run]
 ; Silent updates restart the app with its previous arguments (hex-encoded JSON list).
@@ -69,6 +78,71 @@ Filename: "{app}\{#DesktopExe}"; Description: "{cm:LaunchProgram,{#DisplayName}}
 [Code]
 const
   QuitWaitMs = 35000;
+  UninstallKeyPrefix = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\';
+#if DesktopOnUpdate == "1"
+  RecreateDesktopIconOnUpdate = True;
+#else
+  RecreateDesktopIconOnUpdate = False;
+#endif
+
+var
+  { No uninstall entry of this AppId when Setup started: nothing of this identity is installed. }
+  FirstInstall: Boolean;
+  TaskDefaultsApplied: Boolean;
+
+function StartMenuIconPath: String;
+begin
+  Result := ExpandConstant('{autoprograms}\{#DisplayName}.lnk');
+end;
+
+function DesktopIconPath: String;
+begin
+  Result := ExpandConstant('{autodesktop}\{#DisplayName}.lnk');
+end;
+
+function WantStartMenuIcon: Boolean;
+begin
+  if WizardSilent then
+    Result := FirstInstall or FileExists(StartMenuIconPath)
+  else
+    Result := WizardIsTaskSelected('startmenuicon');
+end;
+
+function WantDesktopIcon: Boolean;
+begin
+  if WizardSilent then
+    Result := FirstInstall or RecreateDesktopIconOnUpdate or FileExists(DesktopIconPath)
+  else
+    Result := WizardIsTaskSelected('desktopicon');
+end;
+
+{ Over an installation the wizard's boxes start as the shortcuts are now, not as Inno remembers
+  the last choice: a shortcut the user deleted starts unchecked. }
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID <> wpSelectTasks) or FirstInstall or TaskDefaultsApplied then
+    exit;
+  TaskDefaultsApplied := True;
+  if FileExists(StartMenuIconPath) then
+    WizardSelectTasks('startmenuicon')
+  else
+    WizardSelectTasks('!startmenuicon');
+  if FileExists(DesktopIconPath) then
+    WizardSelectTasks('desktopicon')
+  else
+    WizardSelectTasks('!desktopicon');
+end;
+
+{ A box cleared in the wizard removes that shortcut of an earlier installation. }
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep <> ssPostInstall) or WizardSilent then
+    exit;
+  if not WizardIsTaskSelected('startmenuicon') and FileExists(StartMenuIconPath) then
+    DeleteFile(StartMenuIconPath);
+  if not WizardIsTaskSelected('desktopicon') and FileExists(DesktopIconPath) then
+    DeleteFile(DesktopIconPath);
+end;
 
 function ShouldRestart: Boolean;
 begin
@@ -97,6 +171,9 @@ var
   ResultCode: Integer;
 begin
   Result := True;
+  FirstInstall := not RegValueExists(HKCU,
+    UninstallKeyPrefix + '{' + '{#AppGuid}' + '}_is1', 'UninstallString');
+  Log(Format('DELTA: first install of {#Identity}: %d', [Ord(FirstInstall)]));
   if not CheckForMutexes('{#MutexName}') then
     exit;
   Log('DELTA: {#Identity} is running; requesting quit-for-update');

@@ -7,23 +7,41 @@ pub mod kline;
 pub mod paths;
 pub mod process;
 pub mod service;
+pub mod training;
 pub mod update;
 pub mod version;
 
 pub use ai::*;
 pub use credentials::*;
 pub use delta_core::{
-    parse_decimal_lossless, to_canonical_text, AdjustmentKind, BarRecord, CostLot,
-    DataQualityIssue, EconomicEventType, HoldingProjection, ManualValuation, PeriodBreakdownReport,
-    QualityStatus, ValuationReport,
+    parse_decimal_lossless, to_canonical_text, AdjustmentKind, AttachedBracket, BarPathStage,
+    BarRecord, BenchmarkStatus, BuyAndHoldBenchmark, ClosedTradeGroup, CorporateActionRecord,
+    CorporateActionType, CostLot, DataQualityIssue, EconomicEventType, EquityCurvePoint,
+    ExpectancySummary, FeeChargingTier, FeeCurrencyMode, FeeMarketCategory, FeeProfileVersion,
+    FeeRoundingMode, HoldingProjection, IndicatorPoint, MacdPoint, ManualValuation,
+    OpenTradeGroupSummary, OrderCostPreview, OrderGroupRole, OrderRejection, OrderSide,
+    OrderStatus, OrderSubmitKind, OrderSubmitRequest, PeriodBreakdownReport, PlanCompliance,
+    PlanExecutionStatus, PlanExecutionSummary, QualityStatus, RatioMetric, SampleLimitationItem,
+    SampleLimitations, SimBarSnapshot, SimCommand, SimError, SimEvent, SimFill, SimInstrumentSpec,
+    SimOrder, SimOrderType, SimRejectCode, SimState, SimStepBar, SlippageSpec, TimeInForce,
+    TrainingNoteRef, TrainingReport, TrainingReportInput, ValuationReport, WinRateStatus,
+    WinRateSummary, SIM_ENGINE_VERSION, SIM_REPORT_VERSION,
 };
 pub use delta_data::{
     set_ai_compaction_fault_injection_for_test, set_migration_fault_injection_for_test,
-    set_note_save_fault_injection_for_test, AccountBalanceSnapshotDto, AccountRecord,
-    AttachmentDto, AutosaveStatus, ChartContextDto, CommitImportReceipt, DatasetVersionRecord,
-    ImportPreview, InstrumentSearchHit, LibraryManifest, ModelConnectionRecord, NoteDto,
-    NoteEditorSession, NoteLinkDto, NoteTemplateKind, PortfolioRecord, ReconciliationIssueRecord,
-    StatementPreset, StructuredNoteFields, SyncCheckpointRecord, TradePlanDto, WatchlistGroupDto,
+    set_note_save_fault_injection_for_test, set_schema_5_migration_fault_injection_for_test,
+    set_sim_step_fault_injection_for_test, AccountBalanceSnapshotDto, AccountRecord, AttachmentDto,
+    AutosaveStatus, CandidatePoolQuery, CandidatePoolResult, ChartContextDto, CommitImportReceipt,
+    DatasetVersionRecord, DeleteTrainingRunPreview, FeeProfileVersionRecord, ImportPreview,
+    InstrumentSearchHit, LibraryManifest, ModelConnectionRecord, NoteDto, NoteEditorSession,
+    NoteLinkDto, NoteTemplateKind, PortfolioRecord, PostFinishRevealData,
+    ReconciliationIssueRecord, RedrawHistoryEntry, SimCheckpointReason, SimCheckpointRecord,
+    SimFillRecord, SimOrderRecord, SimOrderStatus, SimRunStatus, SimulationEventRecord,
+    SimulationExportBundle, SimulationRecoveryBundle, SimulationRecoveryOutcome,
+    SimulationRunRecord, SimulationStepCommit, StatementPreset, StructuredNoteFields,
+    SyncCheckpointRecord, TradePlanDto, TrainingBarPortQuery, TrainingCandidateSegment,
+    TrainingNoteRecord, TrainingSessionRecord, WatchlistGroupDto, BUILTIN_FEE_CRYPTO_RATE_ID,
+    BUILTIN_FEE_US_EQUITY_PER_SHARE_ID, BUILTIN_FEE_ZERO_COST_ID, SCHEMA_5_TABLES,
 };
 pub use delta_model::{
     ModelBudget, ModelCapabilities, ModelClient, ModelConnection, ModelError, ModelErrorCode,
@@ -37,6 +55,7 @@ pub use kline::*;
 pub use paths::*;
 pub use process::*;
 pub use service::*;
+pub use training::*;
 pub use version::*;
 
 #[cfg(test)]

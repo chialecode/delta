@@ -39,4 +39,4 @@
 ## 5. 2026-11-08 M2 开始时 A 核实（不改变 D-21）
 
 - `gpui-kit 0.9.0` 在本机 Rust 1.99.1 / MSVC 下构建通过，官方无头 Dock UI 测试不创建可见窗口（[spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)），`OSS-09` 的构建与静音风险部分已验证。
-- 0.9.0 **没有导出官方 `Card` 组件**（官方 story 的图表卡片是私有组合写法）。决定中的 `Card` 按该模式自建 `MetricCard`，其余 `DockArea` / `DockLayout` / `DockSkin` / `Panel` / `DataTable` 均直接使用官方实现（[M2 计划 S-15](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)）。
+- 0.9.0 **没有导出官方 `Card` 组件**（官方 story 的图表卡片是私有组合写法）。决定中的 `Card` 按该模式自建 `MetricCard`，其余 `DockArea` / `DockLayout` / `DockSkin` / `Panel` / `DataTable` 均直接使用官方实现（M2 计划 S-15（计划已归档于 Git 历史，结果见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)））。

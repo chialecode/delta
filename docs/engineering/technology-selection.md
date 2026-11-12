@@ -1,6 +1,6 @@
 # DELTA 技术栈与通用能力比较
 
-版本 1.3 · 2026-11-07 · Agent A 已按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 完成技术栈重评与金融数据底座开源调研；v1.2/v1.3 按用户 D-22 确立**全项目 100% 纯 Rust 实现**（彻底移除 Python 运行期依赖），并按 D-23（核心主力：**富途牛牛 + 欧易 OKX**；常用：老虎、IBKR、长桥、嘉信、东方财富、币安）及美国网络出口在线实测定案 M1 存储与纯 Rust 连接器（见 [M1 计划第 3 节](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)）。详细实证见 [2026-11-07 调研报告](../evidence/2026-11-07-stack-and-data-research.md)、[2026-11-07 上游快照](../evidence/2026-11-07-upstream-snapshot.json) 及历史对照 [2026-09-26 调研报告](../evidence/2026-09-26-technology-research.md)。
+版本 1.3 · 2026-11-07 · Agent A 已按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 完成技术栈重评与金融数据底座开源调研；v1.2/v1.3 按用户 D-22 确立**全项目 100% 纯 Rust 实现**（彻底移除 Python 运行期依赖），并按 D-23（核心主力：**富途牛牛 + 欧易 OKX**；常用：老虎、IBKR、长桥、嘉信、东方财富、币安）及美国网络出口在线实测定案 M1 存储与纯 Rust 连接器（见 M1 计划第 3 节（计划已归档于 Git 历史，结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)））。详细实证见 [2026-11-07 调研报告](../evidence/2026-11-07-stack-and-data-research.md)、[2026-11-07 上游快照](../evidence/2026-11-07-upstream-snapshot.json) 及历史对照 [2026-09-26 调研报告](../evidence/2026-09-26-technology-research.md)。
 
 ## 1. 核心结论：100% 纯 Rust，数据底座优先，M2 使用新版 GPUI
 
@@ -76,7 +76,7 @@
 
 ## 9. M2 桌面、模型客户端与打包选型（2026-11-08 A 核实）
 
-阶段定案见 [M2 计划第 3 节](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)，本机实测见 [gpui-kit spike](../evidence/2026-11-08-m2-gpui-kit-spike.md)。
+阶段定案见 M2 计划第 3 节（计划已归档于 Git 历史，结果见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)），本机实测见 [gpui-kit spike](../evidence/2026-11-08-m2-gpui-kit-spike.md)。
 
 | 能力 | 选定 | 官方来源与日期 | 适配与许可边界 |
 | --- | --- | --- | --- |
@@ -90,3 +90,12 @@
 B 的兼容版本锁定为 `gpui-kit =0.9.0` / `gpui-pre =0.3.11`、`reqwest 0.13.5` / `eventsource-stream 0.2.3`，具体运行证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)。M2 时本机缺少 NSIS/WiX 工具，S-23 落地为 `package-build` 便携 ZIP＋Rust 按用户安装器；M3 起改为 Inno Setup 安装程序（见 [M3 计划](../delivery/stage-plan.md) S-25～S-35），便携 ZIP 仅保留为测试与迁移诊断产物；两通道分别编译，build-info、源码指纹和文件哈希可复验。Windows 目标显式设置 `x86_64-pc-windows-msvc` 与 `+crt-static`，同时覆盖 `CARGO_ENCODED_RUSTFLAGS`，避免继承 flags 取消静态运行库；显式 target 让该设置只用于目标代码，不施加给 host proc-macro。构建和安装检查普通/延迟 PE 导入并保存 `binary-imports.json`，拒绝外部 MSVC 运行库依赖。当前机器的包内 CLI 安装/外部卸载与 H-03 干净机器验证分开记录，不能以开发机已有运行库或复制 source 二进制宣称包可交付。
 
 **M3 安装与更新落地（B，2026-11-09）**：Inno Setup 锁定 **7.1.1**，构建机用 `winget install --id JRSoftware.InnoSetup.7 --version 7.1.1 --scope user --silent --disable-interactivity` 安装到 `%LOCALAPPDATA%\Programs\Inno Setup 7`（官方安装包 SHA-256 `8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0`，`ISCC.exe` SHA-256 `e0f9f1dc32032650c6629f6dee41eb6d20ba140e4e3c07c25d8a24f9ba781644`）。`ISCC.exe` 不带可读的文件版本资源，因此版本由模板内 ISPP `Ver` 检查强制为 7.1.x，安装后的 HKCU 键记录 `Inno Setup: Setup Version`，门禁据此核对；`DELTA_ISCC` 可指定编译器路径，找不到时 `package-build` / `release-build` / `--installer` 明确失败，不回退 ZIP。Inno Setup License 允许含商用的使用与再分发，要求保留其版权与网址（安装器“关于”框原样保留），致谢写入 `THIRD-PARTY-NOTICES.txt`。Rust 侧锁定 `winresource 0.1.34`（MIT，图标与 `VERSIONINFO`）、`semver 1.0.28`（MIT OR Apache-2.0）、`ed25519-dalek 2.2.0`（BSD-3-Clause，依赖 `curve25519-dalek 4.1.3`）与 `getrandom 0.3.4`（MIT OR Apache-2.0，密钥生成），更新下载沿用已锁定的 `reqwest 0.13.5`。
+
+## 10. M4 训练模拟引擎选型（2026-11-12 A 核实）
+
+| 能力 | 选定 | 官方来源与日期 | 适配与许可边界 |
+| --- | --- | --- | --- |
+| 撮合与费用 | 自研 `delta-core::sim`（`rust_decimal`、纯函数 `step`，引擎版本 `m4-sim-1`）；未采用 NautilusTrader 与 barter-execution | crates.io：`nautilus-execution` / `nautilus-backtest` 0.68.0（2026-11-10）、`barter-execution` 0.9.0（2026-08-20） | Nautilus 为 LGPL-3.0-only，自有定点价格类型与整套事件框架，不依赖、不复制，只借鉴“K 线拆成价格路径逐段触发”的思路；barter 为 MIT，模拟交易所面向订单簿/即时成交，缺日线跳空、OCO 与按订单最低收费 |
+| 确定性随机数 | 用已有 `sha2` 的计数器模式＋拒绝采样，不新增依赖 | crates.io `rand_chacha` 0.10.0（2026-02-02，MIT OR Apache-2.0）作为对照 | 算法随引擎版本冻结，不受 `rand` 分布实现升级影响 |
+
+定案与失败分支见 [M4 计划](../delivery/stage-plan.md) S-36～S-47。

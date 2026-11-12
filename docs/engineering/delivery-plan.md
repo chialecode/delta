@@ -1,6 +1,6 @@
 # DELTA 实施路线与验收计划
 
-版本 1.4 · 2026-11-09 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 从文档治理基线重建项目，并按 D-31 在 M2 之后插入安装与更新阶段，整体演进为 **“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用 → M3 Windows 安装包与更新 → M4 K 线训练 → M5 策略研究 → M6 扩展”**。当前执行状态见 [当前状态](../delivery/status.md)，当前唯一实施计划见 [M3 阶段计划](../delivery/stage-plan.md)（M1 已于 2026-11-08 集成，证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)；M2 已于 2026-11-09 集成，证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）。
+版本 1.5 · 2026-11-12 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 从文档治理基线重建项目，并按 D-31 在 M2 之后插入安装与更新阶段，整体演进为 **“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用 → M3 Windows 安装包与更新 → M4 K 线训练 → M5 策略研究 → M6 扩展”**。当前执行状态见 [当前状态](../delivery/status.md)，当前唯一实施计划见 [M4 阶段计划](../delivery/stage-plan.md)（M3 已于 2026-11-12 集成并发布 v0.1.1，证据见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)；M1 已于 2026-11-08 集成，证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)；M2 已于 2026-11-09 集成，证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）。
 
 ## 1. 交付方式与阶段重排原则
 
@@ -34,7 +34,7 @@ M1 的实际验收限定为当前阶段计划与 [阶段报告](../evidence/2026
 4. 只读 AI 复盘：基于同一 `dataset_version` 与账本修订号回答个人数据问题，输出可点击打开的证据引用。
 5. 开放导出、删除预览、Windows 打包与干净机器验收：按用户安装（无需管理员），正式版 `%LOCALAPPDATA%\Programs\delta`、开发版 `delta-dev` 可同时安装，卸载保留数据（D-26，见 [安装与数据位置](../dev-rules/data-and-security.md#install-and-data-locations)）。
 
-## 4. M3：Windows 安装包、版本与自动更新（当前阶段）
+## 4. M3：Windows 安装包、版本与自动更新（已完成）
 
 M2 只交付了静态 CRT 便携 ZIP 与包内 `package-install`，没有标准安装程序、开始菜单与“应用和功能”入口、图标与版本资源、单实例与更新路径。M3 在不改变数据位置（D-26）的前提下补齐：
 
@@ -44,9 +44,11 @@ M2 只交付了静态 CRT 便携 ZIP 与包内 `package-install`，没有标准�
 4. 正式版在线更新：GitHub Releases 发布 `setup.exe`、`latest.json` 与 Ed25519 签名；客户端只接受 HTTPS、白名单主机、内置公钥验签且更高版本，安装前一致性备份；首个公开发布需用户单独授权。
 5. 门禁：测试身份 `delta-test` / `delta-dev-test` 与回环更新源完成静默安装、升级、迁移、更新与卸载演练，不触碰开发者本机的两个通道。
 
-## 5. M4：K 线训练
+## 5. M4：K 线训练（当前阶段）
 
 统一回放时钟（`visible_until`）→ 市价/限价/止损/OCO 订单与费用模型 → 逐步推进与资金预留 → 训练持久化与恢复 → 执行质量报告（含 MAE/MFE）→ 结束后 AI 复盘。
+
+M4 只覆盖日线、单标的、现货做多与整笔成交；撮合引擎（`delta-core::sim`）按多标的固定排序设计，供 M5 回测复用。部分成交、止损限价、做空/衍生品、多标的训练和分钟级回放登记在 `LOOP-06`。工作包、定案与用例见 [M4 阶段计划](../delivery/stage-plan.md)，B 实现与自检结论及未测边界见 [M4 阶段报告](../delivery/stage-report.md)。
 
 ## 6. M5：策略研究
 
@@ -97,9 +99,8 @@ M2 只交付了静态 CRT 便携 ZIP 与包内 `package-install`，没有标准�
 | AC-29 | M6 多周期实时、更多指标/节点扩展 | 逐新增能力补专门用例后验收；拒绝不支持能力；记录来源授权、延迟、类型与周期校验 |
 | AC-30 | 安装、升级、卸载与自动更新安全 | 两通道可并存；版本单调且三处一致；升级不丢数据、不强杀运行中应用；卸载保留数据；更新拒绝篡改、缺签名、跨通道、降级、非 HTTPS 与超限下载，安装前备份可恢复 |
 
-M1 必过 AC-01～07、AC-09（账本/导入/备份子集）、AC-11（行情与指标截断子集）、AC-16（后台同步/连接器作业超时、取消与容错隔离）、AC-17、AC-20（数据导出/清理子集）、AC-21、AC-22。M2 补齐完整桌面、笔记、AI 与打包验收（AC-08～10、AC-19～27）。M3 必过 AC-27（安装程序口径）与 AC-30，并回归 AC-09 的数据保全。
+M1 必过 AC-01～07、AC-09（账本/导入/备份子集）、AC-11（行情与指标截断子集）、AC-16（后台同步/连接器作业超时、取消与容错隔离）、AC-17、AC-20（数据导出/清理子集）、AC-21、AC-22。M2 补齐完整桌面、笔记、AI 与打包验收（AC-08～10、AC-19～27）。M3 必过 AC-27（安装程序口径）与 AC-30，并回归 AC-09 的数据保全。M4 必过 AC-11～AC-15、AC-18、AC-19，并回归 AC-09、AC-20、AC-23、AC-26 中受训练影响的部分。
 
 ## 10. 测试与门禁
 
-- 当前已存在：`python scripts/check_docs.py` 与 `git diff --check`。
-- M1 待 B 建立：`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`，覆盖文档门禁、`cargo fmt`、`cargo clippy`、纯 Rust 领域/数据源/日历/指标/账本/存储测试、可开关的 live 探针，以及 `delta-cli` 端到端数据同步与对账演练。
+- 已建立：`python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked`，以及统一阶段门禁 `cargo run -p delta-cli -- verify-stage --stage M1|M2|M3|M4`（口径与静默规则见 [质量门禁](../dev-rules/quality-gates.md)，当前阶段结果见 [M4 阶段报告](../delivery/stage-report.md)）。

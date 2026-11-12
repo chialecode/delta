@@ -4,15 +4,16 @@
 
 DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
-面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台与证据化 AI 属于 M2，训练与策略评估属于后续阶段。
+面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台与证据化 AI 属于 M2，安装与更新属于 M3，K 线训练属于 M4，策略评估属于后续阶段。
 
-## 当前阶段（2026-11-09 M3 B 实现与自检完成、待 A 审核）
+## 当前阶段（2026-11-12 M4 K 线训练，计划 v1.0）
 
-项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md)、[M3 阶段计划](docs/delivery/stage-plan.md) 与 [M2 阶段报告](docs/evidence/2026-11-09-m2-stage-report.md)。
+项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md)、[M4 阶段计划](docs/delivery/stage-plan.md) 与 [M3 阶段报告](docs/evidence/2026-11-12-m3-stage-report.md)。
 
 - **M1（已完成，PR #1 合并）**：已建立 `delta-core`、`delta-data`、`delta-app`、`delta-cli`。提供欧易 OKX / 币安公共现货日线与归档、Yahoo / 东方财富美股日线核验、Frankfurter 法币及 Coinbase / Bitstamp / Kraken 稳定币汇率、`XNYS` / `XNAS` / `CRYPTO_24_7` 日历；账本支持富途、OKX、币安、IBKR Flex 与通用模板、资金流水、FIFO、事件 FX 固定、不可变数据版本、报告、导出和备份恢复。实际验证与未完成边界见 [M1 阶段报告](docs/evidence/2026-11-08-m1-stage-report.md)。
 - **M2（已完成，PR #2 合并）**：按 [D-21](docs/decisions/confirmed-decisions.md) 与 [ADR-0003](docs/decisions/0003-first-round-stack.md)，在 M1 数据底座之上新增 `delta-model` 与 `delta-desktop`（二进制 `delta`），采用最新 **GPUI Kit（`=0.9.0`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` 面板体系**及自建 `MetricCard`、`KlineViewport` / `KlineChartView`、`StatusBanner` 构建六页工作台，包含实际输入/后台操作、范围与期间隔离、`schema 4` 笔记/附件/FTS5 搜索、期间损益分解与现金换汇（`m2-ledger-1`）、双协议只读 AI 复盘和真实两通道静态 CRT 包。M2 全门禁与 M1 回归通过；实际证据和未测范围见阶段报告，产品验收未完成。
-- **M3（当前，计划 v1.0，B 实现与自检完成、待 A 审核）**：按 [D-31](docs/decisions/confirmed-decisions.md) 补齐 Windows 安装体验：正式版 `delta` 与开发版 `delta-dev` 的 Inno Setup 7.1.x 按用户安装程序（无需管理员、开始菜单、“应用和功能”卸载、可并存、升级与卸载保留数据）、Δ 图标与版本资源、单实例与本通道控制管道、开发版 `install-dev` 本机更新，以及正式版基于 GitHub Releases 与 Ed25519 签名的自动更新（检查、断点续传、验签、拒绝降级、更新前一致性备份、静默安装后重启）。门禁只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；首个正式版 `v0.1.1` 尚未发布（`ACT-10`、`ACT-11`）。安装包未做 Authenticode 代码签名，见下文“安装”。
+- **M3（已完成，PR #3 合并；首个正式版 v0.1.1 已发布）**：按 [D-31](docs/decisions/confirmed-decisions.md) 补齐 Windows 安装体验：正式版 `delta` 与开发版 `delta-dev` 的 Inno Setup 7.1.x 按用户安装程序（无需管理员、开始菜单、“应用和功能”卸载、可并存、升级与卸载保留数据）、应用图标与版本资源、单实例与本通道控制管道、开发版 `install-dev` 本机更新，以及正式版基于 GitHub Releases 与 Ed25519 签名的自动更新（检查、断点续传、验签、拒绝降级、更新前一致性备份、静默安装后重启）。门禁只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；首个正式版 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 已于 2026-11-12 发布，发布资产用内置公钥验证通过。安装包未做 Authenticode 代码签名，见下文“安装”。
+- **M4（当前，计划 v1.0，待 B 实现）**：K 线训练——随机历史片段与隐藏名称/日期、只经回放时钟取数、现货模拟委托（市价/限价/止损/OCO）与可配置费用、每步原子保存与确定性重放、训练报告（含 MAE/MFE 与计划执行率）以及结束后的 AI 复盘；模拟数据不进入真实账本。
 
 ## 本地运行
 
@@ -37,7 +38,7 @@ cargo run -p delta-cli -- explain --as-of 2020-09-02
 
 ## 安装（Windows 10/11 x64）
 
-正式版下载 `delta-setup-<版本>-x64.exe`，开发版用 `delta-dev-setup-<版本>-x64.exe`；双击即可为当前用户安装，不需要管理员权限。正式版装到 `%LOCALAPPDATA%\Programs\delta`，开发版装到 `%LOCALAPPDATA%\Programs\delta-dev`，两者可同时安装，资料库分别位于 `%LOCALAPPDATA%\delta` 与 `%LOCALAPPDATA%\delta-dev`。安装向导默认简体中文，开始菜单快捷方式必建，桌面快捷方式默认不勾选。升级时若应用正在运行，安装程序先请它保存并退出；应用忙于同步、导入或 AI 时安装中止且不做任何改动，从不强行结束进程。在“设置 → 应用 → 已安装的应用”卸载，只删除程序文件，资料库、笔记、导出与备份都保留。
+正式版下载 `delta-setup-<版本>-x64.exe`，开发版用 `delta-dev-setup-<版本>-x64.exe`；双击即可为当前用户安装，不需要管理员权限。正式版装到 `%LOCALAPPDATA%\Programs\delta`，开发版装到 `%LOCALAPPDATA%\Programs\delta-dev`，两者可同时安装，资料库分别位于 `%LOCALAPPDATA%\delta` 与 `%LOCALAPPDATA%\delta-dev`。安装向导默认简体中文，快捷方式：静默安装（无人参与）首次安装时创建开始菜单与桌面快捷方式；覆盖安装或自动更新时保留已有的快捷方式、不新建（开发版例外：每次都重新创建桌面快捷方式，提示有新版本，但不新建开始菜单快捷方式）；交互式安装时两者都在向导里可选（首次安装默认都勾选，覆盖安装时按现有快捷方式勾选）。升级时若应用正在运行，安装程序先请它保存并退出；应用忙于同步、导入或 AI 时安装中止且不做任何改动，从不强行结束进程。在“设置 → 应用 → 已安装的应用”卸载，只删除程序文件，资料库、笔记、导出与备份都保留。
 
 **SmartScreen 提示**：安装包没有 Authenticode 代码签名（`Q-04`），Windows 可能显示“Windows 已保护你的电脑 / 未知发布者”。只在文件来自 DELTA 官方 GitHub Release 页面时，点“更多信息 → 仍要运行”。正式版的在线更新另用内置公钥校验 Ed25519 签名，签名、版本或通道不符的更新包一律不安装；这一点与 SmartScreen 提示无关。
 

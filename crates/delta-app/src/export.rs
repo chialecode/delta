@@ -240,6 +240,73 @@ impl AppService {
                 }
             }
 
+            // Export open-format M4 simulation & training tables (`M4-W03`, `M4-A-11`) when runs or user fee profiles exist
+            let sim_bundle = self
+                .store
+                .export_simulation_tables_snapshot()
+                .map_err(|e| fail(&e))?;
+            if !sim_bundle.simulation_runs.is_empty()
+                || sim_bundle
+                    .fee_profile_versions
+                    .iter()
+                    .any(|fp| !fp.is_builtin)
+            {
+                let sim_dir = staging.join("simulation");
+                fs::create_dir_all(&sim_dir).map_err(|e| fail(&e))?;
+                let bundle_path = sim_dir.join("simulation_bundle.json");
+                fs::write(
+                    &bundle_path,
+                    serde_json::to_vec_pretty(&sim_bundle).map_err(|e| fail(&e))?,
+                )
+                .map_err(|e| fail(&e))?;
+                files.insert(
+                    "simulation/simulation_bundle.json".into(),
+                    sha256_file(&bundle_path).map_err(|e| fail(&e))?,
+                );
+
+                for (rel_name, sql) in [
+                    (
+                        "simulation/fee_profile_versions.csv",
+                        "SELECT * FROM fee_profile_version ORDER BY profile_key, version_num, id",
+                    ),
+                    (
+                        "simulation/simulation_runs.csv",
+                        "SELECT * FROM simulation_run ORDER BY created_at, run_id",
+                    ),
+                    (
+                        "simulation/training_sessions.csv",
+                        "SELECT * FROM training_session ORDER BY run_id",
+                    ),
+                    (
+                        "simulation/sim_orders.csv",
+                        "SELECT * FROM sim_order ORDER BY run_id, order_seq, order_id",
+                    ),
+                    (
+                        "simulation/sim_fills.csv",
+                        "SELECT * FROM sim_fill ORDER BY run_id, bar_close_at, fill_id",
+                    ),
+                    (
+                        "simulation/simulation_events.csv",
+                        "SELECT * FROM simulation_event ORDER BY run_id, seq",
+                    ),
+                    (
+                        "simulation/sim_checkpoints.csv",
+                        "SELECT * FROM sim_checkpoint ORDER BY run_id, seq",
+                    ),
+                    (
+                        "simulation/training_notes.csv",
+                        "SELECT * FROM training_note ORDER BY run_id, created_at, note_id",
+                    ),
+                ] {
+                    let csv_path = staging.join(rel_name);
+                    export_query_csv(&snapshot, sql, &csv_path)?;
+                    files.insert(
+                        rel_name.into(),
+                        sha256_file(&csv_path).map_err(|e| fail(&e))?,
+                    );
+                }
+            }
+
             snapshot.commit().map_err(|e| fail(&e))?;
             let manifest = ExportManifestDto {
                 exported_at: Utc::now().to_rfc3339(),

@@ -38,13 +38,14 @@ impl Locale {
     }
 }
 
-/// Primary left-sidebar navigation keys allowed in M2 (`S-15`, `3.1`).
-/// Undelivered M3 training and M4 strategy entries are intentionally excluded.
+/// Primary left-sidebar navigation keys allowed in M4 (`S-15`, `S-46`, `3.1`).
+/// Undelivered M5 strategy entries remain intentionally excluded.
 pub const PRIMARY_NAV_KEYS: &[&str] = &[
     "nav.overview",
     "nav.market",
     "nav.assets",
     "nav.journal",
+    "nav.training",
     "nav.data_center",
     "nav.settings",
 ];
@@ -52,7 +53,7 @@ pub const PRIMARY_NAV_KEYS: &[&str] = &[
 /// Secondary dock panel keys (right AI review assistant and bottom background tasks).
 pub const DOCK_PANEL_NAV_KEYS: &[&str] = &["nav.ai_panel", "nav.tasks"];
 
-/// Returns `true` only if `key` belongs to the delivered M2 navigation scope (`S-15`).
+/// Returns `true` only if `key` belongs to the delivered navigation scope (`S-15`, `S-46`).
 pub fn is_in_scope_nav_key(key: &str) -> bool {
     PRIMARY_NAV_KEYS.contains(&key) || DOCK_PANEL_NAV_KEYS.contains(&key)
 }
@@ -407,6 +408,77 @@ const FORM_COPY: &[(&str, &str, &str)] = &[
     ("ai.saved_reports", "已保存的复盘", "Saved reviews"),
     ("ai.verified", "已核验", "Verified"),
     ("ai.needs_review", "需复核", "Needs review"),
+    (
+        "form.trn_instrument",
+        "指定标的 ID（留空按类别随机抽样）",
+        "Explicit instrument ID (blank for pool draw)",
+    ),
+    (
+        "form.trn_start_date",
+        "抽样起始日期（可选 YYYY-MM-DD）",
+        "Optional start date (YYYY-MM-DD)",
+    ),
+    (
+        "form.trn_end_date",
+        "抽样截止日期（可选 YYYY-MM-DD）",
+        "Optional end date (YYYY-MM-DD)",
+    ),
+    (
+        "form.trn_history_bars",
+        "展示历史根数",
+        "Visible history bars",
+    ),
+    ("form.trn_training_bars", "训练步数", "Training steps"),
+    (
+        "form.trn_reveal_bars",
+        "结束揭示根数",
+        "Post-finish reveal bars",
+    ),
+    (
+        "form.trn_warmup_bars",
+        "指标预热根数",
+        "Indicator warmup bars",
+    ),
+    (
+        "form.trn_seed",
+        "随机种子（留空自动生成）",
+        "Random seed (optional)",
+    ),
+    (
+        "form.trn_initial_cash",
+        "初始模拟资金",
+        "Initial simulated cash",
+    ),
+    ("form.trn_fee_key", "自定义费率标识", "Custom fee key"),
+    ("form.trn_fee_name", "自定义费率名称", "Custom fee name"),
+    ("form.trn_fee_rate", "按成交额费率", "Notional fee rate"),
+    ("form.trn_fee_min", "单笔最低费用", "Min fee per order"),
+    (
+        "form.trn_fee_slippage_bps",
+        "滑点假设 (bps)",
+        "Slippage (bps)",
+    ),
+    ("form.trn_order_qty", "委托数量", "Order quantity"),
+    ("form.trn_order_limit", "限价", "Limit price"),
+    ("form.trn_order_stop", "止损触发价", "Stop trigger price"),
+    ("form.trn_order_tp", "止盈限价", "Take-profit limit"),
+    ("form.trn_order_sl", "止损触发价 (SL)", "Stop-loss stop"),
+    (
+        "form.trn_note_rationale",
+        "决策依据与计划偏离说明",
+        "Decision rationale & plan note",
+    ),
+    ("form.trn_note_emotion", "情绪标签", "Emotion tag"),
+    (
+        "form.trn_self_eval_summary",
+        "自主复盘总结（与 AI 评价独立保存）",
+        "Autonomous self-evaluation summary",
+    ),
+    (
+        "form.trn_ai_question",
+        "模拟训练 AI 复盘问题",
+        "Simulated training AI review prompt",
+    ),
 ];
 
 impl I18nCatalog {
@@ -442,11 +514,12 @@ impl I18nCatalog {
 
     fn zh_cn(key: &str) -> &'static str {
         match key {
-            // Navigation (S-15: only delivered M2 capabilities; no training or strategy)
+            // Navigation (S-15 / S-46: delivered capabilities; strategy remains excluded until M5)
             "nav.overview" => "总览",
             "nav.market" => "市场",
             "nav.assets" => "资产",
             "nav.journal" => "日志",
+            "nav.training" => "训练",
             "nav.data_center" => "数据中心",
             "nav.settings" => "设置",
             "nav.ai_panel" => "AI 复盘助手",
@@ -570,6 +643,7 @@ impl I18nCatalog {
             "nav.market" => "Market",
             "nav.assets" => "Assets",
             "nav.journal" => "Journal",
+            "nav.training" => "Training",
             "nav.data_center" => "Data Center",
             "nav.settings" => "Settings",
             "nav.ai_panel" => "AI Review Assistant",
@@ -857,13 +931,13 @@ mod tests {
         assert_eq!(tr("quality.partial"), "已知部分估值 (Partial)");
         assert_eq!(tr("autosave.failed"), "保存失败（可重试）");
 
-        // Scope honesty (S-15 / 3.1): no training or strategy entry in M2 navigation
+        // Scope honesty (S-15 / S-46): M4 delivers training; M5 strategy remains excluded
         for &key in PRIMARY_NAV_KEYS.iter().chain(DOCK_PANEL_NAV_KEYS.iter()) {
             assert!(is_in_scope_nav_key(key));
             assert_ne!(I18nCatalog::t(Locale::ZhCn, key), "未定义文案");
             assert_ne!(I18nCatalog::t(Locale::EnUs, key), "Undefined Copy");
         }
-        assert!(!is_in_scope_nav_key("nav.training"));
+        assert!(is_in_scope_nav_key("nav.training"));
         assert!(!is_in_scope_nav_key("nav.strategy"));
     }
 

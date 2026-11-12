@@ -104,6 +104,15 @@ impl FormFields {
                 .aria_label(I18nCatalog::tr(key)),
         )
     }
+
+    pub(crate) fn is_any_focused(&self, keys: &[&str], window: &Window, cx: &App) -> bool {
+        use gpui_kit::Focusable as _;
+        keys.iter().any(|k| {
+            self.0
+                .get(k)
+                .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
+        })
+    }
 }
 
 pub(crate) const CENTER_FIELDS: &[(&str, &str)] = &[
@@ -167,6 +176,32 @@ pub(crate) const CENTER_FIELDS: &[(&str, &str)] = &[
     ("form.restore_backup", ""),
     ("form.restore_target", ""),
     ("form.delete_confirm", ""),
+    ("form.trn_instrument", ""),
+    ("form.trn_start_date", ""),
+    ("form.trn_end_date", ""),
+    ("form.trn_history_bars", "120"),
+    ("form.trn_training_bars", "250"),
+    ("form.trn_reveal_bars", "60"),
+    ("form.trn_warmup_bars", "200"),
+    ("form.trn_seed", ""),
+    ("form.trn_initial_cash", "100000"),
+    ("form.trn_fee_key", "custom_fee"),
+    ("form.trn_fee_name", "自定义场景费率"),
+    ("form.trn_fee_rate", "0.001"),
+    ("form.trn_fee_min", "1"),
+    ("form.trn_fee_slippage_bps", "5"),
+    ("form.trn_order_qty", "10"),
+    ("form.trn_order_limit", ""),
+    ("form.trn_order_stop", ""),
+    ("form.trn_order_tp", ""),
+    ("form.trn_order_sl", ""),
+    ("form.trn_note_rationale", ""),
+    ("form.trn_note_emotion", "专注"),
+    ("form.trn_self_eval_summary", ""),
+    (
+        "form.trn_ai_question",
+        "请基于本次模拟训练记录客观复盘执行纪律与盈亏归因",
+    ),
 ];
 
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {

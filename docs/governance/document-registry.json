@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M3",
+  "currentStage": "M4",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -80,8 +80,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "用户决定、配置、人工检查和授权的唯一入口",
-      "reviewed": "2026-11-08",
-      "basis": "M2 H-01..03: exact native controls, evidence-bound packages, IME/scaling, clean machine without VC redistributable and external CLI uninstall"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0 B delivery: H-05 status pending (M4) with step-by-step training hands-on verification instructions"
     },
     {
       "path": "docs/README.md",
@@ -143,28 +143,37 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "集中事项台账",
-      "reviewed": "2026-11-08",
-      "basis": "M2 v1.0 final evidence resolves OSS-08/09/11; real endpoints and deferred extensions retain their existing ownership and triggers"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0 B delivery: S-41 Futu/OKX fee verification recorded in LOOP-06, TEST-02 resolved via lock_probe ready handshake, LOOP-01 updated"
     },
     {
       "path": "docs/delivery/stage-plan.md",
       "kind": "plan",
       "status": "active",
       "owner": "Agent A",
-      "scope": "M3 v1.0 Windows 安装包、版本与自动更新实施计划（delta / delta-dev，Inno Setup 按用户安装）",
-      "reviewed": "2026-11-09",
-      "basis": "M3 v1.0: A plan after M2 merge; installer/update research dated 2026-11-09",
-      "retireAfter": "M3"
+      "scope": "M4 v1.0 K 线训练实施计划（回放时钟、模拟委托与费用、训练持久化/重放、训练报告、结束后 AI 复盘）",
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: A plan after M3 merge and v0.1.1 release; simulation/backtest open-source check dated 2026-11-12",
+      "retireAfter": "M4"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
       "owner": "Agent B / Agent A",
-      "scope": "M3 v1.0 阶段验证与交付报告（安装包、版本、单实例、install-dev、签名更新与回环演练）",
-      "reviewed": "2026-11-09",
-      "basis": "M3 v1.0 B 实现与自检：verify-stage --stage M3 --installer --ui-smoke 与 M1/M2 回归实跑结果",
-      "retireAfter": "M3"
+      "scope": "M4 v1.0 阶段验证与交付报告（回放时钟、模拟委托与费用、持久化/确定性重放、训练报告、结束后 AI 复盘）",
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0 B 实现与自检：verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench 与 M1/M2/M3 同指纹回归实跑结果",
+      "retireAfter": "M4"
+    },
+    {
+      "path": "docs/evidence/2026-11-12-m3-stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B / Agent A",
+      "scope": "M3 v1.0 阶段验证与交付报告（已经 PR #3 集成并发布 v0.1.1；M4 开始时自 docs/delivery/stage-report.md 迁入证据）",
+      "reviewed": "2026-11-12",
+      "basis": "M3 v1.0 B 实现与 A 审核，最终源码指纹 77dd43c8；ACT-12 合并为 main 6f0aff3，ACT-11 发布 v0.1.1（main 3bb97e6）"
     },
     {
       "path": "docs/evidence/2026-11-09-m2-stage-report.md",
@@ -190,8 +199,8 @@
       "status": "active",
       "owner": "Agent A / Agent B",
       "scope": "当前执行状态",
-      "reviewed": "2026-11-08",
-      "basis": "M2 v1.0 ready-for-review; F-01..07 fixed, final M2/M1 source fingerprint and B/A/product judgments kept separate"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0 B implemented and self-checked (pending A review); M1..M4 gates bound to final source fingerprint"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -208,8 +217,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA AI 分析设计",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～09、D-20；只读工具、证据引用与权限隔离设计（M2～M4 阶段映射）"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: ScopeTarget::TrainingRun finished-only gate, 5 training.* read-only tools, SIM-ORD/SIM-FILL/TRN-NOTE citation checks and separate self-evaluation"
     },
     {
       "path": "docs/design/context-state-management.md",
@@ -226,8 +235,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 数据模型设计",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review F-04/05: library credential identity, owner/review_date, optimistic revision, bounded search and frozen evidence"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: Schema 5 pre-migration backup, 8 isolated simulation/training tables, immutability/monotonicity triggers and simulation export/backup coverage"
     },
     {
       "path": "docs/design/financial-engine.md",
@@ -235,8 +244,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 金融计算与模拟规则",
-      "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: m4-sim-1 / m4-report-1 pure Decimal matching, O->L->H->C path, reservations, composable fees, PIT split adjustment and training report"
     },
     {
       "path": "docs/design/integration-contracts.md",
@@ -244,8 +253,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "统一能力与适配接口",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review F-01/04/05: frozen zero/empty scopes, journal revision, consistent snapshot, tool projections and worker_finished semantics"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: synchronous AppHost training contracts shared by UI/CLI, SQL-truncated TrainingDataPort and post-finish TrainingRun AI gateway"
     },
     {
       "path": "docs/design/interaction-and-workflows.md",
@@ -253,8 +262,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 交互与工作流设计",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review F-01/05: actual six-page controls, background queue, save/scope transition, input preservation, marker and AI scope flows"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: 7th 训练 workspace page, 模拟训练 badge, N/→ vs Ctrl+Enter shortcut separation and post-finish report -> explicit 揭示 -> AI review"
     },
     {
       "path": "docs/design/rust-model-client.md",
@@ -271,8 +280,8 @@
       "status": "draft",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 系统架构设计",
-      "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: delta-core::sim / sim_report, delta-data Schema 5 truncated port, delta-app training host/AI scope and desktop/CLI parity"
     },
     {
       "path": "docs/dev-rules/architecture-and-open-source.md",
@@ -334,8 +343,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "验证与交付门禁",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review F-02/07: real native samples, explicit not-run semantics, resource cleanup and packaged CLI/static-CRT verification"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: verify-stage --stage M4 (--ui-smoke --ui-bench) established with same-fingerprint M1/M2/M3 regressions and M4-W01..W07 completion table"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
@@ -343,8 +352,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "仓库地图",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review: controller/forms/canvas/native verification, real packaging and license collection module ownership"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0: sim/sim_report, m4_schema, training, training_ui, training_cmd and verify_m4 module ownership; Packager.toml removed"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
@@ -352,8 +361,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 实施路线与验收计划",
-      "reviewed": "2026-11-08",
-      "basis": "M2 AC-26/27: actual raw percentiles and measurement boundaries; static CRT, PE imports and packaged CLI installation/uninstallation"
+      "reviewed": "2026-11-12",
+      "basis": "M4 v1.0 B implemented: M4 K-line training gate and stage-report linkage"
     },
     {
       "path": "docs/engineering/technology-selection.md",

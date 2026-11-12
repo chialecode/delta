@@ -128,6 +128,17 @@ fn numeric_version(version: &semver::Version) -> String {
     format!("{}.{}.{}.0", version.major, version.minor, version.patch)
 }
 
+/// Icon of an identity's setup and uninstall entry, relative to the repository root: the
+/// development identities show `icon-dev.ico` (the release icon with a "DEV" badge), the same file
+/// the `delta-desktop` and `delta-cli` build scripts embed for them.
+fn identity_icon(identity: InstallIdentity) -> &'static str {
+    if identity.is_dev_like() {
+        "crates/delta-desktop/assets/icon-dev.ico"
+    } else {
+        "crates/delta-desktop/assets/icon.ico"
+    }
+}
+
 /// Shared, once-per-invocation preparation: workspace checks, license inventory, compiler.
 pub(crate) struct PackagingContext {
     root: PathBuf,
@@ -339,14 +350,21 @@ impl PackagingContext {
             ("DesktopExe", identity.desktop_exe().to_string()),
             ("CliExe", identity.cli_exe().to_string()),
             ("MutexName", identity.mutex_name()),
+            // Dev-like identities put the desktop shortcut back on every silent over-install,
+            // a visible sign that a new local build was installed.
+            (
+                "DesktopOnUpdate",
+                if identity.is_dev_like() { "1" } else { "0" }.to_string(),
+            ),
             ("Aumid", identity.app_user_model_id().to_string()),
             ("SourceDir", stage.display().to_string()),
             ("OutputDir", target_dir.display().to_string()),
             ("OutputBase", base),
+            // The setup and the uninstall entry show the same icon as the installed binaries.
             (
                 "IconFile",
                 self.root
-                    .join("crates/delta-desktop/assets/icon.ico")
+                    .join(identity_icon(identity))
                     .display()
                     .to_string(),
             ),
@@ -1287,6 +1305,37 @@ fn remove_empty_directories(directory: &Path) -> Result<(), ErrorEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_identities_carry_the_dev_icon_everywhere() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for identity in InstallIdentity::ALL {
+            let icon = identity_icon(identity);
+            assert_eq!(
+                icon.ends_with("icon-dev.ico"),
+                identity.is_dev_like(),
+                "{}",
+                identity.name()
+            );
+            // The build scripts choose by name: every dev-like identity, and only those,
+            // starts with `delta-dev`.
+            assert_eq!(
+                identity.name().starts_with("delta-dev"),
+                identity.is_dev_like()
+            );
+            let raw = fs::read(root.join(icon)).unwrap();
+            assert_eq!(&raw[..4], &[0, 0, 1, 0], "{icon} is not an .ico");
+        }
+        for script in ["crates/delta-desktop/build.rs", "crates/delta-cli/build.rs"] {
+            let text = fs::read_to_string(root.join(script)).unwrap();
+            assert!(
+                text.contains("identity.starts_with(\"delta-dev\")"),
+                "{script}"
+            );
+            assert!(text.contains("assets/icon-dev.ico\""), "{script}");
+            assert!(text.contains(".set_icon(icon)"), "{script}");
+        }
+    }
 
     #[test]
     fn m3_a05_portable_migration_keeps_modified_and_unknown_files() {
