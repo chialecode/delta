@@ -435,6 +435,7 @@ pub struct WorkbenchSharedState {
     pub saved_ai_reports: Vec<AiReviewReport>,
     pub deletion_preview: Option<delta_app::DeleteLibraryPreviewDto>,
     pub library_deleted: bool,
+    pub training: crate::training_ui::TrainingUiState,
 }
 
 impl WorkbenchSharedState {
@@ -520,6 +521,7 @@ impl WorkbenchSharedState {
             saved_ai_reports: Vec::new(),
             deletion_preview: None,
             library_deleted: false,
+            training: crate::training_ui::TrainingUiState::default(),
         };
         Ok(state)
     }
@@ -540,6 +542,7 @@ impl WorkbenchSharedState {
         self.held_import_rows = self.host.list_held_import_rows()?;
         self.latest_dataset_version = self.host.execute(|svc| Ok(svc.latest_dataset_version()))?;
         self.model_connection_settings = self.runtime.model_connection_settings()?;
+        crate::training_ui::refresh_training_lists(self)?;
         let mut requested = self.scope.clone();
         requested.versions_frozen = false;
         requested.dataset_version = 0;
@@ -966,6 +969,8 @@ impl WorkbenchSharedState {
 
 pub struct CenterWorkspacePanel {
     focus_handle: FocusHandle,
+    pub(crate) training_workspace_focus: FocusHandle,
+    pub(crate) training_ticket_focus: FocusHandle,
     pub(crate) state: Arc<Mutex<WorkbenchSharedState>>,
     pub(crate) controller: Entity<WorkbenchController>,
     pub(crate) fields: FormFields,
@@ -978,6 +983,8 @@ pub struct CenterWorkspacePanel {
     flows_table: Entity<TableState<TransactionsTableDelegate>>,
     plot_bounds: crate::chart_canvas::PlotBounds,
     chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
+    pub(crate) training_plot_bounds: crate::chart_canvas::PlotBounds,
+    pub(crate) training_chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
 }
 
 impl CenterWorkspacePanel {
@@ -1070,6 +1077,8 @@ impl CenterWorkspacePanel {
         }
         Self {
             focus_handle: cx.focus_handle(),
+            training_workspace_focus: cx.focus_handle(),
+            training_ticket_focus: cx.focus_handle(),
             state,
             controller,
             fields,
@@ -1082,11 +1091,21 @@ impl CenterWorkspacePanel {
             flows_table,
             plot_bounds: Default::default(),
             chart_drag: None,
+            training_plot_bounds: Default::default(),
+            training_chart_drag: None,
         }
     }
 
     pub fn flows_table(&self) -> &Entity<TableState<TransactionsTableDelegate>> {
         &self.flows_table
+    }
+
+    pub fn training_workspace_focus(&self) -> &FocusHandle {
+        &self.training_workspace_focus
+    }
+
+    pub fn training_ticket_focus(&self) -> &FocusHandle {
+        &self.training_ticket_focus
     }
 
     fn chart_pointer(
@@ -1446,6 +1465,7 @@ impl Render for CenterWorkspacePanel {
             guard.scope.as_of_date,
             ccy
         );
+        let training_state_opt = (active_nav == "nav.training").then(|| guard.clone());
 
         drop(guard);
 
@@ -1612,41 +1632,44 @@ impl Render for CenterWorkspacePanel {
             .aria_label(format!("ActiveView:{active_nav}"))
             .size_full()
             .bg(cx.theme().background)
-            .when(!banners.is_empty(), |root| {
-                root.child(
-                    v_flex()
-                        .p_2()
-                        .gap_2()
-                        .children(banners.iter().map(|banner| {
-                            let state = banner.state.clone();
-                            banner.render_banner_with_action(
-                                cx,
-                                cx.listener(move |panel, _, window, cx| match &state {
-                                    WorkbenchSystemState::Syncing { .. } => {
-                                        panel.controller.update(cx, |ctl, cx| ctl.cancel_sync(cx))
-                                    }
-                                    WorkbenchSystemState::SaveFailed { .. } => {
-                                        panel.save_note(window, cx)
-                                    }
-                                    WorkbenchSystemState::StaleReport { .. } => {
-                                        panel.dispatch(Ok(UiAction::Refresh), window, cx)
-                                    }
-                                    WorkbenchSystemState::EmptyLibrary
-                                    | WorkbenchSystemState::PartialValuation { .. }
-                                    | WorkbenchSystemState::Offline { .. }
-                                    | WorkbenchSystemState::Cancelled { .. } => {
-                                        panel.controller.update(cx, |ctl, cx| {
-                                            ctl.navigate("nav.data_center", window, cx)
-                                        })
-                                    }
-                                    _ => panel.controller.update(cx, |ctl, cx| {
-                                        ctl.navigate("nav.settings", window, cx)
+            .when(
+                !banners.is_empty() && active_nav != "nav.training",
+                |root| {
+                    root.child(
+                        v_flex()
+                            .p_2()
+                            .gap_2()
+                            .children(banners.iter().map(|banner| {
+                                let state = banner.state.clone();
+                                banner.render_banner_with_action(
+                                    cx,
+                                    cx.listener(move |panel, _, window, cx| match &state {
+                                        WorkbenchSystemState::Syncing { .. } => panel
+                                            .controller
+                                            .update(cx, |ctl, cx| ctl.cancel_sync(cx)),
+                                        WorkbenchSystemState::SaveFailed { .. } => {
+                                            panel.save_note(window, cx)
+                                        }
+                                        WorkbenchSystemState::StaleReport { .. } => {
+                                            panel.dispatch(Ok(UiAction::Refresh), window, cx)
+                                        }
+                                        WorkbenchSystemState::EmptyLibrary
+                                        | WorkbenchSystemState::PartialValuation { .. }
+                                        | WorkbenchSystemState::Offline { .. }
+                                        | WorkbenchSystemState::Cancelled { .. } => {
+                                            panel.controller.update(cx, |ctl, cx| {
+                                                ctl.navigate("nav.data_center", window, cx)
+                                            })
+                                        }
+                                        _ => panel.controller.update(cx, |ctl, cx| {
+                                            ctl.navigate("nav.settings", window, cx)
+                                        }),
                                     }),
-                                }),
-                            )
-                        })),
-                )
-            })
+                                )
+                            })),
+                    )
+                },
+            )
             .when(active_nav == "nav.market", |root| {
                 root.child(
                     h_flex()
@@ -1799,6 +1822,9 @@ impl Render for CenterWorkspacePanel {
                         })
                         .when(active_nav == "nav.settings", |root| {
                             root.child(self.render_settings(cx))
+                        })
+                        .when_some(training_state_opt, |root, trn_state| {
+                            root.child(self.render_training_page(&trn_state, cx))
                         })
                         .when(active_nav == "nav.assets", |root| {
                             root.child(
@@ -2336,11 +2362,12 @@ pub struct DeltaWorkbench {
     dock_area: Entity<DockArea>,
     _dock_skin: Rc<DockSkin>,
     center_panel: Entity<CenterWorkspacePanel>,
-    _right_ai_panel: Entity<RightAiReviewPanel>,
+    right_ai_panel: Entity<RightAiReviewPanel>,
     _bottom_task_panel: Entity<BottomTaskStatusPanel>,
     pub(crate) controller: Entity<WorkbenchController>,
     scope_fields: FormFields,
     last_scope_descriptor: String,
+    last_training_workspace_run: Option<String>,
     _subscription: Subscription,
     _poll_task: Task<()>,
     pending_exit: Option<crate::lifecycle::PendingExit>,
@@ -2422,6 +2449,7 @@ impl DeltaWorkbench {
                     ScopeTarget::AllAccounts => "all".into(),
                     ScopeTarget::Accounts(ids) => ids.join(","),
                     ScopeTarget::Portfolio(id) => format!("portfolio:{id}"),
+                    ScopeTarget::TrainingRun(id) => format!("training:{id}"),
                 };
                 let descriptor = format!(
                     "{target}|{:?}|{}",
@@ -2451,7 +2479,26 @@ impl DeltaWorkbench {
                 }
                 let right = state.layout.right_ai_open;
                 let bottom = state.layout.bottom_tasks_open;
+                let current_ws_run = (state.layout.active_nav == "nav.training"
+                    && state.training.mode == crate::training_ui::TrainingViewMode::Workspace)
+                    .then(|| state.training.active_run_id.clone())
+                    .flatten();
                 drop(state);
+                if current_ws_run != workbench.last_training_workspace_run {
+                    workbench.last_training_workspace_run = current_ws_run.clone();
+                    if current_ws_run.is_some() {
+                        let (global_focused, trn_focused) =
+                            workbench.is_any_non_workspace_or_training_input_focused(window, cx);
+                        if !global_focused && !trn_focused {
+                            let fh = workbench
+                                .center_panel
+                                .read(cx)
+                                .training_workspace_focus()
+                                .clone();
+                            fh.focus(window, cx);
+                        }
+                    }
+                }
                 workbench.dock_area.update(cx, |area, cx| {
                     if area.is_dock_open(DockPlacement::Right) != right {
                         area.toggle_dock(DockPlacement::Right, window, cx);
@@ -2490,16 +2537,40 @@ impl DeltaWorkbench {
             dock_area,
             _dock_skin: dock_skin,
             center_panel,
-            _right_ai_panel: right_ai_panel,
+            right_ai_panel,
             _bottom_task_panel: bottom_task_panel,
             controller,
             scope_fields,
             last_scope_descriptor: String::new(),
+            last_training_workspace_run: None,
             _subscription: subscription,
             _poll_task: poll_task,
             pending_exit: None,
             last_update_status: String::new(),
         }
+    }
+
+    fn is_any_non_workspace_or_training_input_focused(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> (bool, bool) {
+        let global_input_focused = self.scope_fields.is_any_focused(
+            &["form.scope_target", "form.scope_start", "form.scope_end"],
+            window,
+            cx,
+        ) || self
+            .right_ai_panel
+            .read(cx)
+            .question
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let training_input_focused = self
+            .center_panel
+            .read(cx)
+            .is_any_training_text_input_focused(window, cx);
+        (global_input_focused, training_input_focused)
     }
 
     pub fn shared_state(&self) -> &Arc<Mutex<WorkbenchSharedState>> {
@@ -2573,6 +2644,7 @@ fn nav_icon(key: &str) -> IconName {
         "nav.market" => IconName::Globe,
         "nav.assets" => IconName::ChartPie,
         "nav.journal" => IconName::BookOpen,
+        "nav.training" => IconName::ChartPie,
         "nav.data_center" => IconName::HardDrive,
         "nav.settings" => IconName::Settings,
         "nav.ai_panel" => IconName::Bot,
@@ -2662,6 +2734,26 @@ impl Render for DeltaWorkbench {
         v_flex()
             .id("delta-workbench-root")
             .test_support()
+            .on_key_down(
+                cx.listener(|workbench, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    let is_training_ws = {
+                        let g = workbench.state.lock().unwrap();
+                        g.layout.active_nav == "nav.training"
+                            && g.training.mode == crate::training_ui::TrainingViewMode::Workspace
+                    };
+                    if !is_training_ws {
+                        return;
+                    }
+                    let (global_focused, trn_focused) =
+                        workbench.is_any_non_workspace_or_training_input_focused(window, cx);
+                    if global_focused || trn_focused {
+                        return;
+                    }
+                    workbench.center_panel.update(cx, |panel, cx| {
+                        panel.handle_training_workspace_key_down(event, window, cx);
+                    });
+                }),
+            )
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
@@ -3138,13 +3230,13 @@ pub struct UiBenchReport {
 }
 
 /// Verification owns a newly created child, never the caller's supplied root.
-struct VerificationDirectory {
-    path: PathBuf,
+pub(crate) struct VerificationDirectory {
+    pub(crate) path: PathBuf,
     parent: PathBuf,
 }
 
 impl VerificationDirectory {
-    fn create(base: &Path, mode: &str) -> Result<Self, ErrorEnvelope> {
+    pub(crate) fn create(base: &Path, mode: &str) -> Result<Self, ErrorEnvelope> {
         delta_app::ensure_channel_data_isolation(base, BuildChannel::Source)
             .map_err(|e| ErrorEnvelope::new("VERIFICATION_PATH", e.to_string(), false))?;
         fs::create_dir_all(base)
@@ -3157,7 +3249,7 @@ impl VerificationDirectory {
         Ok(Self { path, parent })
     }
 
-    fn cleanup(&self) -> Result<(), ErrorEnvelope> {
+    pub(crate) fn cleanup(&self) -> Result<(), ErrorEnvelope> {
         if !self.path.exists() {
             return Ok(());
         }
@@ -3338,17 +3430,50 @@ pub fn run_desktop_entrypoint() -> ExitCode {
     }
     if has_flag("--help") || has_flag("-h") {
         println!(
-            "delta (M3 v1.0) - GPUI desktop investment review workbench\n\
+            "delta (M4) - GPUI desktop investment review & training workbench\n\
              Flags:\n\
              - --data-dir <dir>\n\
              - --ui-smoke [--data-dir <dir>]\n\
              - --ui-bench [--data-dir <dir>]\n\
+             - --m4-ui-smoke [--data-dir <dir>]\n\
+             - --m4-ui-bench [--data-dir <dir>]\n\
              - --build-info | --version | --help"
         );
         return ExitCode::SUCCESS;
     }
 
     let cli_data_dir = parse_flag("--data-dir").map(PathBuf::from);
+    if has_flag("--m4-ui-smoke") {
+        return match crate::ui_verification::run_m4_ui_smoke(cli_data_dir.as_deref()) {
+            Ok(rep) => {
+                println!(
+                    "{}",
+                    sanitize_terminal_output(&serde_json::to_string(&rep).unwrap_or_default())
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", sanitize_terminal_output(&e.message));
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    if has_flag("--m4-ui-bench") {
+        return match crate::ui_verification::run_m4_k03_next_bar_bench(cli_data_dir.as_deref()) {
+            Ok(rep) => {
+                println!(
+                    "{}",
+                    sanitize_terminal_output(&serde_json::to_string(&rep).unwrap_or_default())
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", sanitize_terminal_output(&e.message));
+                ExitCode::from(1)
+            }
+        };
+    }
     if has_flag("--ui-smoke") {
         let base = cli_data_dir.unwrap_or_else(std::env::temp_dir);
         let owned = match VerificationDirectory::create(&base, "smoke") {
@@ -3553,7 +3678,7 @@ pub fn run_desktop_entrypoint() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn verification_app_paths(data_dir: &Path) -> delta_app::ResolvedAppPaths {
+pub(crate) fn verification_app_paths(data_dir: &Path) -> delta_app::ResolvedAppPaths {
     let documents_dir = data_dir.join("documents");
     delta_app::ResolvedAppPaths {
         channel: BuildChannel::Source,
@@ -3827,7 +3952,7 @@ pub mod tests {
             (
                 view.controller.clone(),
                 view.center_panel.clone(),
-                view._right_ai_panel.clone(),
+                view.right_ai_panel.clone(),
                 Arc::clone(view.shared_state()),
             )
         });
@@ -4203,12 +4328,12 @@ pub mod tests {
                 .iter()
                 .any(|s| matches!(s, WorkbenchSystemState::EmptyLibrary)));
 
-            // 2. Navigate across all 6 in-scope pages and reject out-of-scope training/strategy keys (`S-15`)
+            // 2. Navigate across all in-scope pages (including M4 training) and reject out-of-scope strategy (`S-15`, `S-46`)
             for &key in PRIMARY_NAV_KEYS {
                 g.navigate_to(key).unwrap();
                 assert_eq!(g.layout.active_nav, key);
             }
-            assert!(g.navigate_to("nav.training").is_err());
+            assert!(g.navigate_to("nav.training").is_ok());
             assert!(g.navigate_to("nav.strategy").is_err());
 
             // 3. First-run wizard: add account, preview CSV with a held row (missing source_id), resolve held row, commit, and re-import duplicate

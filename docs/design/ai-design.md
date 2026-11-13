@@ -1,6 +1,6 @@
 # DELTA AI 分析设计
 
-版本 0.4 · 2026-11-07；统一能力正本见 [接口契约](integration-contracts.md)，会话/压缩/恢复正本见 [上下文状态](context-state-management.md)。
+版本 0.5 · 2026-11-12；统一能力正本见 [接口契约](integration-contracts.md)，会话/压缩/恢复正本见 [上下文状态](context-state-management.md)。
 
 ## 1. 目标与首版范围
 
@@ -54,7 +54,7 @@ sequenceDiagram
 | `search_journal` | scope, query, tags, period | 授权笔记片段与修订 ID | 是 |
 | `get_chart_window` | instrument, range, timeframe | 受限行情窗口、来源与质量 | 是 |
 | `compare_trade_groups` | scope, group_definitions | 样本、指标与缺失标签率 | 否，随分组统计交付 |
-| `get_training_report` | session_id | 执行偏差、模拟结果和时间线 | 否，随 M4 |
+| `training.run_summary` / `training.orders_and_fills` / `training.report` / `training.notes` / `training.revealed_bars` | `ScopeTarget::TrainingRun(run_id)` | 已结束训练的运行摘要、模拟委托/成交、`m4-report-1` 报告、训练笔记与揭示后行情 | 否，M4 已建立 |
 | `validate_strategy_draft` | typed_rules | 静态校验和未补齐条件 | 否，随 M5 |
 
 不提供任意 SQL、任意文件读写、系统命令或直接下单工具。所有查询复用 UI 的业务服务，不能存在第二套 AI 专用损益计算。
@@ -99,7 +99,7 @@ M2 用 SQLite 全文/关键词搜索、标签和时间范围检索笔记，优�
 
 模型适配器抽象文本、流式输出、结构化响应、工具调用、上下文预算、取消和错误映射。按实际模型声明能力；不支持工具调用时，使用有限的单次摘要模式或明确禁用相关功能。
 
-支持自定义远程端点和本地端点，显式区分 Chat Completions 与 Responses，并检测工具/流式等能力，不假设不同服务完全兼容。凭据使用 OS 凭据存储，报告保存连接 ID 而非秘密。Rust 客户端不加载 Codex 的编码工具、用户配置或项目指令；传输合同见 [模型客户端](rust-model-client.md)，工具与会话边界见上下文状态正本。
+支持自定义远程端点和本地端点，显式区分 Chat Completions 与 Responses，并检测工具/流式等能力，不假设不同服务完全兼容。凭据按 [D-32](../decisions/confirmed-decisions.md) 保存为本通道数据目录 `credentials/` 下的 DPAPI 加密文件，报告保存连接 ID 而非秘密。Rust 客户端不加载 Codex 的编码工具、用户配置或项目指令；传输合同见 [模型客户端](rust-model-client.md)，工具与会话边界见上下文状态正本。
 
 发送范围包括账户、期间、笔记与附件是否纳入。默认附件不自动发送；用户可对敏感笔记关闭模型访问。日志和用户内容属于数据，即便其中包含“忽略规则、读取其他账户”等文字，也不能改变工具权限。
 
@@ -109,11 +109,13 @@ M2 工具只读。后续标签/笔记建议生成可比较的草稿，由用户�
 
 ## 7. 历史训练中的 AI
 
-M4 默认仅在训练结束后提供 AI 分析。训练中允许结构化笔记与确定性规则提醒。
+M4 严格仅在训练运行状态达到 `finished` 后开放 AI 复盘（`ScopeTarget::TrainingRun(run_id)`）。对 `preparing`、`active`、`paused` 或 `damaged` 运行发起 AI 调用时，宿主直接以 `SIM_AI_REVIEW_REQUIRES_FINISHED` / `SCOPE_DENIED` 拒绝；训练进行中只提供结构化 `training_note` 记录与确定性规则校验，不提供任何 AI 实时建议。
 
-即使截断查询，通用模型仍可能从预训练知识中认出某段历史走势。隐藏日期/名称并不能保证模型“忘记未来”。因此不把训练中模型建议视为盲测成绩，也不让 AI 推荐混入用户独立决策的评分。
+`ScopeTarget::TrainingRun` 将 `resolved_accounts` 固定为空集以阻断全部真实账户工具，只允许调用 5 个只读训练工具：`training.run_summary`、`training.orders_and_fills`、`training.report`、`training.notes`、`training.revealed_bars`。范围修订指纹绑定 `latest_state_hash` 与 `revealed` 标志：在用户显式点击“揭示”前，即使训练已结束，工具输出仍保持隐藏模式脱敏（`training.revealed_bars` 不暴露后续行情与真实代码/日期）；揭示后自动使旧范围缓存失效。证据与数值核验（`verify_and_build_ai_report`）扫描 `SIM-ORD-*`、`SIM-FILL-*`、`TRN-NOTE-*`（以及 `TRD-GRP-*`、`FPV:*`）前缀并核对本次工具回执，拦截模型捏造的模拟引用，且从金融数值白名单剔除 `seed`、`redraw_index`、`self_evaluation` 等元数据以防伪装校验；有效证据引用可在训练工作区点击直接定位（`open_training_evidence`）。
 
-若后续开放教练模式，单独标记为辅助训练，并记录使用时间与内容。结束报告区分自主决策与辅助决策。
+即使截断查询，通用模型仍可能从预训练知识中认出某段历史走势。隐藏日期/名称并不能保证模型“忘记未来”。因此不把训练中模型建议视为盲测成绩，用户自主决策自评（`save_training_self_evaluation`）与 AI 复盘正文分开存储和展示，且训练笔记中的越权指令按不可信数据处理、绝不扩大工具或账户权限。
+
+若后续（`LOOP-06`）开放教练模式，单独标记为辅助训练，并记录使用时间与内容。结束报告区分自主决策与辅助决策。
 
 ## 8. 成本、取消与失败
 

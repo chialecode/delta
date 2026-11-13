@@ -1,6 +1,6 @@
 # 验证与交付门禁
 
-只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁**待建立**。当前阶段的运行结论和源码指纹只维护在当前阶段报告，本规范不预先宣称某版本通过。
+只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁已建立（结论见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）；M4 的训练门禁已建立（结论见 [M4 阶段报告](../delivery/stage-report.md)）。当前阶段的运行结论和源码指纹只维护在当前阶段报告，本规范不预先宣称某版本通过。
 
 ## 1. 当前已存在并可运行的检查
 
@@ -13,7 +13,8 @@
 - `cargo test --workspace --locked`
 - `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 [--live]`
 - `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`
-- `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（**已建立**，结果见 [M3 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M3-G-01～05）、`.iss` 与身份契约（M3-G-06）和命名单元测试映射（M3-A-01/02/07）；`--installer` 需要 Inno Setup 7.1.x，构建四个测试身份安装包与一个测试签名发布，只真实静默安装/升级/卸载 `delta-test` / `delta-dev-test`（数据根在本次临时目录），全程采样可见与前台窗口，比对开发者 `delta` / `delta-dev` 安装文件哈希、HKCU 卸载键、开始菜单快捷方式与数据根目录树，并要求同一源码指纹下 M1 v2.6、M2 v1.0 报告已通过。缺 `--installer` 时安装/更新用例与 overall 保持 not-run；`DELTA_GATE_SKIP_MECHANICAL=1` 只用于调试安装用例，跳过的必需项使 overall 不可能为 passed
+- `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（**已建立**，结果见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M3-G-01～05）、`.iss` 与身份契约（M3-G-06）和命名单元测试映射（M3-A-01/02/07）；`--installer` 需要 Inno Setup 7.1.x，构建四个测试身份安装包与一个测试签名发布，只真实静默安装/升级/卸载 `delta-test` / `delta-dev-test`（数据根在本次临时目录），全程采样可见与前台窗口，比对开发者 `delta` / `delta-dev` 安装文件哈希、HKCU 卸载键、开始菜单快捷方式与数据根目录树，并要求同一源码指纹下 M1 v2.6、M2 v1.0 报告已通过。缺 `--installer` 时安装/更新用例与 overall 保持 not-run；`DELTA_GATE_SKIP_MECHANICAL=1` 只用于调试安装用例，跳过的必需项使 overall 不可能为 passed
+- `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（`H-05`）与真实模型 `M4-L-01`（`ACT-01`）保持 not-run
 
 要求 Python 3.12+ 标准库，无第三方包依赖。`check_docs.py` 校验：
 
@@ -22,8 +23,8 @@
 3. 全仓 `active`/`draft` 正本无旧 `S0`–`S4` 或 `R1`–`R2` 阶段名回流；
 4. 内联相对链接、文件存在性与标题/显式 HTML 锚点有效；
 5. `CLAUDE.md` 仅包含 `@AGENTS.md`；
-6. [需求文档](../requirements/product-requirements.md) 的 61 项 FR/NFR、[实施路线](../engineering/delivery-plan.md) 的 29 项 AC 与 [traceability.json](../delivery/traceability.json) 双向完整映射，且正本中引用的 `FR-*`/`NFR-*`/`AC-*`/`POC-D*` 编号均真实存在；
-7. 若存在阶段用例清单（`docs/delivery/m1-stage-cases.json`），自动校验用例字段、工作包引用及阶段需求覆盖完整性；
+6. [需求文档](../requirements/product-requirements.md) 的 62 项 FR/NFR、[实施路线](../engineering/delivery-plan.md) 的 30 项 AC 与 [traceability.json](../delivery/traceability.json) 双向完整映射，且正本中引用的 `FR-*`/`NFR-*`/`AC-*` 编号均真实存在；
+7. 若存在当前阶段用例清单（`docs/delivery/m4-stage-cases.json`），自动校验用例字段、工作包引用及阶段需求覆盖完整性；
 8. **公开内容与秘密/本机路径门禁**：扫描工作树（跟踪文件与未忽略的未跟踪文件）及 Git 暂存区，拦截本机绝对路径（Windows 盘符路径或 Unix 用户目录路径）、本地外部参考路径泄露（`reference/delta`、`external/github.com`）、私钥/API Token、内嵌凭据 URL 以及禁止入库的 `.env`/`.sqlite`/`.db` 等敏感文件。
 
 ## 2. M1 产品工程必需门禁（已建立）
@@ -73,7 +74,7 @@ B 在 M1-W06 建立纯 Rust 统一验证入口 `cargo run -p delta-cli -- verify
 
 **窗口哨兵与进程树收口**：`verify-stage` 将当前进程及继承的子进程放入 Windows Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），执行静音命令期间用 `EnumWindows` 轮询该 Job 的可见顶层窗口；出现窗口即判 failed，报告保存 PID 与标题。实际优先级通过系统查询记录。该哨兵不观测其他进程的全部桌面窗口。依赖为 `windows-sys`（MIT OR Apache-2.0，仅在 Windows 目标启用）。
 
-M2 起的桌面测试沿用同一约束：界面逻辑测试使用 GPUI 测试平台，不创建真实窗口；真实窗口冒烟测试只在显式开关下运行，窗口创建时不激活、不置前，结束后由 Job 收口；该类测试的哨兵改为检查“焦点是否被切走”。M2 细化见 [M2 计划 S-22](../delivery/stage-plan.md#3-a-已定案的阶段技术决定b-不再重新选型)：视图逻辑测试统一用 `gpui-kit` `test-support` 无头窗口（2026-11-08 A spike 实测 0 可见窗口、前台焦点不变，见 [spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)）；真实窗口只在 `verify-stage --ui-smoke` / `--ui-bench` 显式运行。
+M2 起的桌面测试沿用同一约束：界面逻辑测试使用 GPUI 测试平台，不创建真实窗口；真实窗口冒烟测试只在显式开关下运行，窗口创建时不激活、不置前，结束后由 Job 收口；该类测试的哨兵改为检查“焦点是否被切走”。M2 细化见 M2 计划 S-22（计划已归档于 Git 历史，结果见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）：视图逻辑测试统一用 `gpui-kit` `test-support` 无头窗口（2026-11-08 A spike 实测 0 可见窗口、前台焦点不变，见 [spike 证据](../evidence/2026-11-08-m2-gpui-kit-spike.md)）；真实窗口只在 `verify-stage --ui-smoke` / `--ui-bench` 显式运行。
 
 M2 门禁已建立。无 `--ui-smoke --ui-bench` 时 K02/K06/A20 与 overall 保持 not-run，退出 0 只表示已执行检查无失败；完整阶段自检使用两个显式开关。原生 HWND 必须有有效尺寸、实际图表/表格绘制计数与原始帧样本，门禁独立重算 p50/p95/p99 并拒绝 dev 构建或切片样本冒充 release 帧。首屏为 5 个新进程的 AC-02 工作台，常规交互 300 次，100k 表格/图表各 20 预热＋300 实测帧；报告说明隐藏窗口、OS loader/缓存与定时器口径。Windows 11 会对隐藏/后台窗口的进程施加执行速度节流（EcoQoS），使同一二进制的帧时间成倍波动（2026-11-09 同机实测图表 p95 约 39 ms 对 8.6 ms），因此测量进程在保持低优先级的同时退出执行速度节流，报告记录 `power_throttling`，门禁只接受 `execution_speed_opt_out` 下的样本；门槛本身不变。测试清理须先关闭窗口、join 宿主并断言成功，不能静默忽略锁导致的残留。
 
@@ -83,6 +84,6 @@ M2-K04 用真实两通道静态 CRT 包执行包内 CLI 安装、外部 CLI 卸�
 
 | 判断 | 必须满足的条件 |
 | --- | --- |
-| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M3 为 M3-W01～W06）与自动检查通过，无工程缺口转交用户 |
+| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M4 为 M4-W01～W07）与自动检查通过，无工程缺口转交用户 |
 | A 技术审核通过（Agent 侧阶段完成） | A 核对实际 diff、代码、测试与数据质量边界，工程阻断为零；按 D-18 转入 [USER-ACTIONS](../../USER-ACTIONS.md) 请求具体远端授权 |
 | 真实私有账户/Key 验收 | 用户按 `ACT-03` 提供真实配置后独立验证；未测前保持 not-run，不冒充已通过 |

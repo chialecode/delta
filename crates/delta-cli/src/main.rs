@@ -1,8 +1,10 @@
 mod installer;
 mod packaging;
+mod training_cmd;
 mod verify;
 mod verify_m2;
 mod verify_m3;
+mod verify_m4;
 use chrono::{NaiveDate, Utc};
 use delta_app::{
     apply_process_quiet_guards, resolve_app_paths, sanitize_terminal_output, AppService,
@@ -20,6 +22,7 @@ use std::time::Duration;
 use verify::run_verify_stage_m1;
 use verify_m2::{install_per_user_channel, run_verify_stage_m2, uninstall_per_user_channel};
 use verify_m3::run_verify_stage_m3;
+use verify_m4::run_verify_stage_m4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PocResultRecord {
@@ -92,7 +95,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     println!(
-        "delta-cli (M3 v1.0) - financial data, ledger, installer and update operations\n\
+        "delta-cli (M4 v1.0) - financial data, ledger, training, installer and update operations\n\
          Subcommands:\n\
          - init [--data-dir <dir>]\n\
          - register --venue <NASDAQ|NYSE|OKX|BINANCE> --symbol <symbol> [--etf] [--data-dir <dir>]\n\
@@ -106,6 +109,7 @@ fn print_usage() {
          - restore --from <path> --to <path>\n\
          - export --dir <path> [--data-dir <dir>]\n\
          - library delete [--yes] [--data-dir <dir>]\n\
+         - training create|list|show|order|cancel|advance|note|finish|reveal|report|replay|retry|delete|redraw|start|pause|resume|fee-profiles|self-eval|evidence [--data-dir <dir>]\n\
          - credential set|get|delete --provider <p> --user <u> --stdin [--prefix <pfx>]\n\
          - package-build [--identity delta-dev|delta-test|delta-dev-test] [--version <v>] [--out-dir <dir>] (installer in dist/; older ones of that identity removed)\n\
          - install-dev [--package <setup.exe>] (default: newest delta-dev installer in dist/)\n\
@@ -116,6 +120,7 @@ fn print_usage() {
          - verify-stage --stage M1 --plan-version 2.6 [--live]\n\
          - verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]\n\
          - verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]\n\
+         - verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]\n\
          Test and migration diagnostics only: package-portable-build, package-install, package-uninstall"
     );
 }
@@ -196,6 +201,7 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 delta_app::ErrorEnvelope::new("instance_locked", e.to_string(), true)
             })?;
             println!("LOCKED");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
             std::thread::sleep(Duration::from_millis(ms));
             Ok(ExitCode::SUCCESS)
         }
@@ -604,6 +610,9 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
             );
             Ok(ExitCode::SUCCESS)
         }
+        "training" => {
+            training_cmd::run_training_command(args, channel_override, cli_data_dir.as_deref())
+        }
         "verify-stage" => {
             let stage = parse_flag(args, "--stage").unwrap_or_default();
             let plan_ver = parse_flag(args, "--plan-version").unwrap_or_default();
@@ -617,11 +626,13 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 run_verify_stage_m2(live_mode, ui_smoke, ui_bench)
             } else if stage.eq_ignore_ascii_case("M3") && plan_ver == "1.0" {
                 run_verify_stage_m3(has_flag(args, "--installer"), has_flag(args, "--ui-smoke"))
+            } else if stage.eq_ignore_ascii_case("M4") && plan_ver == "1.0" {
+                run_verify_stage_m4(has_flag(args, "--ui-smoke"), has_flag(args, "--ui-bench"))
             } else {
                 Err(delta_app::ErrorEnvelope::new(
                     "invalid_verify_args",
                     format!(
-                        "expected '--stage M1 --plan-version 2.6', '--stage M2 --plan-version 1.0' or '--stage M3 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
+                        "expected '--stage M1 --plan-version 2.6', '--stage M2 --plan-version 1.0', '--stage M3 --plan-version 1.0' or '--stage M4 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
                     ),
                     false,
                 ))

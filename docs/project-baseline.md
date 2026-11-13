@@ -16,7 +16,7 @@ DELTA 是本地优先的个人资产账本和投资复盘工作台，覆盖美�
 | 问题 | 唯一维护入口 |
 | --- | --- |
 | 谁负责、如何推进与交接 | [AGENTS](../AGENTS.md)、[A/B 协作](dev-rules/development-workflow.md) |
-| 现在到底交付到哪里、下一步是什么 | [当前状态](delivery/status.md)、[M2 阶段计划](delivery/stage-plan.md) |
+| 现在到底交付到哪里、下一步是什么 | [当前状态](delivery/status.md)、[当前阶段计划](delivery/stage-plan.md) |
 | 什么已经确认、什么只是默认值 | [有效决定](decisions/confirmed-decisions.md) |
 | 用户决定、人工检查、外部配置与具体远端授权 | [用户待办](../USER-ACTIONS.md) |
 | 开源缺陷、返工、后续优化与承接 | [工程台账](decisions/open-questions.md) |

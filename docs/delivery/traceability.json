@@ -158,9 +158,10 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1/M2 pure-Rust SMA/EMA/MACD/RSI with warmup handling and M4 TrainingDataPort SQL-truncated visible_until + PIT split-adjusted indicator slice verified with future sentinels (M4-K01, M4-A-01)."
     },
     {
       "id": "FR-MKT-03",
@@ -458,79 +459,113 @@
     {
       "id": "FR-TRN-01",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
       ],
       "acceptance": [
-        "AC-11"
-      ]
+        "AC-11",
+        "AC-15"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: SQL-truncated training data port (delta-data::m4_schema::query_run_visible_final_bars / query_next_training_step_bar / query_training_visible_corporate_actions, delta-app::training::TrainingDataPort), PIT split adjustment (delta-core::sim::derive_point_in_time_split_adjusted_bars), SHA-256 deterministic candidate-pool sampling with pre-start redraws, and hidden-mode DTO scrubbing across desktop, CLI and AI until explicit post-finish reveal (M4-K01, M4-A-01..03, M4-A-16, M4-A-18; H-05 manual check not-run)."
     },
     {
       "id": "FR-TRN-02",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/integration-contracts.md"
       ],
       "acceptance": [
         "AC-12",
-        "AC-13"
-      ]
+        "AC-13",
+        "AC-23"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: pure Decimal spot long-only matching engine delta-core::sim (m4-sim-1) supporting Market, Limit, StopMarket, OCO and entry orders with AttachedBracket (DAY/GTC), t+1 open eligibility, fixed O->L->H->C path with ambiguous-fill counting, 1.10x market buy cash buffer, shared OCO reservation, INSUFFICIENT_FUNDS / INSUFFICIENT_POSITION / whole-order INSUFFICIENT_FUNDS_AT_FILL rejections, tick/lot nearest-valid hints, pre-open split adjustment & corporate_action_split cancellation, and ex-date cash dividend credit (M4-A-03..06, M4-A-15, M4-A-16)."
     },
     {
       "id": "FR-TRN-03",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/data-model.md"
       ],
       "acceptance": [
         "AC-12",
-        "AC-13"
-      ]
+        "AC-13",
+        "AC-15"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: composable FeeProfileVersion and settle_order_fees (notional rate, per-unit, fixed per-order, per-order min/max settled once at order end across partial fills, quote or received_asset fee currency, HalfUp/HalfEven/Up/Down rounding, PerFill/PerOrder tier, independent directional slippage and half-spread), immutable SQLite/Rust version freezing on run start, and 3 explicit scenario-assumption built-ins (zero_cost, us_equity_per_share_example, crypto_rate_example; Futu/OKX presets deferred in LOOP-06) (M4-A-04, M4-A-07, M4-A-08)."
     },
     {
       "id": "FR-TRN-04",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
+        "docs/design/data-model.md",
         "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/system-architecture.md"
       ],
       "acceptance": [
+        "AC-09",
         "AC-14",
-        "AC-15"
-      ]
+        "AC-15",
+        "AC-20"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: Schema 5 migration with pre-migration consistency backup (before-schema-4-*), 8 simulation/training tables isolated from real ledger (ledger_revision unchanged), single-savepoint commit_simulation_step_atomic, Initial/Periodic20/Pause/Finish checkpoints, subprocess crash_mid_advance recovery, 3-way bit-for-bit state_hash deterministic replay (Scratch / FromCheckpoint / second process), tamper detection marking runs damaged, child retry runs (parent_run_id), backup/restore, simulation export and delete preview (M4-K02, M4-A-02, M4-A-08..11, M4-A-18)."
     },
     {
       "id": "FR-TRN-05",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/interaction-and-workflows.md"
       ],
       "acceptance": [
         "AC-14",
-        "AC-18"
-      ]
+        "AC-18",
+        "AC-23"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: pure Decimal training report delta-core::sim_report (m4-report-1) computing return, realized/unrealized PnL, total fees, close-to-close equity curve & max drawdown, exposure, closed trade group win rate (zero-PnL separated), profit factor & payoff ratio (explicit NoClosedTrades/NoLosses/NoWins states), expectancy with sample count, post-entry/pre-exit path-bounded MAE/MFE, PlanExecutionSummary, identical-cost Buy-and-Hold benchmark and structured SampleLimitations across UI and CLI (M4-A-12, M4-A-15; H-05 manual check not-run)."
     },
     {
       "id": "FR-TRN-06",
       "stage": "M4",
-      "status": "planned",
+      "status": "implemented",
       "design": [
-        "docs/design/financial-engine.md",
-        "docs/design/ai-design.md"
+        "docs/design/ai-design.md",
+        "docs/design/interaction-and-workflows.md",
+        "docs/design/integration-contracts.md"
       ],
       "acceptance": [
         "AC-14",
         "AC-19"
-      ]
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M4 v1.0: in-session training_note recording with or without orders, post-finish archive to journal labelled 来自模拟训练 (real ledger untouched), separate user self-evaluation, post-finish-only ScopeTarget::TrainingRun read-only AI gateway (5 training.* tools) with openable SIM-ORD-*/SIM-FILL-*/TRN-NOTE-* citations, fabricated-citation & financial-number verification across both protocols on loopback SSE, prompt-injection defense and offline resilience (M4-A-13, M4-A-14, M4-A-16; real model M4-L-01 awaits optional ACT-01)."
     },
     {
       "id": "FR-STR-01",
@@ -706,9 +741,10 @@
         "AC-19"
       ],
       "evidence": [
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M2/M4 local-first independence: ledger, charts, journal, K-line training and deterministic m4-report-1 reports continue offline or when model endpoints are stopped (M2-A-14, M4-A-14)."
     },
     {
       "id": "FR-AI-07",
@@ -741,9 +777,10 @@
         "AC-25"
       ],
       "evidence": [
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M2/M4 unified capability and model contracts: UI, CLI and AI read-only tools share synchronous AppHost projections across real scopes and ScopeTarget::TrainingRun on both openai-responses and openai-chat-completions protocols (M2-A-01, M2-A-13, M4-A-14, M4-A-15)."
     },
     {
       "id": "FR-OPS-01",
@@ -758,9 +795,10 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 consistent SQLite Backup API snapshots, pre-migration backups (including before-schema-4-* before Schema 5 DDL) and staged restore verifying manifest hashes and table_row_counts across all ledger, journal, AI and 8 simulation/training tables (M4-A-11)."
     },
     {
       "id": "FR-OPS-02",
@@ -775,9 +813,10 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 coherent open-format library export covering ledger CSV/JSON, Markdown notes, attachments, settings and M4 simulation/simulation_bundle.json + 8 simulation/*.csv tables (M4-A-11)."
     },
     {
       "id": "FR-OPS-03",
@@ -793,9 +832,10 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/evidence/2026-11-12-m3-stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M3 per-channel/per-library DPAPI encrypted credential files (D-32) and metadata-only redacted diagnostics."
     },
     {
       "id": "FR-OPS-04",
@@ -810,9 +850,10 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 library delete preview/confirmation plus M4 preview_delete_training_run / delete_training_run single-transaction scoped deletion without touching real ledger or other runs (M4-A-11)."
     },
     {
       "id": "NFR-01",
@@ -820,17 +861,21 @@
       "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
-        "docs/design/integration-contracts.md"
+        "docs/design/integration-contracts.md",
+        "docs/design/financial-engine.md"
       ],
       "acceptance": [
         "AC-02",
+        "AC-12",
+        "AC-13",
         "AC-22"
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 fixed-precision Decimal accounting, FIFO cost lots, cash_exchange, m4-sim-1 simulated matching/reservations/composable fees and m4-report-1 training report verified against hand-calculated fixtures (M4-A-04..07, M4-A-12, M4-A-18)."
     },
     {
       "id": "NFR-02",
@@ -843,13 +888,16 @@
       "acceptance": [
         "AC-03",
         "AC-10",
+        "AC-15",
+        "AC-23",
         "AC-24"
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 versioned reports binding dataset_version, ledger_revision / state_hash, m1-ledger-3 / m2-ledger-1 / m4-sim-1 / m4-report-1 and frozen fee_profile_version_id across UI, CLI and AI (M4-A-08, M4-A-15)."
     },
     {
       "id": "NFR-03",
@@ -863,9 +911,10 @@
         "AC-26"
       ],
       "evidence": [
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M2 first-screen & navigation latency plus M4 release hidden-HWND execution_speed_opt_out 1,000-bar + default indicators 300-step next-bar latency meeting p95 <= 100 ms with raw samples recorded (M2-A-20, M4-K03, M4-A-17)."
     },
     {
       "id": "NFR-04",
@@ -908,16 +957,19 @@
       "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
-        "docs/design/integration-contracts.md"
+        "docs/design/integration-contracts.md",
+        "docs/design/data-model.md"
       ],
       "acceptance": [
-        "AC-09"
+        "AC-09",
+        "AC-14"
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 atomic SQLite savepoints, pre-migration backups, single-step commit_simulation_step_atomic, subprocess crash_mid_advance rollback with zero half-steps, and verify_or_mark_run_damaged hash checks (M4-A-09, M4-A-11)."
     },
     {
       "id": "NFR-07",
@@ -933,7 +985,8 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/evidence/2026-11-12-m3-stage-report.md"
       ],
       "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
     },
@@ -961,15 +1014,18 @@
       "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
-        "docs/design/integration-contracts.md"
+        "docs/design/integration-contracts.md",
+        "docs/design/interaction-and-workflows.md"
       ],
       "acceptance": [
+        "AC-14",
         "AC-27"
       ],
       "evidence": [
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M2–M4 Chinese-first i18n, focus & Escape handling, colorblind-safe up/down symbols, persistent 模拟训练 badge and M4 shortcut separation (N/→ next-bar vs Ctrl+Enter order submit, P/O/J/Esc) verified headlessly (M4-A-16); manual H-01/H-02/H-05 remain not-run."
     },
     {
       "id": "NFR-10",
@@ -977,7 +1033,8 @@
       "status": "implemented",
       "design": [
         "docs/design/system-architecture.md",
-        "docs/design/integration-contracts.md"
+        "docs/design/integration-contracts.md",
+        "docs/design/ai-design.md"
       ],
       "acceptance": [
         "AC-19",
@@ -986,14 +1043,15 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
-        "docs/evidence/2026-11-09-m2-stage-report.md"
+        "docs/evidence/2026-11-09-m2-stage-report.md",
+        "docs/delivery/stage-report.md"
       ],
-      "implementation_scope": "M2 v1.0 B review repairs: actual background UI workflows, frozen account/date/journal scopes, model/keyring isolation, native release measurements and real package manifests; B/A/product results remain distinct in stage-report.md and USER-ACTIONS.md."
+      "implementation_scope": "M1–M4 local-only default storage, explicit AI scope boundaries (including post-finish-only ScopeTarget::TrainingRun and pre-reveal masking), prompt-injection defense and redacted diagnostics (M4-A-14)."
     },
     {
       "id": "NFR-11",
       "stage": "M3",
-      "status": "planned",
+      "status": "implemented",
       "design": [
         "docs/dev-rules/data-and-security.md",
         "docs/design/system-architecture.md"
@@ -1002,8 +1060,10 @@
         "AC-27",
         "AC-30"
       ],
-      "evidence": [],
-      "implementation_scope": "M3 v1.0 plan: Inno Setup per-user installers for delta/delta-dev, version/identity resources, dev local update, signed release online update."
+      "evidence": [
+        "docs/evidence/2026-11-12-m3-stage-report.md"
+      ],
+      "implementation_scope": "M3 v1.0 (PR #3, main 6f0aff3): Inno Setup per-user installers for delta/delta-dev, version/identity resources, single instance and control pipe, install-dev, Ed25519-signed release update rehearsed on loopback; v0.1.1 published and its assets verified with the embedded key. H-03/H-04 manual checks remain not-run."
     }
   ]
 }

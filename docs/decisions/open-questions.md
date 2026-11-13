@@ -1,12 +1,12 @@
 # 集中事项台账
 
-更新：2026-11-09；维护：A 汇总/审核，B 补实现与证据，用户处理真正产品/配置决定。此表为工程侧未决、开源和后续事项的唯一当前入口；用户决定、人工与授权只在 [USER-ACTIONS.md](../../USER-ACTIONS.md)，报告仅引用 ID。
+更新：2026-11-12；维护：A 汇总/审核，B 补实现与证据，用户处理真正产品/配置决定。此表为工程侧未决、开源和后续事项的唯一当前入口；用户决定、人工与授权只在 [USER-ACTIONS.md](../../USER-ACTIONS.md)，报告仅引用 ID。
 
 状态：open、investigating、ready-for-decision、resolved、deferred。每项包含影响、推荐、负责人、截止/受阻动作和下一步；已确认项移入确认记录或补关闭依据，不反复询问。
 
 ## 用户事项入口
 
-用户事项统一在根 [USER-ACTIONS.md](../../USER-ACTIONS.md) 维护（`Q-01` 已由 D-23 确认关闭、`Q-03` 已由 D-21 确认关闭、`ACT-07` 本机 Rust/MSVC 环境已复核关闭、`Q-02` 已由 D-24 确认 Apache-2.0 关闭；可选样本/Token `ACT-03`、M2 模型连接 `ACT-01` 与人工检查 `H-01`～`H-03` 在用户待办，远端推送需另行授权）。本表只维护 Agent 工程任务。
+用户事项统一在根 [USER-ACTIONS.md](../../USER-ACTIONS.md) 维护（`Q-01` 已由 D-23 确认关闭、`Q-03` 已由 D-21 确认关闭、`ACT-07` 本机 Rust/MSVC 环境已复核关闭、`Q-02` 已由 D-24 确认 Apache-2.0 关闭；可选样本/Token `ACT-03`、模型连接 `ACT-01`、签名私钥备份 `ACT-10` 与人工检查 `H-01`～`H-05` 在用户待办，远端推送需另行授权）。本表只维护 Agent 工程任务。
 
 ## 开源风险与适配缺口
 
@@ -29,15 +29,16 @@
 
 | ID / 状态 | 内容 | 负责人 / 触发条件 | 当前边界 |
 | --- | --- | --- | --- |
-| LOOP-01 / deferred | 在 M1 数据底座、M2 资产复盘应用与 M3 安装更新贯通后，推进 M4 K 线训练与 M5 策略研究 | A；M3 完成后按用户指示启动 | M1 数据版本、`dataset_partition` 存储抽象与回放截止时间（`visible_until`）已为 M4/M5 预留原生接口 |
+| LOOP-01 / deferred | 在 M1 数据底座、M2 资产复盘应用与 M3 安装更新贯通后，推进 M4 K 线训练与 M5 策略研究 | A；M4 v1.0（`M4-W01～W07`）已完成 B 实现与自检、待 A 集中审核（见 [M4 计划](../delivery/stage-plan.md)、[M4 阶段报告](../delivery/stage-report.md)）；M5 在 M4 集成后按用户指示启动 | M1 数据版本、`dataset_partition` 存储抽象与回放截止时间（`visible_until`）为 M4/M5 的原生接口；M4 的 `delta-core::sim`（`m4-sim-1`）纯 Decimal 撮合、多标的固定排序接口与费用口径已落地，供 M5 回测直接复用 |
 | LOOP-02 / deferred | MCP 对外适配、嵌入检索、多模型路由/长期记忆 | A；有真实第二消费者或检索不足证据时 | 统一能力接口可扩展，不作为 M1/M2 依赖 |
 | LOOP-03 / deferred | 扩展通用 ccxt 无损 adapter、Alpaca bars、Longport SDK、平台原生 CSV 差异与真实只读账户 API | A+B；通用 adapter 在第二真实消费者/新交易所需求触发；平台样本或私有 SDK/API 在 ACT-03 实际可用且有数据使用授权后触发 | M1 必做模板/资金语义/原生公共源已补齐；扩展平台当前只验证共享规范化模板，真实原生覆盖未完成；私有服务、真实个人账单 not-run。不得以本项延期当前金额/隔离/恢复缺陷 |
 | LOOP-04 / deferred | 每周 CI 自动构建并发布正式版（标签、Release 资产与签名） | A+B；仓库 Actions 白名单放开所需 action 且用户授权远端设置变更与签名私钥进入 CI 机密后 | M3 只做本地 `release-build` 与经 `ACT-11` 单次授权的手动发布；签名私钥不进入 CI 前不做自动发布 |
+| LOOP-06 / deferred | M4 训练首版之外的模拟能力：部分成交与参与率模型、止损限价、做空/融资/衍生品、多标的同时训练、小时/分钟回放、价格水平变换（防止价位提示标的）、训练中 AI 教练模式；以及平台费用预设（富途美股、欧易现货） | A+B；部分成交/多标的在 M5 回测需要时触发；分钟回放随 M6 多周期；平台费用预设在显式建模开户主体/套餐/VIP 等级参数并附官方费率页来源后补入 | B 于 2026-11-12 官方费率核查确认：富途美股随持牌主体、阶梯/固定按股套餐与卖出 SEC/FINRA 规费变化，欧易现货随普通/VIP 1～9/OKB 等级与日线不可区分的 Maker/Taker 变化，均无法无隐藏假设折叠为单一静态预设；M4 按 `S-41` 仅内置 3 个明示场景假设模板（`zero_cost`、`us_equity_per_share_example`、`crypto_rate_example`），引擎明示整笔成交、日线 `O→L→H→C`、单标的训练与现货做多假设（见 [M4 阶段报告](../delivery/stage-report.md)）。不得以本项延期当前撮合、费用、隔离或恢复缺陷 |
 | LOOP-05 / deferred | 共享 Rust 构建缓存 `mbx`（[jdx/mr-boxington](https://github.com/jdx/mr-boxington)，MIT，2026-11-09 查证：最新 `v1.29.2` 发布于 2026-11-03，提供 Windows x64 发行包）：包装 cargo，按编译等价键从共享仓库恢复编译产物，跨 git worktree 共用，并按磁盘预算回收 `target/`；另有 GitHub Actions 缓存 action | A；触发条件：开始用多个 git worktree 并行开发（每个工作树各自约 3.5 GB 以上 `target/`），或 CI 加入 Rust 构建 | 当前单一检出不采用：主要膨胀来源（依赖调试信息、增量缓存、门禁重复包）已由 dev profile 与 `scripts/clean_artifacts.py` 处理（见[构建产物](../dev-rules/local-files-and-references.md#build-artifacts)）；`target/` 与打包用 `.local/target-packages/` 的 RUSTFLAGS/target 不同，缓存键本就不能共用；Windows 上恢复是复制字节而非链接，单检出时反而多一份存储；`mbx setup` 会改动全局 cargo 调用，引入前须先验证门禁静音（D-25）与源码指纹/`--locked` 行为，并经用户同意改动其全局开发环境。CI 侧还受 Actions 白名单限制（同 LOOP-04） |
 | LEDGER-01 / resolved | 买入稳定币/法币（如 USD→USDT 入金兑换）在 M1 形成持仓批次，之后不能作为报价腿结算；应建模为现金换汇，保留兑换成本与汇兑收益 | M2-W02 已在 `delta-core` 与 `delta-data::importers` 实现 `EconomicEventType::CashExchange`（`cash_exchange`）：源币种按现金 FIFO 处置并记录已实现汇兑损益，目标币种（含 USDT/USDC）进入现金 FIFO 账本并保留兑换手续费成本，后续买入加密资产（如 `USD → USDT → BTC`）只从报价现金结算一次 | B 已在 M2-W02 完成实现并通过 `M2-A-06` 与 M1 `M1-A-06` 回归关闭 |
-| TEST-01 / resolved | M2 测试 `test_m2_a14_…` 在全量并行中偶发 `CREDENTIAL_UNAVAILABLE`（Windows 凭据管理器瞬时失败，约 1/40） | A；2026-11-09 按 D-32 去掉凭据管理器、测试凭据改为临时数据目录里的加密文件后关闭 | 失败来源已不存在；若文件凭据再出现并发失败另立条目，见 [M3 阶段报告](../delivery/stage-report.md#a-集中技术审核2026-11-09) |
-| TEST-02 / deferred | M1 门禁锁探针 `M1-A-15` 要求子进程在 2 s 内启动并持锁。M3 最终序列的第一次 M1 回归中出现一次 `lock_probe: holder did not acquire or exit cleanly`（刚重新构建的 debug 可执行文件冷启动），同指纹立即重跑通过（持锁 824 ms） | B；再次出现，或下一阶段修改 M1 门禁时处理：等待条件改为以持锁事件为准并放宽冷启动上限，不放宽锁语义本身 | 锁行为本身由同指纹重跑与单元测试覆盖；门禁失败仍如实记录，见 [M3 阶段报告](../delivery/stage-report.md) |
-| TEST-03 / resolved | M2-A-20 / M2-K02 原生帧性能在 M3 自检中未达标（图表 p95 34～47 ms、表格 22～26 ms，归档 M2 包同样不达标） | A；2026-11-09 定位为 Windows 11 对隐藏窗口进程的执行速度节流（EcoQoS）：同一二进制退出节流后图表 p95 8.6 ms、表格 5.9 ms，提高优先级无效。测量进程改为退出该节流并在报告记录 `power_throttling`，门禁只接受退出节流的样本，门槛不变；最终指纹 M2 回归图表 p95 9.6 ms、表格 6.9 ms | 已关闭；见 [质量门禁](../dev-rules/quality-gates.md#foreground-quiet) 与 [M3 阶段报告](../delivery/stage-report.md#a-集中技术审核2026-11-09) |
+| TEST-01 / resolved | M2 测试 `test_m2_a14_…` 在全量并行中偶发 `CREDENTIAL_UNAVAILABLE`（Windows 凭据管理器瞬时失败，约 1/40） | A；2026-11-09 按 D-32 去掉凭据管理器、测试凭据改为临时数据目录里的加密文件后关闭 | 失败来源已不存在；若文件凭据再出现并发失败另立条目，见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md#a-集中技术审核2026-11-09) |
+| TEST-02 / resolved | M1 门禁锁探针 `M1-A-15` 要求子进程在 2 s 内启动并持锁。M3 最终序列的第一次 M1 回归中出现一次 `lock_probe: holder did not acquire or exit cleanly`（刚重新构建的 debug 可执行文件冷启动），同指纹立即重跑通过（持锁 824 ms） | B；2026-11-12 M4-W07 关闭：在 `crates/delta-cli/src/verify.rs` 将父进程等待条件改为接收持锁子进程显式持锁就绪信号并放宽冷启动上限，确认持锁后再严格探测第二进程独占锁冲突拒绝，锁独占语义本身不变 | 已关闭；同指纹 M1 v2.6 回归通过，见 [M4 阶段报告](../delivery/stage-report.md) |
+| TEST-03 / resolved | M2-A-20 / M2-K02 原生帧性能在 M3 自检中未达标（图表 p95 34～47 ms、表格 22～26 ms，归档 M2 包同样不达标） | A；2026-11-09 定位为 Windows 11 对隐藏窗口进程的执行速度节流（EcoQoS）：同一二进制退出节流后图表 p95 8.6 ms、表格 5.9 ms，提高优先级无效。测量进程改为退出该节流并在报告记录 `power_throttling`，门禁只接受退出节流的样本，门槛不变；最终指纹 M2 回归图表 p95 9.6 ms、表格 6.9 ms | 已关闭；见 [质量门禁](../dev-rules/quality-gates.md#foreground-quiet) 与 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md#a-集中技术审核2026-11-09) |
 | DOC-01 / resolved | 部分 M4+/AI 正文（`ai-design.md`、`interaction-and-workflows.md`、`financial-engine.md` 模拟章节、需求 P1/P2 行等）曾使用重建前的 `S0`–`S3`/`R1` 阶段名 | A；2026-11-07 已统一为 `M1`–`M6`，并在 `scripts/check_docs.py` 增加旧阶段标签门禁防止回流 | 已完成，全仓 `active`/`draft` 文档无旧 `S0`–`S4` 或 `R1`–`R2` 阶段名 |
 
 ### LOOP-03 分项接续

@@ -8,10 +8,16 @@ pub mod controller;
 pub mod i18n;
 pub mod lifecycle;
 pub mod theme;
+pub mod training_ui;
 mod ui_forms;
-mod ui_verification;
+pub mod ui_verification;
 pub mod workbench;
 
 pub use components::*;
 pub use i18n::*;
+pub use training_ui::*;
+pub use ui_verification::{
+    run_m4_k03_next_bar_bench, run_m4_ui_smoke, M4NextBarBenchReport, M4UiSmokeReport,
+    M4_K03_P95_BUDGET_MS,
+};
 pub use workbench::*;

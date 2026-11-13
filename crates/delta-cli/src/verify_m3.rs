@@ -93,6 +93,28 @@ fn shortcut(identity: InstallIdentity) -> Option<PathBuf> {
     start_menu_programs().map(|dir| dir.join(format!("{}.lnk", identity.display_name())))
 }
 
+fn desktop_shortcut(identity: InstallIdentity) -> Option<PathBuf> {
+    delta_app::user_desktop_dir().map(|dir| dir.join(format!("{}.lnk", identity.display_name())))
+}
+
+fn has_shortcut(link: Option<PathBuf>) -> bool {
+    link.is_some_and(|link| link.is_file())
+}
+
+/// Delete a test identity's Start-menu and desktop shortcuts, as a user who removed them would,
+/// so an over-install shows whether it makes them again.
+fn remove_test_shortcuts(identity: InstallIdentity) -> Result<(), ErrorEnvelope> {
+    for link in [shortcut(identity), desktop_shortcut(identity)]
+        .into_iter()
+        .flatten()
+    {
+        if link.exists() {
+            fs::remove_file(&link).map_err(|e| failure("SHORTCUT", e))?;
+        }
+    }
+    Ok(())
+}
+
 fn walk_files(root: &Path, out: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
@@ -1055,7 +1077,13 @@ fn offline_contracts(gate: &mut Gate) {
             "ShowLanguageDialog=no",
             "EncodeVer(7, 1, 0)",
             "compiler:Languages\\ChineseSimplified.isl",
-            "Flags: unchecked",
+            "Name: \"startmenuicon\"",
+            "Name: \"desktopicon\"",
+            "Check: WantStartMenuIcon",
+            "Check: WantDesktopIcon",
+            "Result := FirstInstall or FileExists(StartMenuIconPath)",
+            "Result := FirstInstall or RecreateDesktopIconOnUpdate or FileExists(DesktopIconPath)",
+            "#ifndef DesktopOnUpdate",
             "__migrate-portable",
             "control quit-for-update",
         ] {
@@ -1176,6 +1204,12 @@ fn cleanup_test_roots(gate: &Gate) -> Result<String, ErrorEnvelope> {
         }
         if shortcut(identity).is_some_and(|link| link.exists()) {
             problems.push(format!("{} shortcut remains", identity.name()));
+        }
+        if let Some(link) = desktop_shortcut(identity).filter(|link| link.exists()) {
+            // Left by an interrupted run whose uninstall did not happen: the gate's own file.
+            if let Err(error) = fs::remove_file(&link) {
+                problems.push(format!("{}: {error}", link.display()));
+            }
         }
     }
     if problems.is_empty() {
@@ -1541,6 +1575,14 @@ fn case_a03_install(gate: &mut Gate, packages: &Packages) -> Result<String, Erro
             shortcut(identity).is_some_and(|link| link.is_file()),
             format!("{} Start-menu shortcut missing", identity.name()),
         )?;
+        // A silent first install makes the desktop shortcut too.
+        ensure(
+            has_shortcut(desktop_shortcut(identity)),
+            format!(
+                "{} desktop shortcut missing after a first install",
+                identity.name()
+            ),
+        )?;
         let desktop = directory.join(identity.desktop_exe());
         verify_identity_binary(&desktop, "delta-desktop", identity, &artifact.version)?;
         verify_identity_binary(
@@ -1634,6 +1676,10 @@ fn case_a03_uninstall(gate: &mut Gate, installed: String) -> Result<String, Erro
             !shortcut(identity).is_some_and(|link| link.exists()),
             "shortcut remains",
         )?;
+        ensure(
+            !desktop_shortcut(identity).is_some_and(|link| link.exists()),
+            "desktop shortcut remains",
+        )?;
         let data = gate.data_dir(identity);
         ensure(
             read_lossy(&data.join(UNKNOWN_DATA_FILE)) == "must survive uninstall",
@@ -1657,7 +1703,7 @@ fn case_a03_uninstall(gate: &mut Gate, installed: String) -> Result<String, Erro
             ""
         };
         evidence.push(format!(
-            "{} uninstalled silently in {} ms: files, HKCU key and shortcut removed, data root with {UNKNOWN_DATA_FILE} kept{kept}",
+            "{} uninstalled silently in {} ms: files, HKCU key, Start-menu and desktop shortcuts removed, data root with {UNKNOWN_DATA_FILE} kept{kept}",
             identity.name(),
             run.elapsed_ms
         ));
@@ -1755,6 +1801,8 @@ fn case_a04(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         &environment,
     )?;
     resident.wait_event("resident-ready", Duration::from_secs(60))?;
+    // The user removed both shortcuts; a release-like silent over-install must not make them again.
+    remove_test_shortcuts(identity)?;
     let log = setup_log(gate, "a04-setup-upgrade");
     let upgrade = run_setup_silently(&packages.test_v2.setup_path, &log)?;
     ensure(
@@ -1785,6 +1833,10 @@ fn case_a04(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         installed_version(identity).as_deref() == Some(v2.as_str()),
         "upgrade did not install v2",
     )?;
+    ensure(
+        !has_shortcut(shortcut(identity)) && !has_shortcut(desktop_shortcut(identity)),
+        "a release-like silent over-install made a Start-menu or desktop shortcut the user had removed",
+    )?;
     verify_identity_binary(
         &install_dir(identity)
             .unwrap_or_default()
@@ -1804,7 +1856,7 @@ fn case_a04(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
     )?;
     gate.log_json("a04-library", &json!({"before": before, "after": after}));
     Ok(format!(
-        "busy sync: app answered busy, setup aborted after {} ms, still {v1}, app kept running; ignoring control: setup aborted after {} ms, still {v1}, app ended on its own deadline; idle: quit-for-update saved the pending note and layout, exited 0, {v1} -> {v2} in {} ms; {} accounts, {} notes, {} attachments verified, settings kept",
+        "busy sync: app answered busy, setup aborted after {} ms, still {v1}, app kept running; ignoring control: setup aborted after {} ms, still {v1}, app ended on its own deadline; idle: quit-for-update saved the pending note and layout, exited 0, {v1} -> {v2} in {} ms, removed shortcuts not made again; {} accounts, {} notes, {} attachments verified, settings kept",
         busy.elapsed_ms,
         stuck.elapsed_ms,
         upgrade.elapsed_ms,
@@ -1873,6 +1925,9 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
             "a refused install-dev changed the installation or stopped the app",
         )?;
     }
+    // The user removed both shortcuts: a dev-like silent over-install makes the desktop one again
+    // (the sign of a new build) and no Start-menu one.
+    remove_test_shortcuts(identity)?;
     let result = install_dev(gate, &packages.dev_test_v2.setup_path, "a06-install-dev")?;
     let receipt: Value = serde_json::from_str(result.stdout.trim()).unwrap_or(Value::Null);
     ensure(
@@ -1881,6 +1936,14 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
             && receipt["restarted"] == true
             && receipt["installed_version"] == packages.dev_test_v2.version.as_str(),
         format!("install-dev failed: {}", result.stderr.trim()),
+    )?;
+    ensure(
+        has_shortcut(desktop_shortcut(identity)) && !has_shortcut(shortcut(identity)),
+        format!(
+            "dev-like over-install shortcuts: desktop {}, Start menu {} (want desktop only)",
+            has_shortcut(desktop_shortcut(identity)),
+            has_shortcut(shortcut(identity))
+        ),
     )?;
     ensure(
         resident.wait_exit(Duration::from_secs(30))? == Some(0),
@@ -1929,7 +1992,7 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         &packages.dev_test_v2.version,
     )?;
     Ok(format!(
-        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently, restarted as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept",
+        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently (desktop shortcut made again, no Start-menu one), restarted as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept",
         before["detail"]["process_id"],
         packages.dev_test_v1.version,
         packages.dev_test_v2.version,

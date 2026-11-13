@@ -651,19 +651,41 @@ impl SqliteStore {
         report_currency: &str,
         timezone: &str,
     ) -> Result<(), StorageError> {
-        let prev_fault = FAIL_NEXT_SCHEMA_4_MIGRATION.with(|flag| flag.replace(false));
+        let prev_fault_4 = FAIL_NEXT_SCHEMA_4_MIGRATION.with(|flag| flag.replace(false));
+        let prev_fault_5 = crate::m4_schema::swap_schema_5_migration_fault_for_test(false);
         let result = (|| -> Result<(), StorageError> {
             let mut store = Self::open_or_init(root_dir, book_currency, report_currency, timezone)?;
             let tx = store.conn_mut().savepoint()?;
+            tx.execute_batch(
+                r#"
+                DROP TRIGGER IF EXISTS trg_training_session_monotonic_guard;
+                DROP TRIGGER IF EXISTS trg_fee_profile_version_immutable_delete;
+                DROP TRIGGER IF EXISTS trg_fee_profile_version_immutable_update;
+                "#,
+            )?;
+            for table in crate::m4_schema::SCHEMA_5_TABLES.iter().rev() {
+                tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
+            }
             for table in SCHEMA_4_TABLES {
                 tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
             }
             tx.execute("UPDATE library SET schema_version = 3", [])?;
             tx.commit()?;
+            let backups_dir = store.root_dir().join("backups");
+            if backups_dir.is_dir() {
+                for entry in fs::read_dir(&backups_dir)? {
+                    let entry = entry?;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("before-schema-") && entry.path().is_dir() {
+                        fs::remove_dir_all(entry.path())?;
+                    }
+                }
+            }
             store.sync_manifest()?;
             Ok(())
         })();
-        FAIL_NEXT_SCHEMA_4_MIGRATION.with(|flag| flag.set(prev_fault));
+        FAIL_NEXT_SCHEMA_4_MIGRATION.with(|flag| flag.set(prev_fault_4));
+        let _ = crate::m4_schema::swap_schema_5_migration_fault_for_test(prev_fault_5);
         result
     }
 
@@ -781,6 +803,14 @@ impl SqliteStore {
             return Err(StorageError::IntegrityFailed(
                 "restored schema_version does not match manifest".into(),
             ));
+        }
+        if !manifest.table_row_counts.is_empty() {
+            let restored_counts = crate::storage::collect_library_table_counts(&restored_conn)?;
+            if restored_counts != manifest.table_row_counts {
+                return Err(StorageError::IntegrityFailed(
+                    "restored table row counts do not match manifest".into(),
+                ));
+            }
         }
         Ok(schema_ver)
     }
@@ -2325,13 +2355,13 @@ mod tests {
         .expect("restore pre-migration backup");
         assert_eq!(restored_ver, 3);
 
-        // 4. Re-run open_or_init without fault: upgrades to Schema 4 and is idempotent on repeat
-        let store =
-            SqliteStore::open_or_init(&lib_dir, "USD", "USD", "UTC").expect("upgrade to schema 4");
+        // 4. Re-run open_or_init without fault: upgrades to current schema and is idempotent on repeat
+        let store = SqliteStore::open_or_init(&lib_dir, "USD", "USD", "UTC")
+            .expect("upgrade to current schema");
         drop(store);
         assert_eq!(
             SqliteStore::verify_schema_version_on_disk(&lib_dir).unwrap(),
-            4
+            crate::storage::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             SqliteStore::list_schema_4_tables_on_disk(&lib_dir)
@@ -2342,10 +2372,10 @@ mod tests {
 
         // Repeat open_or_init to prove idempotency
         let _store_again = SqliteStore::open_or_init(&lib_dir, "USD", "USD", "UTC")
-            .expect("idempotent schema 4 open");
+            .expect("idempotent current schema open");
         assert_eq!(
             SqliteStore::verify_schema_version_on_disk(&lib_dir).unwrap(),
-            4
+            crate::storage::CURRENT_SCHEMA_VERSION
         );
     }
 

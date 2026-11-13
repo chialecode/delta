@@ -1,6 +1,6 @@
 # 统一能力与适配接口
 
-版本 0.4 · 2026-11-08 · 公共类型与 M1–M2 实现边界见第 7 节，尚非稳定 SDK。金融口径见 [金融规则](financial-engine.md)，AI 状态见 [上下文管理](context-state-management.md)。
+版本 0.5 · 2026-11-12 · 公共类型与 M1–M4 实现边界见第 7 节，尚非稳定 SDK。金融口径见 [金融规则](financial-engine.md)，AI 状态见 [上下文管理](context-state-management.md)。
 
 ## 1. 单一调用路径
 
@@ -50,6 +50,7 @@ ErrorEnvelope
 | MarketDataProvider | 能力、标的、日线/公司行动/FX、游标及来源时间 | 用余额或调整行情改写持仓 |
 | JournalService | 保存/版本、检索、关联、ChartContext | 无范围查询整个笔记库 |
 | ChartAdapter | 加载范围、窗口/指标/标记、选择、导入/导出上下文 | 自行维护指标算法和未来可见性 |
+| TrainingService / TrainingDataPort | 冻结 `dataset_version` 与 `fee_profile_version`、SQL/宿主截断 `visible_until`、单步原子提交与检查点、三路重放、`m4-report-1` 报告与结束后揭示 | UI/CLI/AI 绕过端口直接读取行情表或修改真实账本 |
 | AgentRuntime | start、prompt、cancel、checkpoint/close、resume、能力检测与事件 | 模型框架直接访问业务库 |
 | AnalysisToolGateway | 列白名单、schema 校验、查询与证据回执 | 任意 SQL、shell、文件和真实交易工具 |
 
@@ -75,9 +76,9 @@ ModelClient 负责类型化请求与协议事件，AgentRuntime 负责工具循�
 
 相同 scope/版本的 UI 查询与 AI 工具数值、质量和证据一致；未知工具、伪造范围、陈旧 generation 和失效引用均被拒绝。覆盖重复请求、并发更正、取消晚到响应、断开恢复、错误映射、金额跨语言无损和协议版本不匹配。首轮场景见路线中的 AC 与各阶段（M1–M5）验收用例。
 
-## 7. M1–M2 实际接口实现
+## 7. M1–M4 实际接口实现
 
-M1–M2 的消费者包括 CLI、GPUI 桌面工作台（`delta-desktop`）与只读 AI 复盘工具网关（`AnalysisToolGateway`）。`AppHost` 在单写者宿主线程上持有 `AppService`，对外提供带范围的查询契约（`AnalysisScope` → `ResultEnvelope<T>` + `EvidenceRef` + `m2-ledger-1`）与统一能力目录（`CapabilityCatalog`）。AI 只读工具严格投影自能力目录的 7 项只读子集（`scope.describe`、`report.period_breakdown`、`ledger.list_transactions`、`ledger.holdings_lots`、`reconcile.list_issues`、`data.quality_summary`、`journal.search_notes`），同一范围与版本下桌面 UI 查询与 AI 工具调用执行同一函数并产生逐字段一致的 `ResultEnvelope`（`M2-A-01`）。
+M1–M4 的消费者包括 CLI、GPUI 桌面工作台（`delta-desktop`）与只读 AI 复盘工具网关（`AnalysisToolGateway`）。`AppHost` 在单写者宿主线程上持有 `AppService`（对外零 `pub async fn`），提供带范围的查询契约（`AnalysisScope` → `ResultEnvelope<T>` + `EvidenceRef` + `m2-ledger-1`）与统一能力目录（`CapabilityCatalog`）。真实账本范围下 AI 只读工具严格投影自能力目录的 7 项只读子集（`scope.describe`、`report.period_breakdown`、`ledger.list_transactions`、`ledger.holdings_lots`、`reconcile.list_issues`、`data.quality_summary`、`journal.search_notes`），同一范围与版本下桌面 UI 查询与 AI 工具调用执行同一函数并产生逐字段一致的 `ResultEnvelope`（`M2-A-01`）。
 
 `AnalysisScope` 实际包含 `target`、解析后的 `resolved_accounts`、`start_date`、`as_of_date`、`report_currency`、`dataset_version`、`ledger_revision`、`journal_revision`、`visible_until`、`include_notes` 与 `versions_frozen`。第一次解析把 latest 与账户成员解析成明确快照；冻结后，`dataset_version=0` 表示尚无行情，空账户集表示没有获准账户，不能因新数据或新账户自动扩大。当前不支持的旧账本修订明确拒绝；笔记内容与权限指纹变化使冻结范围失效。日期查询同时执行期间与截止校验，工具参数不能覆盖宿主范围。
 
@@ -90,3 +91,5 @@ AI 每个 run 从 SQLite Backup API 取得一致的私有内存副本，全部�
 长作业句柄保留独立宿主引用和写入 lease。取消回执表示已接受取消，`worker_finished` 才表示后台资源已释放；同步进度报告真实 phase 与 prepared/published 数量。取消与 deadline 会中断在途 provider future 和重试等待，不能只在两次 HTTP 请求之间检查。
 
 `FixtureAccountProvider::from_recorded_response` 只解析声明的合成 OKX/Binance 原生 data 数组，不发网络请求；`ModelClient` 在 `delta-model` 中实现 `openai-responses` 与 `openai-chat-completions` 双协议 SSE 适配，经本地回环服务完成全套协议与流式边界验证（`M2-K03` / `M2-A-13`），真实在线模型服务由用户按 `ACT-01` 配置后启用。
+
+M4 训练工作流在 `AppService` 与 `AppHost` 上新增完整同步训练接口（费用模板版本管理、运行创建/重抽/启停/推进/结束/揭示/重试/重放/删除预览、委托预览与提交/撤单、训练笔记与归档、自主评分、`get_training_workspace_snapshot`、`get_training_report` 与 `open_training_evidence`），`delta-desktop` 与 `delta-cli training` 直接消费同一批 DTO 并输出一致的数据/引擎/费用版本（`M4-A-15`）。所有训练行情与公司行动读取均由 `delta-data::m4_schema` SQL 截断端口提供（`delta-app` 生产代码对 `bar` 表零裸查询，`M4-K01`）；未达到 `finished` 显式揭示前，隐藏运行在全部出站 DTO 与工具回执中脱敏真实标的与日期。`ScopeTarget::TrainingRun(run_id)` 仅对 `finished` 运行放行（否则返回 `SIM_AI_REVIEW_REQUIRES_FINISHED` / `SCOPE_DENIED`），清空 `resolved_accounts` 阻断真实账本工具，只开放 `training.run_summary`、`training.orders_and_fills`、`training.report`、`training.notes`、`training.revealed_bars` 五项只读工具，并将范围修订绑定至 `latest_state_hash + revealed`（`M4-A-14`）。开放导出同步生成 `simulation/simulation_bundle.json` 与 8 张 `simulation/*.csv`（`M4-A-11`）。

@@ -4,7 +4,7 @@
 
 ## 最短阅读路径
 
-首次接手：根 [AGENTS](../AGENTS.md) → [项目关键事实](project-baseline.md) → [当前状态](delivery/status.md) → [M2 阶段计划](delivery/stage-plan.md) → [工程事项](decisions/open-questions.md) 与 [用户待办](../USER-ACTIONS.md)。按变更触发读专题，不要求每次全量阅读。
+首次接手：根 [AGENTS](../AGENTS.md) → [项目关键事实](project-baseline.md) → [当前状态](delivery/status.md) → [当前阶段计划](delivery/stage-plan.md) → [工程事项](decisions/open-questions.md) 与 [用户待办](../USER-ACTIONS.md)。按变更触发读专题，不要求每次全量阅读。
 
 | 专题 | 正本 | 管理内容 |
 | --- | --- | --- |

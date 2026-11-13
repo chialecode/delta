@@ -178,31 +178,8 @@ pub fn resolve_user_documents_root() -> Result<PathBuf, PathResolutionError> {
 /// it so a source/dev build can never target the release user-file root `<Documents>/delta`.
 pub(crate) fn system_documents_root() -> Result<PathBuf, PathResolutionError> {
     #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::System::Com::CoTaskMemFree;
-        use windows_sys::Win32::UI::Shell::{
-            FOLDERID_Documents, SHGetKnownFolderPath, KF_FLAG_DONT_VERIFY,
-        };
-        let mut psz_path: windows_sys::core::PWSTR = std::ptr::null_mut();
-        let hr = SHGetKnownFolderPath(
-            &FOLDERID_Documents,
-            KF_FLAG_DONT_VERIFY as u32,
-            std::ptr::null_mut(),
-            &mut psz_path,
-        );
-        if hr == 0 && !psz_path.is_null() {
-            let mut len = 0usize;
-            while *psz_path.add(len) != 0 {
-                len += 1;
-            }
-            let slice = std::slice::from_raw_parts(psz_path, len);
-            let os_str = std::ffi::OsString::from_wide(slice);
-            CoTaskMemFree(psz_path as *const std::ffi::c_void);
-            return Ok(PathBuf::from(os_str));
-        }
-        if !psz_path.is_null() {
-            CoTaskMemFree(psz_path as *const std::ffi::c_void);
-        }
+    if let Some(path) = known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Documents) {
+        return Ok(path);
     }
 
     #[cfg(not(windows))]
@@ -212,6 +189,50 @@ pub(crate) fn system_documents_root() -> Result<PathBuf, PathResolutionError> {
     Err(PathResolutionError::MissingBaseFolder(
         "FOLDERID_Documents / USERPROFILE".to_string(),
     ))
+}
+
+/// The current user's Desktop folder (`FOLDERID_Desktop`, Inno Setup's `{userdesktop}`), where
+/// per-user installers put the desktop shortcut. `None` off Windows or when it is not registered.
+pub fn user_desktop_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        known_folder(&windows_sys::Win32::UI::Shell::FOLDERID_Desktop)
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Resolve a Windows known folder through `SHGetKnownFolderPath`.
+#[cfg(windows)]
+fn known_folder(id: &windows_sys::core::GUID) -> Option<PathBuf> {
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DONT_VERIFY};
+    // SAFETY: SHGetKnownFolderPath writes a NUL-terminated CoTaskMem string (or null) that is
+    // read once and freed here.
+    unsafe {
+        let mut psz_path: windows_sys::core::PWSTR = std::ptr::null_mut();
+        let hr = SHGetKnownFolderPath(
+            id,
+            KF_FLAG_DONT_VERIFY as u32,
+            std::ptr::null_mut(),
+            &mut psz_path,
+        );
+        let mut found = None;
+        if hr == 0 && !psz_path.is_null() {
+            let mut len = 0usize;
+            while *psz_path.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(psz_path, len);
+            found = Some(PathBuf::from(std::ffi::OsString::from_wide(slice)));
+        }
+        if !psz_path.is_null() {
+            CoTaskMemFree(psz_path as *const std::ffi::c_void);
+        }
+        found
+    }
 }
 
 #[cfg(windows)]

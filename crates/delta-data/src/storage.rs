@@ -16,7 +16,68 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+
+const CORE_LIBRARY_TABLES: &[&str] = &[
+    "library",
+    "account",
+    "portfolio",
+    "portfolio_member",
+    "asset",
+    "instrument",
+    "instrument_alias",
+    "subscription",
+    "fx_subscription",
+    "provider_connection",
+    "import_batch",
+    "import_row",
+    "source_record",
+    "sync_checkpoint",
+    "balance_snapshot",
+    "reconciliation_issue",
+    "economic_event",
+    "journal_transaction",
+    "posting",
+    "cost_lot",
+    "holding_projection",
+    "calendar_session",
+    "dataset_version",
+    "dataset_partition",
+    "dataset_publication",
+    "event_book_fx",
+    "bar",
+    "corporate_action",
+    "fx_rate",
+    "coverage_gap",
+    "data_quality_issue",
+    "raw_payload",
+    "analysis_report",
+];
+
+pub(crate) fn collect_library_table_counts(
+    conn: &Connection,
+) -> Result<BTreeMap<String, u64>, StorageError> {
+    let mut counts = BTreeMap::new();
+    for table in CORE_LIBRARY_TABLES
+        .iter()
+        .chain(crate::m2_schema::SCHEMA_4_TABLES.iter())
+        .chain(crate::m4_schema::SCHEMA_5_TABLES.iter())
+    {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
+            params![table],
+            |r| r.get(0),
+        )?;
+        if exists {
+            let cnt: i64 =
+                conn.query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |r| {
+                    r.get(0)
+                })?;
+            counts.insert((*table).to_string(), u64::try_from(cnt).unwrap_or(0));
+        }
+    }
+    Ok(counts)
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -46,6 +107,8 @@ pub struct LibraryManifest {
     pub created_at: String,
     pub updated_at: String,
     pub file_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub table_row_counts: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -847,6 +910,7 @@ impl SqliteStore {
             }
         }
         crate::m2_schema::apply_schema_4_ddl(&tx, schema)?;
+        crate::m4_schema::apply_schema_5_ddl(&tx, schema)?;
         tx.execute(
             "UPDATE library SET schema_version=?1",
             params![CURRENT_SCHEMA_VERSION],
@@ -1209,6 +1273,7 @@ impl SqliteStore {
         visible_until: Option<DateTime<Utc>>,
     ) -> Result<Vec<BarRecord>, StorageError> {
         let adj_str = adjustment.as_str();
+        let cutoff_str = visible_until.map(|dt| dt.to_rfc3339());
         let sql_with_source =
             "SELECT id, instrument_id, timeframe, session, session_date, open_at, close_at,
                     open, high, low, close, volume, source, adjustment, is_final,
@@ -1220,6 +1285,7 @@ impl SqliteStore {
                AND source = ?4
                AND valid_from_version <= ?5
                AND (valid_to_version IS NULL OR ?5 < valid_to_version)
+               AND (?6 IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', close_at) <= strftime('%Y-%m-%dT%H:%M:%fZ', ?6))
              ORDER BY open_at ASC";
         let sql_any_source =
             "SELECT id, instrument_id, timeframe, session, session_date, open_at, close_at,
@@ -1231,6 +1297,7 @@ impl SqliteStore {
                AND adjustment = ?3
                AND valid_from_version <= ?4
                AND (valid_to_version IS NULL OR ?4 < valid_to_version)
+               AND (?5 IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', close_at) <= strftime('%Y-%m-%dT%H:%M:%fZ', ?5))
              ORDER BY open_at ASC";
 
         let parse_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Option<BarRecord>> {
@@ -1312,7 +1379,7 @@ impl SqliteStore {
         if let Some(src) = source {
             let mut stmt = self.conn.prepare_cached(sql_with_source)?;
             let rows = stmt.query_map(
-                params![instrument_id, timeframe, adj_str, src, version],
+                params![instrument_id, timeframe, adj_str, src, version, cutoff_str],
                 parse_row,
             )?;
             for row in rows {
@@ -1323,7 +1390,7 @@ impl SqliteStore {
         } else {
             let mut stmt = self.conn.prepare_cached(sql_any_source)?;
             let rows = stmt.query_map(
-                params![instrument_id, timeframe, adj_str, version],
+                params![instrument_id, timeframe, adj_str, version, cutoff_str],
                 parse_row,
             )?;
             for row in rows {
@@ -1725,6 +1792,8 @@ impl SqliteStore {
             file_hashes.insert(relative, sha256_file(&path)?);
         }
 
+        let table_row_counts = collect_library_table_counts(&self.conn)?;
+
         let manifest = LibraryManifest {
             schema_version: schema_ver,
             library_id: lib_id,
@@ -1734,6 +1803,7 @@ impl SqliteStore {
             created_at,
             updated_at: Utc::now().to_rfc3339(),
             file_hashes,
+            table_row_counts,
         };
         let manifest_path = self.root_dir.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
@@ -1770,11 +1840,14 @@ impl SqliteStore {
         }
 
         let backup_db_path = backup_dir.join("delta.sqlite");
-        {
+        let backup_table_counts = {
             let mut dst_conn = Connection::open(&backup_db_path)?;
-            let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst_conn)?;
-            backup.run_to_completion(128, Duration::from_millis(10), None)?;
-        }
+            {
+                let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst_conn)?;
+                backup.run_to_completion(128, Duration::from_millis(10), None)?;
+            }
+            collect_library_table_counts(&dst_conn)?
+        };
 
         let mut file_hashes = BTreeMap::new();
         file_hashes.insert("delta.sqlite".to_string(), sha256_file(&backup_db_path)?);
@@ -1788,6 +1861,7 @@ impl SqliteStore {
 
         let mut manifest = self.sync_manifest()?;
         manifest.file_hashes = file_hashes;
+        manifest.table_row_counts = backup_table_counts;
         let manifest_path = backup_dir.join("manifest.json");
         fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
         Ok(manifest)
@@ -1885,6 +1959,14 @@ impl SqliteStore {
                 "backup identity mismatch".into(),
             ));
         }
+        if !manifest.table_row_counts.is_empty() {
+            let source_counts = collect_library_table_counts(&source)?;
+            if source_counts != manifest.table_row_counts {
+                return Err(StorageError::IntegrityFailed(
+                    "backup table row counts mismatch manifest".into(),
+                ));
+            }
+        }
         drop(source);
 
         // Copy verified files to target_dir
@@ -1927,6 +2009,23 @@ impl SqliteStore {
             return Err(StorageError::IntegrityFailed(format!(
                 "restored database has {fk_violations} foreign key violations"
             )));
+        }
+        if !manifest.table_row_counts.is_empty() {
+            let restored_counts = collect_library_table_counts(&store.conn)?;
+            for (table, &expected) in &manifest.table_row_counts {
+                let actual = restored_counts.get(table).copied().unwrap_or(0);
+                if manifest.schema_version == CURRENT_SCHEMA_VERSION {
+                    if actual != expected {
+                        return Err(StorageError::IntegrityFailed(format!(
+                            "restored table '{table}' count mismatch: expected {expected}, got {actual}"
+                        )));
+                    }
+                } else if actual < expected {
+                    return Err(StorageError::IntegrityFailed(format!(
+                        "upgraded restored table '{table}' lost rows: expected >= {expected}, got {actual}"
+                    )));
+                }
+            }
         }
         Ok(store)
     }

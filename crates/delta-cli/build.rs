@@ -1,10 +1,12 @@
-//! Windows resources for the CLI binary (`S-28`): Δ icon and VERSIONINFO.
+//! Windows resources for the CLI binary (`S-28`): "D" icon (`icon-dev.ico` for development
+//! identities, as the desktop binary) and VERSIONINFO.
 
 fn main() {
     for name in ["DELTA_VERSION", "DELTA_IDENTITY", "DELTA_CHANNEL"] {
         println!("cargo:rerun-if-env-changed={name}");
     }
     println!("cargo:rerun-if-changed=../delta-desktop/assets/icon.ico");
+    println!("cargo:rerun-if-changed=../delta-desktop/assets/icon-dev.ico");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -14,6 +16,11 @@ fn main() {
             _ => "delta-dev".into(),
         }
     });
+    let icon = if identity.starts_with("delta-dev") {
+        "../delta-desktop/assets/icon-dev.ico"
+    } else {
+        "../delta-desktop/assets/icon.ico"
+    };
     let version = std::env::var("DELTA_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").unwrap());
     let core: Vec<u64> = version
@@ -26,7 +33,7 @@ fn main() {
     let packed = (core[0] << 48) | (core[1] << 32) | (core[2] << 16);
     let mut resource = winresource::WindowsResource::new();
     resource
-        .set_icon("../delta-desktop/assets/icon.ico")
+        .set_icon(icon)
         .set("ProductName", "DELTA")
         .set("FileDescription", &format!("{identity} command line"))
         .set("CompanyName", "DELTA Contributors")

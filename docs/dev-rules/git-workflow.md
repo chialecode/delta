@@ -16,7 +16,7 @@
 
 1. 用户 D-09 明确要求：同一阶段在 push 前尽可能只保留一个 commit。
 2. A 在阶段父提交之后建立当前阶段（阶段与计划版本见 [阶段计划](../delivery/stage-plan.md)）的计划提交；push 前 B 的实现、A 的审核修正和 B 的返工**直接 `git commit --amend -s` 进该阶段提交**，保留 DCO `Signed-off-by`，不把中间过程、错误实现或沟通轮次留作独立提交。
-3. 阶段父提交按唯一计划固定，amend 前后核对不变；M3 为已合并的 M2 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`。不得误 amend 第一提交、已关闭阶段或无关提交。
+3. 阶段父提交按唯一计划固定，amend 前后核对不变；M4 为 `main` `45ac8c527ab5b51217d5f712deebd704e9d539ef`（M3 squash 与 v0.1.1 发布记录之后）。不得误 amend 第一提交、已关闭阶段或无关提交。
 4. 暂存与提交前必须执行 `python scripts/check_docs.py` 与 `git diff --check`，使用 `git add -u` 或明确文件路径暂存（严禁 `git add .` 或 `git clean -fdx`）。每次 amend 后核对父提交不变、工作区剩余未跟踪文件（如 `workers/agent/`）归属清楚且未被混入暂存区。最终交付消息给出**新的完整 SHA**。
 
 ## 3. 远端动作、低频 GitHub 调用与明确授权（D-14 / D-18）
@@ -36,5 +36,5 @@
 - **仓库入口**：为防止垃圾内容，外部只开放 Discussions；关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）；安全问题走私密漏洞报告。期望配置见 [repository-settings.json](../../.github/repository-settings.json)，以 GitHub 实际回读为准。
 - **Actions 白名单**：仓库只允许 `actions/checkout@*` 与 `actions/setup-node@*`（GitHub 实际回读，2026-11-08）。workflow 不得引入其他 action；文档门禁 `scripts/check_docs.py` 无第三方依赖，CI 直接使用 runner 自带 `python3`。需要新 action 时先在 USER-ACTIONS 登记远端设置变更。
 - **GitHub API / CLI 低频原则**：执行已获授权的远端查询或配置时，优先单次 `gh api` / `gh pr view` 获取所需字段，禁止高频轮询 CI 状态或重复调用远端写操作。
-- 远端 `origin/main` 当前为 M2 squash 提交 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`（PR #2，2026-11-09）。M3 阶段分支 `codex/m3-installer-update` 以其为唯一父提交；在用户针对 [USER-ACTIONS](../../USER-ACTIONS.md) 中具体 ACT 明确授权前不推送。阶段编号与 PR 编号不绑定（[D-28](../decisions/confirmed-decisions.md)），实际 PR 号记录在阶段报告与执行状态。
+- 远端 `origin/main` 当前为 `45ac8c527ab5b51217d5f712deebd704e9d539ef`（M3 经 PR #3 squash 为 `6f0aff3`，其后 PR #4 内置更新公钥、PR #5 记录 v0.1.1 发布，2026-11-12）。M4 阶段分支 `codex/m4-kline-training` 以其为唯一父提交；在用户针对 [USER-ACTIONS](../../USER-ACTIONS.md) 中具体 ACT 明确授权前不推送。阶段编号与 PR 编号不绑定（[D-28](../decisions/confirmed-decisions.md)），实际 PR 号记录在阶段报告与执行状态。
 - 远端重建或历史改写后，先核对本地 `main` 与 `origin/main` 是否分叉再切换；分叉的旧提交先用 `git bundle` 备份到 `.local/` 再对齐（2026-11-08 本地旧 `main` `27b26d1` 已备份为 `.local/rebuild-backup-20261108/`）。

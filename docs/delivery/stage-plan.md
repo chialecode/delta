@@ -1,117 +1,136 @@
-# M3：Windows 安装包、版本与自动更新实施计划（delta / delta-dev）
+# M4：K 线训练实施计划（回放时钟、模拟委托、训练报告与结束后 AI 复盘）
 
-版本 **1.0** · 2026-11-09 · 编制：Agent A · 执行：Agent B · 当前状态见 [执行状态](status.md)。本计划在 M2 v1.0（[PR #2](https://github.com/chialecode/delta/pull/2) squash 合并为 `main` `5f30f6e`，证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）之上执行。按用户 2026-11-09 指示（[D-31](../decisions/confirmed-decisions.md)），先解决安装包问题，再进入 K 线训练（M4）。
+版本 **1.0** · 2026-11-12 · 编制：Agent A · 执行：Agent B · 当前状态见 [执行状态](status.md)。本计划在 M3 v1.0（[PR #3](https://github.com/chialecode/delta/pull/3) squash 合并为 `main` `6f0aff3`，证据见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）和首个正式版 v0.1.1（`main` `45ac8c5`）之上执行。按 [D-31](../decisions/confirmed-decisions.md) 的阶段顺序，用户 2026-11-12 指示开启新阶段，即 `LOOP-01` 的 M4 部分。
 
-## 1. 现状问题与目标
+## 1. 现状与目标
 
-M2 交付的是“便携 ZIP＋`delta-cli package-install`”。它可以安装和卸载，但还不是用户可用的安装包：
+已有基础：M1 的封存数据版本（`dataset_version`）、日线与公司行动、交易日历、`filter_visible_final_bars` 与纯 Rust 指标；M2 的 `AnalysisScope.visible_until`、`KlineViewport` 与自绘 K 线、单写者 `AppHost`、只读 AI 工具网关与证据核验；M3 的安装、单实例与签名更新。仓库里还**没有**模拟账户、撮合、费用预设、训练持久化或训练界面；[金融规则](../design/financial-engine.md)第 6～9 节、[数据模型](../design/data-model.md)第 8 节、[交互](../design/interaction-and-workflows.md)第 6 节与 [AI 设计](../design/ai-design.md)第 7 节已定义口径，但尚无实现。
 
-- 没有 `setup.exe`，没有开始菜单快捷方式，“应用和功能”里没有卸载入口。
-- 可执行文件没有图标和版本资源；两个通道的版本都固定为 `0.1.0`。
-- 没有单实例，也没有升级路径：覆盖安装和正在运行的应用会冲突。
-- 没有更新机制；H-03 干净机器检查仍未执行。
+目标（FR-TRN-01～06）：
 
-目标：
-
-1. **真正的按用户安装包**：正式版 `delta`、开发版 `delta-dev` 各一个 `setup.exe`。无需管理员，两个通道可并存。安装后有开始菜单入口和“应用和功能”卸载入口；升级就地完成；卸载默认保留应用数据（[D-26](../decisions/confirmed-decisions.md)）。
-2. **版本与身份**：正式版、开发版和测试身份的版本号可推算，并写进 build-info、Windows 版本资源和“关于”页；有 Δ 应用图标。
-3. **开发版本机自动更新**：打包通过后，用一条显式命令把本机开发版升到新构建。运行中的开发版先保存再退出，装完按原状态重开；绝不触碰正式版。
-4. **正式版联网更新**：从 GitHub Releases 检查和下载更新。安装包另有 Ed25519 分离签名，内置公钥校验通过后才安装；拒绝降级、篡改和非 HTTPS。安装前先做一致性备份。
-5. **可验证**：`verify-stage --stage M3` 以独立的测试安装身份真实执行静默安装、升级、更新、卸载。开发者的正式版和开发版安装与数据不被触碰。
+1. **看不到未来**：训练只经回放时钟取数。图表、指标、列表、订单和 AI 拿到的都是截断后的数据；未来数据注入哨兵值后结果不变。
+2. **可信的模拟成交**：现货做多，市价/限价/止损市价/OCO 与入场附带止盈止损；日线固定路径与跳空规则；费用、滑点、点差分别配置并冻结版本；资金或持仓不足明确拒绝。
+3. **可恢复、可重放**：每一步原子保存；暂停、关闭、崩溃后恢复不重复成交；相同输入、种子、数据与引擎版本得到相同结果；重新尝试生成新运行，原运行不变。
+4. **说清楚结果**：训练报告给出收益、回撤、费用、交易统计、MAE/MFE、计划执行率与样本限制，与同期买入持有对照。
+5. **结束后复盘**：训练中可记录理由；结束后先展示过程和结果，再揭示后续行情与真实标的/日期，然后可用 AI 复盘；模拟数据永不进入真实账本。
+6. **同一服务**：桌面、CLI、AI 与门禁使用同一个 `delta-app` 训练服务。
 
 ## 2. 开始基线、分支与 Git 规则
 
-- 阶段父提交：`main` `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`（M2 squash）。当前分支 `codex/m3-installer-update`。本计划所在提交是父提交之后唯一的阶段提交；B 实现、A 审核修正与返工在 push 前 `git commit --amend -s` 进该提交（D-09、D-27），完整 SHA 以交接消息为准。
-- 工作区保护：未跟踪 `workers/agent/` 不读取、不构建、不暂存。`.local/` 下 M1/M2 报告与安装包保留。
-- 工具链：沿用 `rust-toolchain.toml` `1.99.1`；Windows 目标 `x86_64-pc-windows-msvc`＋静态 CRT（M2 已建立）。
-- 远端：push、PR、合并、发布 GitHub Release、修改 Actions 白名单均需用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 对具体动作授权。
+- 阶段父提交：`main` `45ac8c527ab5b51217d5f712deebd704e9d539ef`（含 M3 squash 与 v0.1.1 发布记录）。当前分支 `codex/m4-kline-training`。本计划所在提交是父提交之后唯一的阶段提交；B 实现、A 审核修正与返工在 push 前 `git commit --amend -s` 进该提交（D-09、D-27），完整 SHA 以交接消息为准。
+- 工作区保护：未跟踪 `workers/` 不读取、不构建、不暂存。`.local/` 下各阶段报告、安装包与备份保留。
+- 工具链：沿用 `rust-toolchain.toml` `1.99.1`、`x86_64-pc-windows-msvc`＋静态 CRT、Inno Setup 7.1.1。
+- 远端：push、PR、合并、发布新版本均需用户在 [USER-ACTIONS](../../USER-ACTIONS.md) 对具体动作授权。
 
-## 3. A 已定案的阶段技术决定（B 不再重新选型）
+## 3. 阶段开始清理（A 已执行）
 
-M1 的 S-01～S-11、M2 的 S-12～S-24 继续有效。M2 的 S-23（cargo-packager NSIS，备选便携 ZIP）由 S-25 取代。
+按 [阶段清理规则](../governance/documentation-policy.md#stage-cleanup) 盘点 `git ls-files`（174 个跟踪文件）、`git status` 与忽略目录：
+
+| 类别 | 对象与处置 |
+| --- | --- |
+| 提炼后迁移 | M3 `docs/delivery/stage-report.md` → [2026-11-12 M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)（加归档说明、修相对链接），全部入链改指新路径；未关闭项 H-03、H-04、TEST-02、ACT-10 已在正本 |
+| 精炼 | 执行状态、路线、追踪（NFR-11 改为已实现并挂 M3 证据）、文档导航、项目关键事实、Git 规则中的远端现状、质量门禁、仓库地图、集中台账与用户待办改为 M4 现状 |
+| 原样保留 | `m1`～`m3-stage-cases.json`（各阶段报告引用、可复验）、`tests/fixtures`、各阶段证据、`scripts/` 全部工具 |
+| 交 B 删除（需改代码） | `Packager.toml`：M2 的 cargo-packager 配置，M3 起已由 Inno Setup 取代，唯一使用方是 `crates/delta-cli/src/verify.rs` 的指纹清单；B 在 W07 同时删除文件与引用，并同步仓库地图 |
+| 忽略目录 | `.local/` 里重建前的旧过程文件（`r2-*`、旧 `m1-*` 日志等）不在 Git 中，规则禁止按名称批量删除，本阶段不动；构建产物继续用 `scripts/clean_artifacts.py` |
+
+## 4. A 已定案的阶段技术决定（B 不再重新选型）
+
+M1 的 S-01～S-11、M2 的 S-12～S-24（S-23 已由 S-25 取代）、M3 的 S-25～S-35 继续有效。
+
+### 4.1 开源依据（2026-11-12 查证）
+
+| 候选 | 官方来源与版本 | 结论 |
+| --- | --- | --- |
+| NautilusTrader `nautilus-execution` / `nautilus-backtest` | crates.io 0.68.0（2026-11-10），LGPL-3.0-only；`OrderMatchingEngine::process_bar` 把一根 K 线拆成 O/H/L/C 价格点，默认 O→H→L→C，可选按开盘离高低点远近自适应 | **不依赖、不复制**：LGPL 在单一静态 Rust 二进制中的再链接义务与 D-24 分发方式不符；自有定点 `Price`/`Quantity` 类型和整套事件框架与 `rust_decimal` 账本不兼容。只借鉴“把 K 线拆成价格路径逐段触发”的设计思路，路径顺序按本项目[金融规则](../design/financial-engine.md)第 7 节固定为 O→L→H→C（多头保守） |
+| barter-rs `barter-execution` | crates.io 0.9.0（2026-08-20），MIT | **不采用**：模拟交易所面向订单簿/即时成交，没有日线跳空、OCO、按订单最低收费和 Decimal 费用组件；其 MIT 许可允许参考，但接入成本高于自研 |
+| RaptorBT、rust_bt 等小型 OHLC 回测器 | GitHub，2026 年活跃度低或带 Python 绑定 | **不采用**：成熟度不足；RaptorBT 的“挂单从下一根开始撮合、跳空按开盘价成交”与本项目规则一致，作为对照用例来源 |
+| 随机数 | `rand_chacha` 0.10.0（2026-02-02，MIT OR Apache-2.0） | **不新增依赖**：用已有 `sha2` 实现计数器模式确定性随机数（S-38），算法随引擎版本冻结，不受 `rand` 分布实现升级影响 |
+
+### 4.2 决定
 
 | ID | 决定 | 理由 / 退出条件 |
 | --- | --- | --- |
-| S-25 安装器 | **Inno Setup 7.1.x**（2026-10-28 发布 7.1.1，官方下载页推荐 7.x；许可为 Inno Setup License，允许含商用的使用与再分发，需保留版权声明）。只作构建期工具，运行期仍为单一 Rust 二进制（D-22）。B 锁定精确版本，记录安装包 SHA-256；构建机通过 `winget install JRSoftware.InnoSetup`（指定版本、按用户范围）或官方安装包安装。`.iss` 模板入库，由 `delta-cli package-build` 注入通道参数后调用 `ISCC.exe`，找不到或版本不符即失败，不静默退回 ZIP | GPUI 的来源项目 Zed 在 Windows 上用 Inno Setup，按通道分 AppId/AppMutex，`PrivilegesRequired=lowest` 按用户安装（`script/bundle-windows.ps1`、`crates/zed/resources/windows/zed.iss`，2026-11-09 查证）。未选：cargo-packager（最近发行 0.11.8 为 2025-11-27，构建时还需另取 NSIS）；cargo-wix/MSI（按用户 MSI 与并存更繁琐）；Velopack（固定安装到 `%LOCALAPPDATA%\<id>`，与 D-26 的安装与数据位置冲突） |
-| S-26 通道身份 | 正式版：AppId GUID-R、显示名 `DELTA`、安装到 `{localappdata}\Programs\delta`、`delta.exe` / `delta-cli.exe`、互斥量 `delta-instance`、AppUserModelID `delta.app`。开发版：GUID-D、`DELTA Dev`、`Programs\delta-dev`、`delta-dev-instance`、`delta.app.dev`。**测试身份**（仅门禁）：`delta-test` / `delta-dev-test`，GUID 与目录、互斥量、数据根全部独立，数据根由门禁指定到随机临时目录。`PrivilegesRequired=lowest`，`ArchitecturesAllowed=x64compatible`，简体中文（默认）＋英文；开始菜单快捷方式必有，桌面快捷方式默认不勾选；卸载只删安装清单内文件和 HKCU 卸载键，永不删除 `%LOCALAPPDATA%\delta(-dev)` 应用数据与“文档”导出 | 两通道并存、数据隔离（D-26）；测试身份使门禁真实安装而不碰开发者已装版本 |
-| S-27 版本 | 正式版 `0.1.N` 由 Git 标签 `v0.1.N` 推算（首个正式版 `0.1.1`）；开发版 `<下一个正式版号>-dev.<UTC yyyymmddHHMMSS>`；测试身份沿用开发版规则。版本由构建环境注入（`DELTA_VERSION`），写进 build-info JSON、Windows `VERSIONINFO` 和“关于”页；发布时不修改 `Cargo.toml`。比较使用 `semver` crate，同通道拒绝降级 | 发布可复现，开发版严格递增 |
-| S-28 图标与资源 | Δ 标识 SVG 源入库（`crates/delta-desktop/assets/icon.svg`），多尺寸 `.ico`（16～256）一次生成后入库并记录生成方式；`build.rs` 用 `winresource`（MIT）写入图标与版本资源，同一图标用于安装器与快捷方式 | 开始菜单和任务栏可识别；不复制任何第三方品牌资产 |
-| S-29 单实例与控制通道 | 每个通道一个命名互斥量（即安装器 `AppMutex`）＋本通道命名管道 `\\.\pipe\<通道>-control`，只接受同一用户会话的连接。命令只有 `focus` 与 `quit-for-update`：后者先等笔记自动保存与进行中的写入完成、保存布局，再退出并回执；忙于同步/导入/AI 时回执 `busy`，不强退 | 安装器 `CloseApplications` 不强杀；更新前可安全退出 |
-| S-30 开发版本机更新 | `delta-cli install-dev [--package <setup.exe>]`：在已打包且门禁通过的产物上执行。若 `delta-dev` 在运行，经控制管道请求 `quit-for-update`，30 s 内未退出即放弃并报告，绝不强杀；然后以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` 静默安装，校验已安装版本等于产物版本；之前在运行则重新启动。命令只接受开发版通道产物，遇到正式版或测试身份直接拒绝 | 安装后立即可用新构建；正式版不受影响 |
-| S-31 正式版联网更新 | 更新服务位于 `delta-app::update`，只在正式版启用：源为 `https://api.github.com/repos/chialecode/delta/releases/latest`（只取非预发布），资产为 `delta-setup-<版本>-x64.exe`、`latest.json`（版本、文件名、大小、SHA-256、发布时间）与 `.sig`。**校验**：Ed25519（`ed25519-dalek` 2.x，BSD-3-Clause）对规范串 `delta-update-v1\n<channel>\n<version>\n<file>\n<sha256>` 的分离签名，公钥内置；只允许 HTTPS，重定向只跟随 `github.com`、`api.github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`；缺签名、签名不符、跨版本/跨通道签名、版本不高于当前、大小或哈希不符一律拒绝。**下载**：存放 `%LOCALAPPDATA%\delta\updates`，HTTP Range 续传，大小上限 512 MiB，后台低优先级。**应用**：顶部工具栏显示“更新就绪”；用户确认后检查忙碌状态，执行现有一致性备份，重新验签，以静默参数启动安装器并退出；安装器按 `AppMutex` 等待退出，完成后重启。启动时最多每 24 h 检查一次，设置页可关闭自动检查、手动检查并查看当前版本与来源（默认开启，见 USER-ACTIONS `Q-05`） | 无代码签名证书时也能保证更新完整性与来源（S-33）；不做块级差分，整包下载 |
-| S-32 发布产物 | `delta-cli release-build --version 0.1.N`：独立 release 构建→PE 导入检查→Inno 打包→SHA-256→Ed25519 签名→`latest.json`，输出到 `.local/reports/m3/release/`。私钥只从仓库外密钥文件 `%APPDATA%\delta-release\update-signing.key`（A 审核按用户 [D-32](../decisions/confirmed-decisions.md) 由凭据管理器改为文件）或环境变量读取，不入库、不写日志；首次生成密钥由 B 在 W05 实现命令，密钥备份交给用户（`ACT-10`）。创建标签和 GitHub Release 由 `gh release create` 执行，需用户对具体版本授权（`ACT-11`）。每周 CI 自动发布依赖 Actions 白名单变更，本阶段不做（`LOOP-04`） | 本地可完整演练；远端发布只在授权后 |
-| S-33 代码签名 | 本阶段不做 Authenticode 签名，SmartScreen 提示如实写入安装说明与 README；Ed25519 只保证更新完整性，不消除 SmartScreen 提示。是否购买证书见 `Q-04` | 没有证书时不阻塞交付 |
-| S-34 M2 便携安装迁移 | 安装器在 `[Code]` 中检测目标目录的 M2 `install-manifest.json`：只删除清单内且哈希一致的文件和两个清单本身，其余文件保留并在日志中列出；之后由安装器接管。`package-install` / `package-uninstall` 改为仅用于测试和迁移诊断，不再出现在用户说明中 | 已按 M2 方式安装的用户可无损升级 |
-| S-35 测试与前台无干扰 | `verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`：默认只做离线单元与契约检查（版本推算、签名、降级、URL 白名单、`.iss` 生成）；`--installer` 构建测试身份安装包，真实静默安装到 `Programs\delta-test*`、启动已安装二进制的 `--build-info` 与 `--ui-smoke`（隐藏窗口）、v1→v2 升级保留数据、经控制管道的 `quit-for-update`、用 `127.0.0.1` 回环 HTTP 源演练联网更新（只有测试身份允许回环 HTTP，正式身份由单元测试证明会拒绝）、卸载后核对文件/HKCU 键已移除而数据保留，最后清理测试数据根。全程 below_normal、不弹窗、不激活窗口；安装器不显示向导（`/VERYSILENT`）。M2、M1 回归继续执行 | D-25；不触碰开发者的正式版/开发版安装与数据 |
+| S-36 模拟引擎 | 新增 `delta-core::sim`（纯 Rust、`rust_decimal`、零 IO）：`SimState` + `step(state, command, bar) -> (state, events)` 纯函数，引擎版本 `m4-sim-1`。现货、做多、禁止负现金/负持仓、无融资、**整笔成交**（不模拟流动性，报告明示）。引擎接口支持多标的固定排序（事件时间、优先级、标的 ID、订单序号），供 M5 回测复用；M4 训练界面只开放单标的 | 一个撮合口径供训练与回测共用（FR-STR-03）；纯函数便于确定性与重放 |
+| S-37 回放时钟与数据端口 | `delta-app` 新增训练数据端口：创建训练时冻结 `dataset_version`；所有训练读取都在宿主查询层带 `visible_until`（当前已收盘的最后一根），只返回 `is_final` 且 `close_at <= visible_until` 的 K 线，截断在 SQL/宿主层完成，UI、指标、订单校验和 AI 都只拿截断结果。时钟只能前进。指标预热可早于展示起点但不晚于时钟。**价格口径**：成交与估值用原始价格；图表与指标用“时点复权”——只回溯应用 `ex_date <= 当前时钟` 的拆股，不提前暴露未来拆股；分红不复权 | [金融规则](../design/financial-engine.md)第 6 节：UI 隐藏不等于底层安全 |
+| S-38 抽样与隐藏 | 种子由用户输入或 `getrandom` 生成，**抽样前**写入运行记录。确定性随机数为 `SHA-256(seed ‖ 用途 ‖ 计数器)` 取 64 位，区间映射用拒绝采样消除偏差。候选池为冻结版本中满足长度的标的与区间：展示历史（默认 120 根）＋训练步数（默认 250 根）＋结束揭示（默认 60 根），且区间内无数据缺口、无 `partial`/`warning` 质量问题、公司行动数据完整；候选池摘要哈希入库。开始前用户可显式“换一个”，换取次数与结果入库；开始后不能换。**隐藏模式**（默认开启）：标的显示为“标的 A（美股/ETF｜加密现货）”，日期显示为“第 n 根”，真实标的与日期只在宿主层保存，训练未结束时发往桌面、CLI 输出与 AI 的 DTO 都不含真实值；价格水平不做变换（报告注明“价格水平可能提示标的”） | [金融规则](../design/financial-engine.md)第 6 节：不能因结果不理想在后台重抽 |
+| S-39 订单与撮合 | 类型：市价、限价、止损市价（买入突破/卖出止损）、OCO（止盈限价＋止损市价）、入场单附带止盈/止损（交易计划）；止损限价本阶段不开放。有效期 `DAY`（只对下一交易时段有效）与 `GTC`。在第 t 根收盘后提交，`eligible_at` 为第 t+1 根开盘。**路径**：每根 K 线按 O→L→H→C 三段单调路径，先处理开盘跳空，再按经过顺序触发；同一根内入场后附带单只在入场点之后的路径段生效；同根双触达按路径先后执行并计入“歧义成交”。**价格**：市价＝开盘价加不利点差/滑点；限价开盘已优于限价按开盘价（加滑点但不劣于限价），否则触及时按限价；止损开盘跳空越过时按开盘价加不利滑点，否则按触发价加不利滑点，不保证止损价。成交价按 `tick_size` 不利方向舍入；用户输入的价格/数量不满足 `tick_size`/`lot_size` 时拒绝并提示最近有效值。零成交量、停牌或来源标记不可交易的 K 线不成交，`DAY` 单过期 | [金融规则](../design/financial-engine.md)第 7 节；AC-12 |
+| S-40 资金与持仓预留 | 买单预留 数量×（限价｜最后收盘价×(1+10% 市价缓冲)）＋最大预估费用；卖单预留持仓数量，OCO 两腿共用一份预留。提交时可用资金/持仓不足即拒绝（`INSUFFICIENT_FUNDS` / `INSUFFICIENT_POSITION`）；市价买单成交时实际成本超过“可用＋本单预留”则整单拒绝（`INSUFFICIENT_FUNDS_AT_FILL`），不缩量 | FR-TRN-02：资金不足明确拒绝 |
+| S-41 费用与成交环境 | `fee_profile_version` 由可组合组件构成：按成交额费率、按股/单位费用、每单固定费、每单最低/最高、收费币种（报价币种或买入所得资产）、舍入（模式与小数位）、计费层级（每笔成交/每订单）。按订单的最低费在订单结束时结算，多笔成交不重复扣。滑点（bps 或 tick）与点差（半价差 bps）独立配置，均按不利方向。版本在训练创建时冻结，修改即新版本。内置模板“零成本”“美股按股收费示例”“加密按成交额示例”标为场景假设；富途美股与欧易现货预设只有在 B 用官方费率页核实并记录来源与日期后才内置，否则只给模板并登记 `LOOP-06` | [金融规则](../design/financial-engine.md)第 8 节；AC-13 |
+| S-42 公司行动 | 训练中遇到拆股（`ex_date` 当日开盘前）：持仓数量×比例、单位成本÷比例、总成本不变，未成交订单以原因 `corporate_action_split` 取消并提示用户重下；现金分红在 `ex_date` 开盘前按持仓入账为训练现金（与 M1/M2 真实账本按支付日记账不同，报告标注此假设）。缺比例或金额的区间不进入候选池 | 原始价格撮合时必须显式处理公司行动 |
+| S-43 持久化与重放 | schema 4 → 5 迁移（迁移前自动一致性备份；旧版本打开 schema 5 资料库按现有规则明确拒绝）。新表：`simulation_run`（kind=training、种子、冻结数据版本、引擎版本、费用版本、币种、状态、`parent_run_id`）、`training_session`（隐藏设置、抽样结果、`visible_until`、展示/训练/揭示范围）、`sim_order`、`sim_fill`、`fee_profile_version`、`simulation_event`（有序命令与引擎事件，含每步状态哈希）、`sim_checkpoint`（每 20 步与暂停时）、`training_note`。每个命令（下单、撤单、推进、记笔记、结束）是一个 SQLite 事务；恢复＝最近检查点＋其后命令重放并校验哈希，哈希不一致标记运行损坏而不是继续。模拟表与真实 `fill`/账本表完全分离，训练前后 `ledger_revision` 不变。重新尝试新建运行（同一抽样、全新状态、引用原运行）。导出包含训练数据，删除训练运行有预览；一致性备份覆盖新表 | [数据模型](../design/data-model.md)第 8 节；AC-09、AC-14、AC-15、AC-20 |
+| S-44 训练报告 | `delta-core` 从事件计算（金额 Decimal）：期末权益与收益率、已实现/未实现、费用合计、按收盘价的权益曲线与最大回撤、持仓时间占比、已关闭交易组（空仓→持仓→空仓）的胜率（零盈亏单列）、盈亏比与 Profit Factor（零亏损输出特殊状态）、期望值（带样本数）；MAE/MFE 以交易组加权平均入场价为基准，入场根只计成交点之后的路径、出场根只计出场点之前，按每单位价格与百分比表示（日线精度估计）；**计划执行率**＝有计划的已关闭交易组中按计划止损/止盈退出、或偏离时记录了理由的比例，无计划交易单列；同期同资金同费用的买入持有作基准。样本限制：交易组数量、歧义成交数、路径假设、费用假设、隐藏模式、期末未平仓按收盘估值 | [金融规则](../design/financial-engine.md)第 5.3 节；AC-18 |
+| S-45 训练笔记与 AI 复盘 | 训练中可记笔记（理由、情绪标签、关联订单），不下单也可记录；结束后可把笔记归档为日志笔记（经正常日志命令保存，标注“来自模拟训练”），模拟成交不进入真实账本。AI 只在运行状态为 `finished` 后可用：`ScopeTarget` 新增训练运行范围，只读工具读取运行摘要、订单/成交、报告、笔记与揭示后的行情；宿主对未结束运行拒绝调用。证据引用指向模拟订单/成交/笔记并可在界面打开。AI 文字与用户自主决策评分分开展示；训练中不提供 AI 建议 | [AI 设计](../design/ai-design.md)第 7 节；AC-19 |
+| S-46 桌面训练工作区 | 工作台新增“训练”页：训练列表（继续/重试/查看报告/删除预览）；新建对话框（市场类别、候选范围或指定标的、区间、长度、种子、初始资金（默认 100,000 报价币种）、费用版本、隐藏开关）；训练区复用 `KlineViewport` 与自绘图表，常驻“模拟训练”标识，下单面板显示价格/数量/预计成本与费用，提交需 `Ctrl+Enter`；“下一根”为 `N` 或 `→`，与提交不共用按键；持仓、委托、资金与笔记面板；“结束训练”→报告→揭示→AI 复盘。桌面只依赖 `delta-app` DTO | [交互](../design/interaction-and-workflows.md)第 6 节；NFR-09 |
+| S-47 CLI 与门禁 | `delta-cli training create|list|show|order|cancel|advance|note|finish|report|replay|retry|delete` 走同一服务，JSON 输出。`verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`：默认执行机械检查、引擎/报告手算夹具、哨兵泄漏、持久化与崩溃恢复、确定性重放、AI 回环、CLI 与无头 UI 测试；`--ui-smoke` 隐藏真实窗口冒烟；`--ui-bench` 测“下一根”交互延迟。全程 below_normal、不弹窗不抢焦点（D-25）；M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）与 M3 v1.0（`--installer --ui-smoke`）在最终指纹回归 | 一条命令复验本阶段 |
 
-### 3.1 范围与不做项
+### 4.3 范围与不做项
 
-- 范围：NFR-07、新增 NFR-11（安装、升级与更新），验收 AC-27（更新为安装器口径）与新增 AC-30。
-- 不做：Authenticode 签名（`Q-04`）、每周 CI 构建与自动发布（`LOOP-04`）、块级差分更新、macOS/Linux 安装包、开发版联网更新。
+- 范围：FR-TRN-01～06；验收 AC-11、AC-12、AC-13、AC-14、AC-15、AC-18、AC-19，并回归 AC-09、AC-20、AC-23、AC-26 中受影响部分。
+- 不做（登记 `LOOP-06`）：部分成交与参与率模型、止损限价、做空/融资/衍生品、多标的同时训练、小时/分钟回放、价格水平变换、训练中 AI 教练模式、真实平台费率自动更新。
 
-## 4. 技术门槛（Spikes）与继续条件
+## 5. 技术门槛（Spikes）与继续条件
 
 | ID | 最小实际验证 | 通过后直接继续 | 失败或异常分支 |
 | --- | --- | --- | --- |
-| M3-K01 Inno 按用户安装 | 测试身份 `.iss` 以 `/VERYSILENT` 安装到 `Programs\delta-test`，不弹 UAC、不出现窗口；HKCU 卸载键存在，静默卸载后移除 | W02 继续 | 7.1.x 有阻断问题时改用同期 6.7.x 并记录；仍不行退回 S-23 便携 ZIP，并在报告中写明未达成项 |
-| M3-K02 AppMutex 与控制管道 | 运行中的测试身份应用收到 `quit-for-update` 后保存并退出；安装器 `AppMutex` 检测到运行时等待而不强杀 | W03/W04 继续 | 管道在隐藏窗口测试中不可用时改用窗口消息 `WM_CLOSE`＋保存钩子，仍须先保存再退出 |
-| M3-K03 Ed25519 与回环更新 | `ed25519-dalek` 2.x 签名/验签；回环 HTTP 源完成检查→Range 续传→验签→静默升级→重启 | W04 继续 | 续传异常时整包重下，上限不变 |
-| M3-K04 静默安装不抢焦点 | 门禁期间可见窗口数 0、前台窗口不变（安装器静默、`--ui-smoke` 隐藏） | W06 继续 | 静默安装仍出现窗口时，改由 `CreateDesktop` 隔离桌面执行并记录 |
+| M4-K01 截断数据端口 | 在 M1 夹具资料库上建一个训练，时钟后的全部 K 线（含公司行动）写入极端哨兵值；图表切片、指标、订单校验、CLI `show` 与 AI 工具输出逐字节不含哨兵 | W02 继续 | 某消费者绕过端口：改为该消费者只能接收端口返回的切片类型（类型层面禁止直接查询行情表），不放宽测试 |
+| M4-K02 确定性重放 | 同一命令序列在两个进程、从检查点恢复与从头重放三种方式下每步状态哈希一致 | W03 继续 | 出现不一致：定位非确定来源（哈希表迭代顺序、时间戳、浮点），改为有序容器与 Decimal；不放宽为容差比较 |
+| M4-K03 下一根延迟 | release 包，展示历史 1,000 根＋默认指标，连续 300 次“下一根”（保存事务＋撮合＋指标增量＋图表切片＋重绘），记录 p50/p95/p99 | W06 继续 | p95 > 100 ms：指标改为追加式增量计算、检查点异步化（不影响逐步事务），仍不达标如实记录并登记，不降低门槛 |
 
-## 5. 工作包、依赖与验收
+## 6. 工作包、依赖与验收
 
-依赖顺序：**W01 → W02 → W03 / W04 并行 → W05 → W06**。先打通最薄切片：W01 版本资源＋W02 测试身份静默安装/卸载（M3-K01）。
+依赖顺序：**W01 → W02 → W03 → W04 / W05 并行 → W06 → W07**。先打通最薄切片：W01 截断端口（M4-K01）＋W02 市价单单步成交。
 
 | 工作包 | 产出 | 正常路径验收 | 失败路径验收 | AC |
 | --- | --- | --- | --- | --- |
-| M3-W01 版本、身份与资源 | 版本推算（标签/开发/测试）、`DELTA_VERSION` 注入、build-info、`VERSIONINFO`＋图标（S-27/S-28）、通道身份常量（S-26）、单实例与控制管道（S-29）、设置页“关于”（版本、通道、源码指纹、数据目录） | 同一源码构建出的正式/开发/测试身份版本号符合规则；第二个实例只唤起已有窗口 | 非法标签、降级版本构建失败；跨通道管道连接被拒 | AC-27、AC-30 |
-| M3-W02 Inno 安装包 | `.iss` 模板（中英文、AppId/AppMutex/CloseApplications、快捷方式、HKCU 卸载、保留数据）、`package-build` 输出 `setup.exe`、包内许可/通知、PE 导入检查沿用、M2 便携安装迁移（S-34） | 两通道 `setup.exe` 并存安装；升级保留资料库、笔记与设置；卸载保留数据 | 正在运行时安装等待保存退出而不强杀；迁移遇哈希不符文件保留并报告 | AC-27、AC-30 |
-| M3-W03 开发版本机更新 | `delta-cli install-dev`（S-30） | 运行中的开发版保存退出→静默安装→按原状态重启，版本与产物一致 | 30 s 未退出则放弃且不改动安装；拒绝正式版/测试身份产物 | AC-30 |
-| M3-W04 正式版联网更新 | `delta-app::update`（检查、续传、验签、拒绝降级、备份、应用）、工具栏“更新就绪”提示、设置页更新区（S-31） | 回环源演练：检查到新版本→下载→验签→备份→静默升级→重启后版本正确且数据完整 | 篡改、缺签名、跨版本签名、降级、非 HTTPS、非白名单重定向、超大文件均拒绝并显示原因；离线时本地功能不受影响 | AC-30 |
-| M3-W05 发布产物与演练 | `delta-cli release-build`、签名密钥生成/读取命令（S-32）、本地发布演练（产物＋回环源升级测试身份） | 产物齐全、签名可验证、`latest.json` 与文件一致 | 缺私钥时明确失败，不生成未签名的“发布”产物 | AC-30 |
-| M3-W06 门禁、文档与回归 | `verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（S-35）、用户安装说明与 SmartScreen 说明、H-03 改为安装器步骤、M2/M1 回归 | 门禁通过并绑定源码指纹；M2 v1.0 与 M1 v2.6 回归通过 | 未运行的安装/在线项保持 not-run | AC-27、AC-30 |
+| M4-W01 回放时钟、抽样与数据端口 | 训练数据端口与时点复权（S-37）、确定性抽样与候选池、隐藏模式脱敏（S-38） | 相同种子与候选池得到相同片段；隐藏模式下 DTO 不含真实标的/日期；时钟只进不退 | 哨兵值不泄漏到任何消费者；数据不足或有质量问题的区间不被抽中；开始后不能换片段 | AC-11、AC-15 |
+| M4-W02 撮合与费用引擎 | `delta-core::sim`（S-36、S-39、S-40、S-42）、费用组件与版本（S-41） | 手算夹具：市价/限价/止损/OCO/附带单、跳空、拆股与分红、费用与舍入逐项一致 | 资金/持仓不足、违反 tick/lot、零成交量、同根双触达、按单最低费跨多笔成交 | AC-12、AC-13 |
+| M4-W03 持久化、恢复与重放 | schema 5 迁移、训练表、事务与检查点、重放与哈希、重试、导出/备份/删除覆盖（S-43） | 暂停→重启→恢复后状态一致；重放得到相同结果；重试新建运行且原运行不变 | 推进中途崩溃无半步；哈希不一致标记损坏；v0.1.1 资料库迁移保留全部数据且先备份；训练前后 `ledger_revision` 不变 | AC-09、AC-14、AC-15、AC-20 |
+| M4-W04 训练报告 | 报告计算与 DTO（S-44） | 手算样本的收益、回撤、费用、胜率、MAE/MFE、计划执行率与基准一致 | 零亏损、零交易、未平仓、无计划交易输出明确状态而非普通数值 | AC-18 |
+| M4-W05 训练笔记与 AI 复盘 | 训练笔记与归档、训练运行 AI 范围与只读工具（S-45） | 结束后 AI 回答引用可打开的模拟订单/成交/笔记；归档笔记出现在日志且标注来源 | 未结束运行调用 AI 被拒；笔记中的越权指令不扩大权限；捏造引用被拦截；模型离线时训练与报告照常 | AC-19 |
+| M4-W06 桌面训练工作区与 CLI | “训练”页与快捷键（S-46）、`delta-cli training`（S-47） | 无头 UI 测试走完新建→下单→推进→结束→报告→揭示；CLI 与 UI 对同一运行输出相同数值 | 误触：推进键不能提交委托；隐藏模式界面无真实名称/日期；后台失败显示原因且不标成功 | AC-23、AC-26 |
+| M4-W07 门禁、文档与回归 | `verify-stage --stage M4`（S-47）、阶段报告、正本同步、删除 `Packager.toml`（第 3 节）、M1/M2/M3 回归；若 `TEST-02` 复现按台账方案修 | 门禁通过并绑定源码指纹；三个阶段回归通过 | 未运行项保持 not-run；真实模型复盘只在 ACT-01 配置后声明 | AC-11～AC-15、AC-18、AC-19 |
 
-用例清单见 [m3-stage-cases.json](m3-stage-cases.json)（`automated` / `manual` / `live`）。B 可以拆分或补充用例，但不得删除已有用例覆盖的需求/AC。
+用例清单见 [m4-stage-cases.json](m4-stage-cases.json)（`automated` / `manual` / `live`）。B 可以拆分或补充用例，但不得删除已有用例覆盖的需求/AC。
 
-## 6. 不得缩减项
+## 7. 不得缩减项
 
-1. 正式版与开发版的安装目录、AppId、互斥量与数据根完全隔离；门禁只用测试身份，绝不安装、升级或卸载开发者的正式版/开发版。
-2. 卸载与升级永不删除应用数据和用户导出；升级前的一致性备份失败时不安装。
-3. 安装器与更新器都不强杀进程，先保存再退出；忙碌时由用户决定。
-4. 更新只接受 HTTPS、白名单主机、内置公钥验签通过且版本更高的安装包；私钥不入库、不进日志。
-5. 静默与前台无干扰（D-25）；离线/回环演练与真实 GitHub 发布分开声明。
-6. M1 v2.6 与 M2 v1.0 全部验收回归保持通过。
+1. 未来数据隔离在宿主数据层实现并有哨兵测试；隐藏模式的真实值不离开宿主。
+2. 金额、数量、费用全程 Decimal；每条成交可从规则手算复核；舍入方向与层级有夹具。
+3. 资金或持仓不足、违反最小单位、不可交易 K 线一律明确拒绝，不缩量、不虚构成交。
+4. 每一步原子保存；恢复不重复成交；重放哈希一致；原运行不被重试或查看改写。
+5. 模拟数据与真实账本、真实成交、真实净资产完全分离；v0.1.1 资料库升级不丢数据。
+6. AI 只在训练结束后可用且只读；证据可打开；离线时训练不受影响。
+7. 静默与前台无干扰（D-25）；回环模型与真实模型分开声明；M1/M2/M3 回归保持通过。
 
-## 7. 真正依赖用户的事项（不阻塞工程）
+## 8. 真正依赖用户的事项（不阻塞工程）
 
-- `Q-04`：是否购买 Authenticode 代码签名证书（默认不买，安装时有 SmartScreen 提示）。
-- `Q-05`：正式版默认是否自动检查更新（默认开启，可在设置关闭）。
-- `ACT-10`：正式版更新签名私钥的备份与保管（B 实现生成命令后执行，首次公开发布前完成）。
-- `ACT-11`：首个正式版 `v0.1.1` 创建标签与 GitHub Release 的授权（A 审核通过后登记具体请求）。
-- `H-03`（改为安装器步骤）与新增 `H-04`（正式版更新体验）：人工检查，可顺延。
+- `ACT-01`（已有，可选）：真实模型连接，用于 `M4-L-01` 真实 AI 复盘；缺失时 AI 复盘只用回环服务验证。
+- `H-05`（新增，B 交付后执行，可顺延）：训练实机体验——快捷键、误触、隐藏模式可读性、报告是否看得懂（`M4-M-01`）。
+- 内置富途/欧易费率预设是否核实成功由 B 记录；不需要用户决定。
 
-## 8. 检查命令
+## 9. 检查命令
 
 | 命令 | 状态 |
 | --- | --- |
 | `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked` | 已存在 |
-| `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--ui-smoke] [--ui-bench]`、`--stage M1 --plan-version 2.6` | 已存在（回归） |
-| `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]` | 已建立（W06），结果见 [阶段报告](stage-report.md) |
-| `delta-cli package-build [--identity …]`（Inno `setup.exe`）、`install-dev`、`release-build`、`release-keygen`（D-32 起为密钥文件，`release-key-export` 已删除）、`control`、`update-test-source` | 已建立（W02/W03/W05）；安装包固定输出到 `dist/`，每个身份只保留最新；M2 便携 ZIP 改名 `package-portable-build`，与 `package-install` / `package-uninstall` 仅用于测试和迁移诊断 |
+| `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`、`--stage M2 --plan-version 1.0 [--ui-smoke] [--ui-bench]`、`--stage M3 --plan-version 1.0 [--installer] [--ui-smoke]` | 已存在（回归） |
+| `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]` | B 待建立（W07） |
+| `delta-cli training …` | B 待建立（W06） |
 
-报告与日志写入 `.local/reports/m3/`，脱敏摘要回写 `docs/delivery/stage-report.md`（B 建立，登记 `retireAfter: M3`）；结果绑定源码指纹，指纹范围扩展到 `.iss` 模板、图标资源与 M3 用例。
+报告与日志写入 `.local/reports/m4/`，脱敏摘要回写 `docs/delivery/stage-report.md`（B 建立，登记 `retireAfter: M4`）；结果绑定源码指纹。
 
-## 9. 结束标准与收尾
+## 10. 结束标准与收尾
 
-- **B 实现与自检完成**：W01～W06 全部可执行内容实现；`verify-stage --stage M3 --installer --ui-smoke` 必要检查 passed；spike 结论与失败分支如实记录；阶段报告、[执行状态](status.md)、受影响正本与[集中台账](../decisions/open-questions.md)已同步。
-- **A 技术审核通过**：A 对照本计划、实际 diff 与证据，重点复验通道隔离、数据保留、不强杀、签名与降级拒绝、私钥边界；工程阻断为零后在 USER-ACTIONS 登记 push / PR 的具体授权请求。
-- **产品验收**：H-03、H-04 与真实 GitHub 发布（ACT-11）独立推进，未测保持 not-run。
+- **B 实现与自检完成**：W01～W07 全部可执行内容实现；`verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` 必要检查 passed；spike 结论与失败分支如实记录；阶段报告、[执行状态](status.md)、受影响正本（金融规则、数据模型、交互、AI、集成契约、系统架构、仓库地图、质量门禁、追踪）与[集中台账](../decisions/open-questions.md)已同步。
+- **A 技术审核通过**：A 对照本计划、实际 diff 与证据，重点复验未来隔离、撮合与费用手算、恢复与重放、账本隔离、迁移与 AI 权限；工程阻断为零后在 USER-ACTIONS 登记 push / PR 的具体授权请求。
+- **产品验收**：H-05 与真实模型复盘（ACT-01）独立推进，未测保持 not-run。是否发布 v0.1.2 由用户另行授权。
 
-## 10. A → B 交接 prompt
+## 11. A → B 交接 prompt
 
 ```text
-你是 DELTA 的 Agent B。读 AGENTS.md、docs/delivery/status.md 与唯一计划 docs/delivery/stage-plan.md（M3 v1.0），用例见 docs/delivery/m3-stage-cases.json。
-分支 codex/m3-installer-update，阶段父提交 5f30f6e1ddf6383f25317d5c87acd21934e75ed9；完整 SHA 见交接消息。先核对 git status、父提交与现场，保留未跟踪 workers/agent/。
-按第 5 节依赖顺序连续完成 M3-W01～W06，先打通 M3-K01 最薄切片（测试身份静默安装/卸载）；第 3 节 S-25～S-35 已定案，不重新选型，spike 失败按第 4 节分支处理并记录。门禁只用测试身份，绝不安装、升级或卸载开发者的 delta / delta-dev；遵守不得缩减项、D-25 静音、D-26 通道与数据隔离；回环演练与真实 GitHub 发布分开声明。
-交付：建立 verify-stage --stage M3 并实跑（含 --installer --ui-smoke 与 M2/M1 回归），新建并登记 docs/delivery/stage-report.md，更新 status.md、受影响正本与台账，全部 git commit --amend -s 进当前 M3 阶段提交（父提交不变），给出新完整 SHA 与 B→A 审核 prompt。不 push、不操作 PR、不创建 GitHub Release，不自动创建其他 Agent 会话。
+你是 DELTA 的 Agent B。读 AGENTS.md、docs/delivery/status.md 与唯一计划 docs/delivery/stage-plan.md（M4 v1.0），用例见 docs/delivery/m4-stage-cases.json。
+分支 codex/m4-kline-training，阶段父提交 45ac8c527ab5b51217d5f712deebd704e9d539ef；完整 SHA 见交接消息。先核对 git status、父提交与现场，保留未跟踪 workers/。
+按第 6 节依赖顺序连续完成 M4-W01～W07，先打通 M4-K01 最薄切片（截断数据端口＋哨兵）与市价单单步成交；第 4 节 S-36～S-47 已定案，不重新选型，spike 失败按第 5 节分支处理并记录。遵守不得缩减项：未来隔离在宿主层、Decimal 手算可复核、原子保存与确定性重放、模拟与真实账本分离、v0.1.1 资料库迁移先备份、AI 只在结束后可用；D-25 静音、D-26 通道与数据隔离；回环模型与真实模型分开声明。
+交付：建立 verify-stage --stage M4 并实跑（含 --ui-smoke --ui-bench 与 M1/M2/M3 回归），新建并登记 docs/delivery/stage-report.md，更新 status.md、受影响正本、追踪与台账，全部 git commit --amend -s 进当前 M4 阶段提交（父提交不变），给出新完整 SHA 与 B→A 审核 prompt。不 push、不操作 PR、不发布版本，不自动创建其他 Agent 会话。
 ```

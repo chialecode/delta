@@ -1,6 +1,6 @@
 # DELTA 数据模型设计
 
-版本 0.6 · 2026-11-08 · 本文为完整产品逻辑模型；M1–M2 实际持久化子集见第 11 节，不能由目标表推定 M4/M5 功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
+版本 0.7 · 2026-11-12 · 本文为完整产品逻辑模型；M1–M4 实际持久化子集见第 8 节与第 11 节，不能由目标表推定 M5 策略实验功能已存在。AI 会话所有权见 [上下文状态](context-state-management.md)。
 
 ## 1. 通用规则
 
@@ -126,13 +126,16 @@ M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与
 
 | 实体 | 关键字段 | 约束与含义 |
 | --- | --- | --- |
-| simulation_run | id, kind, data_version, engine_version, seed, currency, status | kind=training/backtest；独立模拟空间 |
-| training_session | run_id, hidden_identity, visible_until, warmup_range, checkpoint | 回放进度只单向推进；重试新建 run |
-| sim_order / sim_fill | run_id, order_id, submitted_at, eligible_at, state / price, qty, costs | 不写入真实 fill 表 |
-| fee_profile_version | id, venue, effective_range, rules, rounding, assumptions | 历史预设不自动套用当前最新费率 |
-| strategy / strategy_version | id, name / source_or_ir, params_schema, code_hash, runtime_lock | 已运行版本不可覆盖 |
-| experiment_run | run_id, strategy_version_id, universe_snapshot, parameters, benchmark, split_ranges | 输入完整快照；支持取消/失败状态 |
-| simulation_event / checkpoint | run_id, sequence, payload / state_hash, cursor | 有序记录；恢复不重复执行已处理订单 |
+| fee_profile_version | id, profile_key, version_num, market_category, venue, notional_rate, per_unit_fee, fixed_fee_per_order, min/max_fee_per_order, fee_currency_mode, rounding_mode/scale, charging_tier, slippage_mode/value, half_spread_bps, is_builtin, is_scenario_assumption, official_source_url/retrieved_at | **M4 已建立（Schema 5）**：内置或已被 `simulation_run` 引用的版本由 SQLite 触发器禁止更新/删除；非场景假设内置预设强制非空官方来源与日期 |
+| simulation_run | run_id, kind, seed, dataset_version, engine_version, fee_profile_version_id, quote_currency, initial_cash, status, parent_run_id, latest_seq, latest_state_hash | **M4 已建立（Schema 5）**：`kind` 为 `training`/`backtest`，状态 `preparing`/`active`/`paused`/`finished`/`damaged`；重试新建运行并经 `parent_run_id` 关联原运行 |
+| training_session | run_id, hidden_mode, market_category, display_symbol, real_instrument_id, candidate_pool_hash, redraw_count, warmup/history/train/reveal_at, visible_until, current_step_index, total_steps, revealed | **M4 已建立（Schema 5）**：触发器禁止启动后重抽、禁止回放时钟或步数倒退、禁止在 `finished` 前将 `revealed` 置 1 |
+| sim_order | run_id, order_id, instrument_id, order_seq, order_type, side, tif, qty, limit_price, stop_price, parent_group_id, group_role, status, reject_code, cancel_reason, submitted_at, eligible_at, payload_json | **M4 已建立（Schema 5）**：主键 `(run_id, order_id)`，`(run_id, order_seq)` 唯一；与真实账本隔离 |
+| sim_fill | run_id, fill_id, order_id, instrument_id, bar_close_at, side, qty, raw_price, fill_price, fee_amount, fee_currency, ambiguous, payload_json | **M4 已建立（Schema 5）**：永不写入真实 `fill` 表，不影响 `ledger_revision` |
+| simulation_event | run_id, seq, event_kind, command_json, events_json, visible_until, state_hash, created_at | **M4 已建立（Schema 5）**：有序命令与引擎事件日志，每步单 savepoint 原子写入（`commit_simulation_step_atomic`） |
+| sim_checkpoint | run_id, seq, reason, state_json, state_hash, created_at | **M4 已建立（Schema 5）**：`reason` 取 `initial`/`periodic_20`/`pause`/`finish`；恢复时重放其后命令并校验 `state_hash`，不一致标 `damaged` |
+| training_note | note_id, run_id, bar_index, visible_until, rationale, emotion_tag, linked_order_id, archived_journal_note_id | **M4 已建立（Schema 5）**：训练中有无委托均可记录；结束后可归档至真实日志并标注“来自模拟训练” |
+| strategy / strategy_version | id, name / source_or_ir, params_schema, code_hash, runtime_lock | **M5 目标**：已运行版本不可覆盖 |
+| experiment_run | run_id, strategy_version_id, universe_snapshot, parameters, benchmark, split_ranges | **M5 目标**：输入完整快照；支持取消/失败状态 |
 
 实验 manifest 至少包括：策略哈希、参数、数据哈希、股票池、日历、复权、指标实现/预热、费用、撮合版本、随机种子、`Cargo.lock` 摘要、基准和运行时版本。
 
@@ -162,9 +165,9 @@ M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与
 
 数据库迁移采用有序版本脚本，应用校验 schema_version；迁移失败还原新资料库，旧库保持可恢复。业务规则变化增加计算/分录版本并重建派生数据，不只修改旧缓存数值。
 
-## 11. M1–M2 实际持久化契约
+## 11. M1–M4 实际持久化契约
 
-当前 SQLite schema 为 4（从 schema 3 升级前自动创建一致性备份，故障注入不留半写库），规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1–M2 提供账本、账户与统计组合（嵌套防环去重）、手工资产/负债估值、日线、FX、公司行动、自选组、交易计划、图表上下文、Markdown 笔记修订/附件/FTS5 `trigram` 索引、AI 会话与单事务压缩检查点、质量诊断与报告；历史训练（M4）与策略实验（M5）仍属后续目标。
+当前 SQLite schema 为 5（从 schema 4 升级前先由 SQLite Backup API 自动生成 `before-schema-4-*` 一致性备份，DDL 与内置费用模板在同一 savepoint 内执行，故障注入自动回滚不留半写库；旧版读取器与 `schema > 5` 明确拒绝），规范化 Decimal 存 TEXT。`library.id` 独立生成，不再共用 `LIB-DEFAULT`。M1–M4 提供账本、账户与统计组合（嵌套防环去重）、手工资产/负债估值、日线、FX、公司行动、自选组、交易计划、图表上下文、Markdown 笔记修订/附件/FTS5 `trigram` 索引、AI 会话与单事务压缩检查点、质量诊断与报告，以及第 8 节的 8 张 K 线训练模拟表；策略实验（M5）仍属后续目标。
 
 | 实体 | 当前关键字段 / 不变量 |
 | --- | --- |
@@ -177,6 +180,7 @@ M2 新笔记首次 scoped 保存时，在同一 savepoint 写入账户 owner 与
 | note / note_revision / note_link / attachment / note_fts | 笔记修订只追加、保存校验期望修订，失败不提交部分链接；owner 与 `review_date` 定义账户/期间范围；附件存于 `attachments/` 并校验 SHA-256 与磁盘存在性；FTS5 `trigram`（3 字及以上）与有界 `LIKE` 回退（1～2 字），候选 10,000/返回 100 上限以 Partial 提示 |
 | model_connection / ai_session / ai_run / ai_message / ai_tool_call / ai_checkpoint | 凭据引用（`credential://`，DPAPI 加密文件，D-32）绑定通道，account 由 `(library.id, connection.id)` 哈希派生；`ai_tool_call` 按 `(run_id, call_id)` 唯一幂等；run 保存完整连接指纹；会话压缩在单事务内写入 `ai_checkpoint` 并切换 `active_checkpoint_id`，故障自动回滚保留上一有效检查点 |
 | provider_connection / dataset_version | 实际端点、capabilities 和 source/terms_class；条款取 public_open / official_free_personal / unofficial_personal；限额为 0 表示尚无确定每分钟配额，不表示无限量 |
+| Schema 5 模拟与训练表（8 张） | `SCHEMA_5_TABLES` 全量纳入 `LibraryManifest::table_row_counts` 一致性备份/恢复核验与开放导出（`simulation/simulation_bundle.json`＋8 张 `simulation/*.csv`）；`preview_delete_training_run` / `delete_training_run` 在单事务内按 `run_id` 预览并级联清理，真实账本 `ledger_revision` 全程不变 |
 
 资金/持仓在途投影保存两端账户、原始 lot 日期与成本。整库 scope 由实际事件账户和登记 active 账户组成；外部目的地不自动加入。未知历史成本贯穿处置，损益不可用；未知成本处置的 journal 差额进入 COST_PENDING 清算项，不是已实现收益。
 

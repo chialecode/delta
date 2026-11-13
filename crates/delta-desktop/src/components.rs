@@ -566,6 +566,8 @@ pub struct KlineChartView {
     pub crosshair_price: Option<f64>,
     pub pinned_dataset_version: Option<i64>,
     pub latest_dataset_version: Option<i64>,
+    pub masked_display_symbol: Option<String>,
+    pub masked_bar_labels: Option<Vec<String>>,
 }
 
 impl KlineChartView {
@@ -582,7 +584,19 @@ impl KlineChartView {
             crosshair_price: None,
             pinned_dataset_version: None,
             latest_dataset_version: None,
+            masked_display_symbol: None,
+            masked_bar_labels: None,
         }
+    }
+
+    pub fn with_masked_training_labels(
+        mut self,
+        display_symbol: impl Into<String>,
+        bar_labels: Vec<String>,
+    ) -> Self {
+        self.masked_display_symbol = Some(display_symbol.into());
+        self.masked_bar_labels = Some(bar_labels);
+        self
     }
 
     pub fn with_crosshair(mut self, bar_index: Option<usize>) -> Self {
@@ -628,8 +642,14 @@ impl KlineChartView {
         }
     }
 
-    /// Explicitly distinguishes trading venue vs instrument/pair (`M2-A-10`).
+    /// Explicitly distinguishes trading venue vs instrument/pair (`M2-A-10`, `S-46`).
     pub fn venue_pair_badge_text(&self) -> String {
+        if let Some(display_symbol) = &self.masked_display_symbol {
+            return format!(
+                "{} | 标的: {display_symbol}",
+                delta_app::SIMULATED_TRAINING_BADGE
+            );
+        }
         format!(
             "场所: {} | 标的: {}",
             self.slice.venue, self.slice.instrument_id
@@ -661,9 +681,26 @@ impl KlineChartView {
             return "OHLCV: — (无可见 K 线)".to_string();
         };
         let bar = &self.slice.bars[local_idx];
+        let global_idx = self.slice.visible_start_index + local_idx;
+        let bar_date_or_label = self
+            .masked_bar_labels
+            .as_ref()
+            .and_then(|labels| {
+                labels.get(global_idx).cloned().or_else(|| {
+                    (labels.len() == self.slice.bars.len())
+                        .then(|| labels.get(local_idx).cloned())
+                        .flatten()
+                })
+            })
+            .unwrap_or_else(|| {
+                if self.masked_display_symbol.is_some() {
+                    delta_app::bar_label_for_one_based(global_idx + 1)
+                } else {
+                    bar.session_date.to_string()
+                }
+            });
         let mut parts = vec![format!(
-            "{} | O {} H {} L {} C {} V {}",
-            bar.session_date,
+            "{bar_date_or_label} | O {} H {} L {} C {} V {}",
             to_canonical_text(bar.open),
             to_canonical_text(bar.high),
             to_canonical_text(bar.low),
@@ -743,12 +780,16 @@ impl KlineChartView {
         let marker = &layout.marker;
         let (prefix, fg, bg) = self.marker_prefix_and_color(marker.kind, cx);
         let el_id = Self::marker_element_id(&marker.id);
+        let marker_time_label = if self.masked_display_symbol.is_some() {
+            delta_app::bar_label_for_one_based(marker.bar_index + 1)
+        } else {
+            marker.session_date.to_string()
+        };
         let badge_text = SharedString::from(format!(
-            "{} | {} @ {} ({})",
+            "{} | {} @ {} ({marker_time_label})",
             prefix,
             marker.label,
             to_canonical_text(marker.price),
-            marker.session_date
         ));
 
         h_flex()
@@ -1160,6 +1201,83 @@ mod tests {
         assert_eq!(
             KlineChartView::marker_element_id("M-BUY-1"),
             SharedString::from("chart-marker-M-BUY-1")
+        );
+    }
+
+    #[test]
+    fn test_m4_masked_bar_labels_with_nonzero_visible_start_index() {
+        let base = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        let bars: Vec<BarRecord> = (0..220)
+            .map(|idx| {
+                let d = base.checked_add_days(chrono::Days::new(idx)).unwrap();
+                BarRecord {
+                    id: format!("B-{idx}"),
+                    instrument_id: "HIDDEN:INSTRUMENT_A".to_string(),
+                    timeframe: "1d".to_string(),
+                    session: "24x7".to_string(),
+                    session_date: d,
+                    open_at: Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()),
+                    close_at: Utc.from_utc_datetime(&d.and_hms_opt(23, 59, 59).unwrap()),
+                    open: Decimal::from(100 + idx),
+                    high: Decimal::from(105 + idx),
+                    low: Decimal::from(98 + idx),
+                    close: Decimal::from(102 + idx),
+                    volume: Decimal::from(1000),
+                    source: "masked".to_string(),
+                    adjustment: AdjustmentKind::Raw,
+                    is_final: true,
+                    valid_from_version: 1,
+                    valid_to_version: None,
+                    raw_payload_hash: None,
+                }
+            })
+            .collect();
+
+        // Viewport showing the trailing 160 bars (`60..220`, so `visible_start_index == 60`).
+        let vp = KlineViewport::new(220, 160);
+        assert_eq!(vp.visible_start, 60);
+        assert_eq!(vp.visible_end, 220);
+
+        let slice = vp.build_window_slice(
+            "HIDDEN:INSTRUMENT_A",
+            "HIDDEN",
+            "1d",
+            AdjustmentKind::Raw,
+            &bars,
+            None,
+            &[],
+            &[],
+            160,
+        );
+        assert_eq!(slice.visible_start_index, 60);
+        assert_eq!(slice.bars.len(), 160);
+
+        let global_labels: Vec<String> =
+            (1..=220).map(delta_app::bar_label_for_one_based).collect();
+
+        // Default crosshair (latest visible bar `local_idx = 159`, `global_idx = 219`) MUST read `"第 220 根"`!
+        let chart_latest = KlineChartView::new(
+            "trn-kline",
+            slice.clone(),
+            MarketColorConvention::RedUpGreenDown,
+        )
+        .with_masked_training_labels("隐藏标的 #1（加密现货）", global_labels.clone());
+        let latest_readout = chart_latest.crosshair_readout_text();
+        assert!(
+            latest_readout.starts_with("第 220 根 | "),
+            "unexpected readout: {latest_readout}"
+        );
+        assert!(!latest_readout.starts_with("第 160 根"));
+
+        // Explicit crosshair at `global_idx = 60` (`local_idx = 0`) MUST read `"第 61 根"`!
+        let chart_start =
+            KlineChartView::new("trn-kline", slice, MarketColorConvention::RedUpGreenDown)
+                .with_masked_training_labels("隐藏标的 #1（加密现货）", global_labels)
+                .with_crosshair(Some(60));
+        let start_readout = chart_start.crosshair_readout_text();
+        assert!(
+            start_readout.starts_with("第 61 根 | "),
+            "unexpected readout: {start_readout}"
         );
     }
 }
