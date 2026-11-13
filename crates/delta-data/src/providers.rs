@@ -5,7 +5,7 @@ use delta_core::{
     parse_decimal_lossless, parse_json_raw_decimal, restore_yahoo_raw_dividend,
     restore_yahoo_raw_price, restore_yahoo_raw_volume, AdjustmentKind, BarRecord,
     CorporateActionRecord, CorporateActionType, DataQualityIssue, DirectDecimal, FxRateRecord,
-    QualityStatus, TermsClass,
+    QualityStatus, TermsClass, Timeframe,
 };
 use reqwest::Client;
 use rust_decimal::Decimal;
@@ -182,6 +182,26 @@ pub async fn get_bytes_with_retry(
     }
 }
 
+/// Stable bar row id: daily bars keep the historical `session_date` key, intraday bars key on
+/// the UTC open instant so the 24 hourly bars of one date never collide.
+pub fn provider_bar_id(
+    instrument_id: &str,
+    timeframe: Timeframe,
+    source: &str,
+    session_date: NaiveDate,
+    open_at: DateTime<Utc>,
+    dataset_version: i64,
+) -> String {
+    if timeframe.is_intraday() {
+        format!(
+            "BAR:{instrument_id}:{timeframe}:raw:{source}:{}:{dataset_version}",
+            open_at.format("%Y-%m-%dT%H:%MZ")
+        )
+    } else {
+        format!("BAR:{instrument_id}:1d:raw:{source}:{session_date}:{dataset_version}")
+    }
+}
+
 // ============================================================================
 // 1. OKX Public Spot REST Connector (`bar=1Dutc`, `confirm == "1"`)
 // ============================================================================
@@ -221,6 +241,23 @@ impl OkxSpotProvider {
         raw_json: &str,
         raw_hash: Option<String>,
         dataset_version: i64,
+    ) -> Result<Vec<BarRecord>, ProviderError> {
+        Self::parse_candles_json_tf(
+            instrument_id,
+            raw_json,
+            raw_hash,
+            dataset_version,
+            Timeframe::D1,
+        )
+    }
+
+    /// Timeframe-aware OKX candle parser (`S-50`): only confirmed, UTC-aligned bars are kept.
+    pub fn parse_candles_json_tf(
+        instrument_id: &str,
+        raw_json: &str,
+        raw_hash: Option<String>,
+        dataset_version: i64,
+        timeframe: Timeframe,
     ) -> Result<Vec<BarRecord>, ProviderError> {
         #[derive(Deserialize)]
         struct OkxEnvelope {
@@ -266,7 +303,14 @@ impl OkxSpotProvider {
                         provider: "okx".into(),
                         detail: format!("out of range timestamp {ts_ms}"),
                     })?;
-            let close_at = open_at + chrono::Duration::days(1);
+            // Off-grid klines cannot be placed on the UTC grid without inventing data. Real case:
+            // after its 2018-02-08 outage Binance published 43 hourly klines offset by 28m14.789s
+            // (2018-02-09 09:28 .. 02-11 03:28). They are skipped; the hole they leave is counted
+            // as an intraday gap and no training window may span it (continuity check).
+            if !timeframe.is_aligned(open_at) {
+                continue;
+            }
+            let close_at = open_at + timeframe.duration();
             let session_date = resolve_exchange_session_date("CRYPTO_24_7", open_at);
 
             let open = parse_decimal_lossless(&row[1]).map_err(|e| ProviderError::Parse {
@@ -291,9 +335,16 @@ impl OkxSpotProvider {
             })?;
 
             bars.push(BarRecord {
-                id: format!("BAR:{instrument_id}:1d:raw:okx:{session_date}:{dataset_version}"),
+                id: provider_bar_id(
+                    instrument_id,
+                    timeframe,
+                    "okx",
+                    session_date,
+                    open_at,
+                    dataset_version,
+                ),
                 instrument_id: instrument_id.to_string(),
-                timeframe: "1d".to_string(),
+                timeframe: timeframe.as_str().to_string(),
                 session: "utc_24_7".to_string(),
                 session_date,
                 open_at,
@@ -323,10 +374,32 @@ impl OkxSpotProvider {
         after_cursor: Option<&str>,
         dataset_version: i64,
     ) -> Result<(Vec<BarRecord>, String), ProviderError> {
+        self.fetch_candles(
+            client,
+            instrument_id,
+            inst_id_param,
+            after_cursor,
+            dataset_version,
+            Timeframe::D1,
+        )
+        .await
+    }
+
+    /// `history-candles` page strictly older than `after_cursor` (milliseconds).
+    pub async fn fetch_candles(
+        &self,
+        client: &Client,
+        instrument_id: &str,
+        inst_id_param: &str,
+        after_cursor: Option<&str>,
+        dataset_version: i64,
+        timeframe: Timeframe,
+    ) -> Result<(Vec<BarRecord>, String), ProviderError> {
         let mut url = format!(
-            "{}/api/v5/market/history-candles?instId={}&bar=1Dutc&limit=100",
+            "{}/api/v5/market/history-candles?instId={}&bar={}&limit=100",
             self.base_url.trim_end_matches('/'),
-            inst_id_param
+            inst_id_param,
+            timeframe.okx_bar()
         );
         if let Some(after) = after_cursor {
             url.push_str(&format!("&after={after}"));
@@ -335,7 +408,13 @@ impl OkxSpotProvider {
         let mut hasher = Sha256::new();
         hasher.update(body.as_bytes());
         let hash = hex::encode(hasher.finalize());
-        let bars = Self::parse_candles_json(instrument_id, &body, Some(hash), dataset_version)?;
+        let bars = Self::parse_candles_json_tf(
+            instrument_id,
+            &body,
+            Some(hash),
+            dataset_version,
+            timeframe,
+        )?;
         Ok((bars, body))
     }
 }
@@ -407,6 +486,25 @@ impl BinanceSpotProvider {
         now_utc: DateTime<Utc>,
         dataset_version: i64,
     ) -> Result<Vec<BarRecord>, ProviderError> {
+        Self::parse_klines_json_tf(
+            instrument_id,
+            raw_json,
+            raw_hash,
+            now_utc,
+            dataset_version,
+            Timeframe::D1,
+        )
+    }
+
+    /// Timeframe-aware `/api/v3/klines` parser (`S-50`).
+    pub fn parse_klines_json_tf(
+        instrument_id: &str,
+        raw_json: &str,
+        raw_hash: Option<String>,
+        now_utc: DateTime<Utc>,
+        dataset_version: i64,
+        timeframe: Timeframe,
+    ) -> Result<Vec<BarRecord>, ProviderError> {
         let rows: Vec<Vec<serde_json::Value>> =
             serde_json::from_str(raw_json).map_err(|e| ProviderError::Parse {
                 provider: "binance".into(),
@@ -435,7 +533,17 @@ impl BinanceSpotProvider {
             if !is_final {
                 continue;
             }
-            let close_at = open_at + chrono::Duration::days(1);
+            // Off-grid klines cannot be placed on the UTC grid without inventing data. Real case:
+            // after its 2018-02-08 outage Binance published 43 hourly klines offset by 28m14.789s
+            // (2018-02-09 09:28 .. 02-11 03:28). They are skipped; the hole they leave is counted
+            // as an intraday gap and no training window may span it (continuity check).
+            if !timeframe.is_aligned(open_at) {
+                continue;
+            }
+            let close_at = open_at + timeframe.duration();
+            if close_at > now_utc {
+                continue;
+            }
             let session_date = resolve_exchange_session_date("CRYPTO_24_7", open_at);
 
             let parse_val = |v: &serde_json::Value| -> Result<Decimal, ProviderError> {
@@ -450,9 +558,16 @@ impl BinanceSpotProvider {
             };
 
             out.push(BarRecord {
-                id: format!("BAR:{instrument_id}:1d:raw:binance:{session_date}:{dataset_version}"),
+                id: provider_bar_id(
+                    instrument_id,
+                    timeframe,
+                    "binance",
+                    session_date,
+                    open_at,
+                    dataset_version,
+                ),
                 instrument_id: instrument_id.to_string(),
-                timeframe: "1d".to_string(),
+                timeframe: timeframe.as_str().to_string(),
                 session: "utc_24_7".to_string(),
                 session_date,
                 open_at,
@@ -483,6 +598,25 @@ impl BinanceSpotProvider {
         is_zip: bool,
         dataset_version: i64,
     ) -> Result<Vec<BarRecord>, ProviderError> {
+        Self::verify_and_parse_archive_tf(
+            instrument_id,
+            archive_bytes,
+            checksum_text,
+            is_zip,
+            dataset_version,
+            Timeframe::D1,
+        )
+    }
+
+    /// Timeframe-aware archive verification and parsing (`S-48`, `S-50`).
+    pub fn verify_and_parse_archive_tf(
+        instrument_id: &str,
+        archive_bytes: &[u8],
+        checksum_text: &str,
+        is_zip: bool,
+        dataset_version: i64,
+        timeframe: Timeframe,
+    ) -> Result<Vec<BarRecord>, ProviderError> {
         if archive_bytes.len() > 16 * 1024 * 1024 {
             return Err(ProviderError::Parse {
                 provider: "binance-archive".into(),
@@ -506,34 +640,7 @@ impl BinanceSpotProvider {
         }
 
         let csv_text = if is_zip {
-            let cursor = std::io::Cursor::new(archive_bytes);
-            let mut archive = zip::ZipArchive::new(cursor).map_err(|e| ProviderError::Parse {
-                provider: "binance-archive".into(),
-                detail: e.to_string(),
-            })?;
-            if archive.len() != 1 {
-                return Err(ProviderError::Parse {
-                    provider: "binance-archive".into(),
-                    detail: "expected one CSV member".into(),
-                });
-            }
-            let mut file = archive.by_index(0).map_err(|e| ProviderError::Parse {
-                provider: "binance-archive".into(),
-                detail: e.to_string(),
-            })?;
-            if file.size() > 16 * 1024 * 1024 || file.enclosed_name().is_none() {
-                return Err(ProviderError::Parse {
-                    provider: "binance-archive".into(),
-                    detail: "unsafe archive member".into(),
-                });
-            }
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)
-                .map_err(|e| ProviderError::Parse {
-                    provider: "binance-archive".into(),
-                    detail: e.to_string(),
-                })?;
-            buf
+            read_single_csv_member(archive_bytes)?
         } else {
             String::from_utf8(archive_bytes.to_vec()).map_err(|e| ProviderError::Parse {
                 provider: "binance-archive".into(),
@@ -541,7 +648,13 @@ impl BinanceSpotProvider {
             })?
         };
 
-        Self::parse_archive_csv(instrument_id, &csv_text, Some(actual_hash), dataset_version)
+        Self::parse_archive_csv_tf(
+            instrument_id,
+            &csv_text,
+            Some(actual_hash),
+            dataset_version,
+            timeframe,
+        )
     }
 
     /// Binance publishes immutable daily/monthly ZIPs with a SHA-256 sidecar.
@@ -553,8 +666,22 @@ impl BinanceSpotProvider {
         month: NaiveDate,
         version: i64,
     ) -> Result<(Vec<BarRecord>, Vec<u8>, String), ProviderError> {
+        self.fetch_monthly_archive_tf(client, instrument_id, symbol, month, version, Timeframe::D1)
+            .await
+    }
+
+    pub async fn fetch_monthly_archive_tf(
+        &self,
+        client: &Client,
+        instrument_id: &str,
+        symbol: &str,
+        month: NaiveDate,
+        version: i64,
+        timeframe: Timeframe,
+    ) -> Result<(Vec<BarRecord>, Vec<u8>, String), ProviderError> {
+        let interval = timeframe.binance_interval();
         let url = format!(
-            "{}/data/spot/monthly/klines/{symbol}/1d/{symbol}-1d-{}.zip",
+            "{}/data/spot/monthly/klines/{symbol}/{interval}/{symbol}-{interval}-{}.zip",
             self.archive_base_url.trim_end_matches('/'),
             month.format("%Y-%m")
         );
@@ -567,7 +694,14 @@ impl BinanceSpotProvider {
             2,
         )
         .await?;
-        let bars = Self::verify_and_parse_archive(instrument_id, &bytes, &checksum, true, version)?;
+        let bars = Self::verify_and_parse_archive_tf(
+            instrument_id,
+            &bytes,
+            &checksum,
+            true,
+            version,
+            timeframe,
+        )?;
         Ok((bars, bytes, checksum))
     }
 
@@ -576,6 +710,22 @@ impl BinanceSpotProvider {
         csv_text: &str,
         raw_hash: Option<String>,
         dataset_version: i64,
+    ) -> Result<Vec<BarRecord>, ProviderError> {
+        Self::parse_archive_csv_tf(
+            instrument_id,
+            csv_text,
+            raw_hash,
+            dataset_version,
+            Timeframe::D1,
+        )
+    }
+
+    pub fn parse_archive_csv_tf(
+        instrument_id: &str,
+        csv_text: &str,
+        raw_hash: Option<String>,
+        dataset_version: i64,
+        timeframe: Timeframe,
     ) -> Result<Vec<BarRecord>, ProviderError> {
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)
@@ -601,13 +751,27 @@ impl BinanceSpotProvider {
                 detail: format!("invalid archive open_time '{first_col}'"),
             })?;
             let open_at = Self::parse_binance_timestamp(open_ts)?;
-            let close_at = open_at + chrono::Duration::days(1);
+            // Off-grid klines cannot be placed on the UTC grid without inventing data. Real case:
+            // after its 2018-02-08 outage Binance published 43 hourly klines offset by 28m14.789s
+            // (2018-02-09 09:28 .. 02-11 03:28). They are skipped; the hole they leave is counted
+            // as an intraday gap and no training window may span it (continuity check).
+            if !timeframe.is_aligned(open_at) {
+                continue;
+            }
+            let close_at = open_at + timeframe.duration();
             let session_date = resolve_exchange_session_date("CRYPTO_24_7", open_at);
 
             out.push(BarRecord {
-                id: format!("BAR:{instrument_id}:1d:raw:binance:{session_date}:{dataset_version}"),
+                id: provider_bar_id(
+                    instrument_id,
+                    timeframe,
+                    "binance",
+                    session_date,
+                    open_at,
+                    dataset_version,
+                ),
                 instrument_id: instrument_id.to_string(),
-                timeframe: "1d".to_string(),
+                timeframe: timeframe.as_str().to_string(),
                 session: "utc_24_7".to_string(),
                 session_date,
                 open_at,
@@ -653,11 +817,38 @@ impl BinanceSpotProvider {
         now_utc: DateTime<Utc>,
         dataset_version: i64,
     ) -> Result<(Vec<BarRecord>, String), ProviderError> {
+        self.fetch_klines(
+            client,
+            instrument_id,
+            symbol_param,
+            start_time_ms,
+            now_utc,
+            dataset_version,
+            Timeframe::D1,
+            100,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn fetch_klines(
+        &self,
+        client: &Client,
+        instrument_id: &str,
+        symbol_param: &str,
+        start_time_ms: Option<i64>,
+        now_utc: DateTime<Utc>,
+        dataset_version: i64,
+        timeframe: Timeframe,
+        limit: u32,
+    ) -> Result<(Vec<BarRecord>, String), ProviderError> {
         self.validate_base_url()?;
         let mut url = format!(
-            "{}/api/v3/klines?symbol={}&interval=1d&limit=100",
+            "{}/api/v3/klines?symbol={}&interval={}&limit={}",
             self.rest_base_url.trim_end_matches('/'),
-            symbol_param
+            symbol_param,
+            timeframe.binance_interval(),
+            limit.clamp(1, 1000)
         );
         if let Some(st) = start_time_ms {
             url.push_str(&format!("&startTime={st}"));
@@ -666,8 +857,14 @@ impl BinanceSpotProvider {
         let mut hasher = Sha256::new();
         hasher.update(body.as_bytes());
         let hash = hex::encode(hasher.finalize());
-        let bars =
-            Self::parse_klines_json(instrument_id, &body, Some(hash), now_utc, dataset_version)?;
+        let bars = Self::parse_klines_json_tf(
+            instrument_id,
+            &body,
+            Some(hash),
+            now_utc,
+            dataset_version,
+            timeframe,
+        )?;
         Ok((bars, body))
     }
 }
@@ -2413,4 +2610,167 @@ fn provider_timestamp(seconds: i64) -> Result<DateTime<Utc>, ProviderError> {
             provider: "market-data".into(),
             detail: "timestamp out of range".into(),
         })
+}
+
+/// Reads the single CSV member of a Binance archive entirely in memory. Nothing is written to
+/// disk, and members that are not a plain file with a safe relative name are refused: path
+/// traversal (`../x.csv`, absolute paths), symlinks (even pointing inside), directories,
+/// non-`.csv` names, multi-member archives and oversized members.
+pub(crate) fn read_single_csv_member(archive_bytes: &[u8]) -> Result<String, ProviderError> {
+    let parse = |detail: String| ProviderError::Parse {
+        provider: "binance-archive".into(),
+        detail,
+    };
+    let cursor = std::io::Cursor::new(archive_bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| parse(e.to_string()))?;
+    if archive.len() != 1 {
+        return Err(parse("expected one CSV member".into()));
+    }
+    let mut file = archive.by_index(0).map_err(|e| parse(e.to_string()))?;
+    let safe_name = file
+        .enclosed_name()
+        .filter(|p| p.components().count() == 1)
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+        });
+    if file.size() > 16 * 1024 * 1024
+        || safe_name.is_none()
+        || file.is_symlink()
+        || file.is_dir()
+        || !file.is_file()
+    {
+        return Err(parse("unsafe archive member".into()));
+    }
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)
+        .map_err(|e| parse(e.to_string()))?;
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod archive_member_tests {
+    use super::read_single_csv_member;
+    use std::io::Write as _;
+
+    fn archive(build: impl FnOnce(&mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>)) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        build(&mut zip);
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn opts() -> zip::write::SimpleFileOptions {
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)
+    }
+
+    #[test]
+    fn plain_csv_member_is_read() {
+        let bytes = archive(|z| {
+            z.start_file("BTCUSDT-1d-2024-01.csv", opts()).unwrap();
+            z.write_all(
+                b"1,2,3
+",
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            read_single_csv_member(&bytes).unwrap(),
+            "1,2,3
+"
+        );
+    }
+
+    #[test]
+    fn traversal_absolute_symlink_and_directory_members_are_refused() {
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "parent traversal",
+                archive(|z| {
+                    z.start_file("../evil.csv", opts()).unwrap();
+                    z.write_all(b"x").unwrap();
+                }),
+            ),
+            (
+                "nested traversal",
+                archive(|z| {
+                    z.start_file("a/../../evil.csv", opts()).unwrap();
+                    z.write_all(b"x").unwrap();
+                }),
+            ),
+            (
+                "absolute path",
+                archive(|z| {
+                    z.start_file("/tmp/evil.csv", opts()).unwrap();
+                    z.write_all(b"x").unwrap();
+                }),
+            ),
+            (
+                "symlink outside",
+                archive(|z| {
+                    z.add_symlink("link.csv", "../../outside/secret.csv", opts())
+                        .unwrap();
+                }),
+            ),
+            (
+                "symlink inside",
+                archive(|z| {
+                    z.add_symlink("link.csv", "data.csv", opts()).unwrap();
+                }),
+            ),
+            (
+                "directory",
+                archive(|z| {
+                    z.add_directory("dir.csv/", opts()).unwrap();
+                }),
+            ),
+            (
+                "not csv",
+                archive(|z| {
+                    z.start_file("payload.exe", opts()).unwrap();
+                    z.write_all(b"x").unwrap();
+                }),
+            ),
+            (
+                "two members",
+                archive(|z| {
+                    z.start_file("a.csv", opts()).unwrap();
+                    z.write_all(b"x").unwrap();
+                    z.start_file("b.csv", opts()).unwrap();
+                    z.write_all(b"y").unwrap();
+                }),
+            ),
+        ];
+        for (label, bytes) in cases {
+            assert!(
+                read_single_csv_member(&bytes).is_err(),
+                "{label} must be refused"
+            );
+        }
+    }
+
+    /// Real Binance `BTCUSDT-1h-2018-02` rows around the 2018-02-08 outage: a short aligned bar,
+    /// then klines offset by 28m14.789s. Off-grid rows are skipped (no invented data); aligned
+    /// rows are kept with their exact values.
+    #[test]
+    fn off_grid_archive_klines_are_skipped_not_fatal() {
+        let csv = "\
+1518048000000,7599.00000000,7844.00000000,7572.09000000,7784.02000000,1521.53731800,1518049694788,0,0,0,0,0
+1518168494789,7789.90000000,8390.00000000,7789.90000000,8180.50000000,1451.89645000,1518172094788,0,0,0,0,0
+1518325200000,8301.01000000,8395.00000000,8201.95000000,8219.98000000,1275.86692600,1518328799999,0,0,0,0,0
+";
+        let bars = super::BinanceSpotProvider::parse_archive_csv_tf(
+            "BINANCE:BTC/USDT",
+            csv,
+            None,
+            1,
+            delta_core::Timeframe::H1,
+        )
+        .unwrap();
+        let opens: Vec<String> = bars.iter().map(|b| b.open_at.to_rfc3339()).collect();
+        assert_eq!(
+            opens,
+            ["2018-02-08T00:00:00+00:00", "2018-02-11T05:00:00+00:00"]
+        );
+        assert_eq!(bars[0].close.to_string(), "7784.02");
+    }
 }

@@ -57,7 +57,7 @@ fn ensure(condition: bool, message: impl std::fmt::Display) -> Result<(), ErrorE
 // test/release child process spawned from the workspace `target/` directory.
 // ---------------------------------------------------------------------------
 
-struct M4QuietnessMonitor {
+pub(crate) struct M4QuietnessMonitor {
     stop: Arc<AtomicBool>,
     findings: Arc<Mutex<BTreeSet<String>>>,
     samples: Arc<Mutex<u64>>,
@@ -157,7 +157,7 @@ fn sample_m4_windows(target_prefix_lower: &str, findings: &Mutex<BTreeSet<String
 fn sample_m4_windows(_target_prefix_lower: &str, _findings: &Mutex<BTreeSet<String>>) {}
 
 impl M4QuietnessMonitor {
-    fn start(root: &Path) -> Self {
+    pub(crate) fn start(root: &Path) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let findings = Arc::new(Mutex::new(BTreeSet::new()));
         let samples = Arc::new(Mutex::new(0u64));
@@ -190,7 +190,7 @@ impl M4QuietnessMonitor {
         }
     }
 
-    fn finish(mut self) -> (u64, Vec<String>) {
+    pub(crate) fn finish(mut self) -> (u64, Vec<String>) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();

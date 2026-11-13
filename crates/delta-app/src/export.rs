@@ -246,6 +246,7 @@ impl AppService {
                 .export_simulation_tables_snapshot()
                 .map_err(|e| fail(&e))?;
             if !sim_bundle.simulation_runs.is_empty()
+                || !sim_bundle.practice_accounts.is_empty()
                 || sim_bundle
                     .fee_profile_versions
                     .iter()

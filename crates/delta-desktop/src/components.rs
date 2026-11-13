@@ -568,6 +568,7 @@ pub struct KlineChartView {
     pub latest_dataset_version: Option<i64>,
     pub masked_display_symbol: Option<String>,
     pub masked_bar_labels: Option<Vec<String>>,
+    pub overlay: Option<crate::chart_canvas::ChartOverlay>,
 }
 
 impl KlineChartView {
@@ -586,7 +587,14 @@ impl KlineChartView {
             latest_dataset_version: None,
             masked_display_symbol: None,
             masked_bar_labels: None,
+            overlay: None,
         }
+    }
+
+    /// M5 workbench overlays (drawings, order lines, cost line, measure).
+    pub fn with_overlay(mut self, overlay: crate::chart_canvas::ChartOverlay) -> Self {
+        self.overlay = Some(overlay);
+        self
     }
 
     pub fn with_masked_training_labels(
@@ -960,6 +968,7 @@ impl KlineChartView {
                             self.crosshair_bar_index,
                             self.crosshair_price,
                             bounds,
+                            self.overlay.clone(),
                             cx,
                         ),
                     ))

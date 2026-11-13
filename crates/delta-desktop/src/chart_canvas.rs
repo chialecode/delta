@@ -14,6 +14,41 @@ use gpui_kit::{
 
 use crate::i18n::{ChangeDirection, MarketColorConvention};
 
+/// M5 workbench overlays painted on the main price panel (`S-54`). Bar positions are global
+/// visible-bar indices (the same index space as `KlineWindowSliceDto::visible_start_index`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartOverlay {
+    pub hlines: Vec<OverlayHLine>,
+    pub segments: Vec<OverlaySegment>,
+    pub hide_volume: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayHLine {
+    pub price: f64,
+    pub color: u32,
+    pub dashed: bool,
+    pub thick: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlaySegment {
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+    /// Extend beyond `to` to the right edge (a ray).
+    pub ray: bool,
+    pub color: u32,
+    pub dashed: bool,
+}
+
+/// `#rrggbb` → `0xrrggbb`; anything else falls back to amber.
+pub fn parse_hex_color(raw: &str) -> u32 {
+    raw.strip_prefix('#')
+        .filter(|h| h.len() == 6)
+        .and_then(|h| u32::from_str_radix(h, 16).ok())
+        .unwrap_or(0xf0b90b)
+}
+
 pub(crate) type PlotBounds = Arc<Mutex<Option<Bounds<Pixels>>>>;
 pub(crate) static PAINTED_CHART_FRAMES: AtomicUsize = AtomicUsize::new(0);
 
@@ -68,9 +103,11 @@ pub(crate) fn render_canvas(
     crosshair: Option<usize>,
     crosshair_price: Option<f64>,
     plot_bounds: PlotBounds,
+    overlay: Option<ChartOverlay>,
     cx: &App,
 ) -> impl IntoElement {
     let slice = slice.clone();
+    let overlay = overlay.unwrap_or_default();
     let colors = [
         convention.colors(ChangeDirection::Up, cx).0,
         convention.colors(ChangeDirection::Down, cx).0,
@@ -182,6 +219,9 @@ pub(crate) fn render_canvas(
                     Bounds::new(point(x - width / 2., top), size(width, height)),
                     color,
                 ));
+                if overlay.hide_volume {
+                    continue;
+                }
                 let height =
                     volume.size.height * ((candle.volume / max_volume).clamp(0., 1.) as f32);
                 window.paint_quad(fill(
@@ -291,6 +331,56 @@ pub(crate) fn render_canvas(
                 triangle.line_to(point(x + px(4.), y + px(4.)));
                 triangle.close();
                 paint_path(triangle, lines[3], window);
+            }
+            let bar_x = |global: f64| {
+                main.origin.x
+                    + main.size.width
+                        * (((global - slice.visible_start_index as f64) as f32 + 0.5) / count)
+            };
+            for line in &overlay.hlines {
+                if !line.price.is_finite() || line.price < min || line.price > max {
+                    continue;
+                }
+                let y = price_y(line.price);
+                let color: Hsla = gpui_kit::rgb(line.color).into();
+                let thickness = if line.thick { px(2.) } else { px(1.) };
+                if line.dashed {
+                    let mut x = main.origin.x;
+                    while x < main.right() {
+                        let w = px(6.).min(main.right() - x);
+                        window
+                            .paint_quad(fill(Bounds::new(point(x, y), size(w, thickness)), color));
+                        x += px(10.);
+                    }
+                } else {
+                    window.paint_quad(fill(
+                        Bounds::new(point(main.origin.x, y), size(main.size.width, thickness)),
+                        color,
+                    ));
+                }
+            }
+            for seg in &overlay.segments {
+                let (x0, y0) = (bar_x(seg.from.0), price_y(seg.from.1));
+                let (mut x1, mut y1) = (bar_x(seg.to.0), price_y(seg.to.1));
+                if seg.ray && x1 != x0 {
+                    let slope = (y1 - y0) / (x1 - x0);
+                    let right = main.right();
+                    y1 = y0 + (right - x0) * slope;
+                    x1 = right;
+                }
+                let color: Hsla = gpui_kit::rgb(seg.color).into();
+                let mut path = PathBuilder::stroke(px(1.5));
+                path.move_to(point(x0, y0));
+                path.line_to(point(x1, y1.clamp(main.origin.y, main.bottom())));
+                paint_path(
+                    path,
+                    if seg.dashed {
+                        color.opacity(0.7)
+                    } else {
+                        color
+                    },
+                    window,
+                );
             }
             if let Some(local) = crosshair
                 .and_then(|global| global.checked_sub(slice.visible_start_index))

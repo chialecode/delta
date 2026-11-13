@@ -48,8 +48,9 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
     files.retain(|p| {
         p.extension().is_some_and(|e| {
             // `isl`: the installer's own wizard messages next to `delta.iss`.
+            // `zip`/`sig`: recorded archive fixtures and the published v0.1.1 signature (M5).
             [
-                "rs", "toml", "json", "csv", "xml", "iss", "isl", "ico", "svg",
+                "rs", "toml", "json", "csv", "xml", "iss", "isl", "ico", "svg", "zip", "sig",
             ]
             .contains(&e.to_str().unwrap_or_default())
         })
@@ -68,6 +69,7 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             "docs/delivery/m2-stage-cases.json",
             "docs/delivery/m3-stage-cases.json",
             "docs/delivery/m4-stage-cases.json",
+            "docs/delivery/m5-stage-cases.json",
             "scripts/generate_icon.py",
         ]
         .map(|p| root.join(p)),
@@ -82,7 +84,7 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             .to_string_lossy()
             .replace('\\', "/");
         let raw = fs::read(&path).map_err(|e| failure("fingerprint", e))?;
-        if path.extension().is_some_and(|e| e == "ico") {
+        if path.extension().is_some_and(|e| e == "ico" || e == "zip") {
             hash.update((name.len() as u64).to_le_bytes());
             hash.update(name.as_bytes());
             hash.update((raw.len() as u64).to_le_bytes());

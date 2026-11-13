@@ -35,6 +35,7 @@
 
 - **仓库入口**：为防止垃圾内容，外部只开放 Discussions；关闭 Issues、Wiki 和 Projects，PR 仅协作者可创建；来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）；安全问题走私密漏洞报告。期望配置见 [repository-settings.json](../../.github/repository-settings.json)，以 GitHub 实际回读为准。
 - **Actions 白名单**：仓库只允许 `actions/checkout@*` 与 `actions/setup-node@*`（GitHub 实际回读，2026-11-08）。workflow 不得引入其他 action；文档门禁 `scripts/check_docs.py` 无第三方依赖，CI 直接使用 runner 自带 `python3`。需要新 action 时先在 USER-ACTIONS 登记远端设置变更。
+- **Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，D-35）：Cargo 与 `rust-toolchain.toml` 每周、Actions 每月，冷却期 7 天，兼容更新合为一组，关闭自动 rebase，不自动合并；版本更新 PR 在阶段开始时按[依赖盘点](quality-gates.md#dependencies)集中处理。Dependabot 告警与自动安全修复 PR 已打开（2026-11-14 用户授权，Agent 经 API 打开并核对）；安全修复 PR 不受冷却期限制，有就尽快评审合并。Action 一律固定完整 SHA 并注明版本，Dependabot 同步更新。
 - **GitHub API / CLI 低频原则**：执行已获授权的远端查询或配置时，优先单次 `gh api` / `gh pr view` 获取所需字段，禁止高频轮询 CI 状态或重复调用远端写操作。
 - 远端 `origin/main` 当前为 `45ac8c527ab5b51217d5f712deebd704e9d539ef`（M3 经 PR #3 squash 为 `6f0aff3`，其后 PR #4 内置更新公钥、PR #5 记录 v0.1.1 发布，2026-11-12）。M4 阶段分支 `codex/m4-kline-training` 以其为唯一父提交；在用户针对 [USER-ACTIONS](../../USER-ACTIONS.md) 中具体 ACT 明确授权前不推送。阶段编号与 PR 编号不绑定（[D-28](../decisions/confirmed-decisions.md)），实际 PR 号记录在阶段报告与执行状态。
 - 远端重建或历史改写后，先核对本地 `main` 与 `origin/main` 是否分叉再切换；分叉的旧提交先用 `git bundle` 备份到 `.local/` 再对齐（2026-11-08 本地旧 `main` `27b26d1` 已备份为 `.local/rebuild-backup-20261108/`）。

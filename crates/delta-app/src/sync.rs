@@ -17,7 +17,7 @@ pub struct SyncRequest {
 impl AppService {
     /// Dropping an in-flight provider future closes its request; cancellation is
     /// checked during socket waits and retry backoff, not just between pages.
-    fn sync_await<F, T>(&self, future: F) -> Result<T, delta_data::ProviderError>
+    pub(crate) fn sync_await<F, T>(&self, future: F) -> Result<T, delta_data::ProviderError>
     where
         F: std::future::Future<Output = Result<T, delta_data::ProviderError>>,
     {
@@ -60,7 +60,7 @@ impl AppService {
         )
     }
 
-    fn check_sync_control(&self) -> Result<(), ErrorEnvelope> {
+    pub(crate) fn check_sync_control(&self) -> Result<(), ErrorEnvelope> {
         if let Some((cancel, deadline, _, _)) = &self.sync_control {
             if cancel.load(Ordering::SeqCst) || Instant::now() >= *deadline {
                 return Err(ErrorEnvelope::new(
@@ -754,6 +754,18 @@ impl AppService {
                         from = to;
                         continue;
                     }
+                    // `S-49` ①: a stablecoin gap is a valuation gap. It is recorded (and ledger
+                    // valuation that needs it stays "unavailable") but never blocks crypto bars.
+                    if matches!(currency.as_str(), "USDT" | "USDC") {
+                        summary.quality_issues.push(source_warning(
+                            &currency,
+                            from,
+                            version,
+                            "missing_stablecoin_fx",
+                        ));
+                        from = to;
+                        continue;
+                    }
                     return Err(ErrorEnvelope::new(
                         "missing_fx",
                         format!("no {currency}/USD rates"),
@@ -915,6 +927,9 @@ impl AppService {
         };
         let primary = fetch(primary_provider, &primary_url);
         let secondary = fetch(secondary_provider, &secondary_url);
+        // Cancellation and deadline still abort the whole sync before any provider outcome is
+        // interpreted as a data gap.
+        self.check_sync_control()?;
         let (mut rates, provider, endpoint) = match (primary, secondary) {
             (Ok(mut primary), Ok(secondary)) if !primary.is_empty() => {
                 for rate in &primary {
@@ -964,14 +979,10 @@ impl AppService {
                 ));
                 (secondary, secondary_provider, secondary_url)
             }
-            (Err(error), _) => return Err(error),
-            _ => {
-                return Err(ErrorEnvelope::new(
-                    "missing_fx",
-                    format!("no completed {currency}/USD rates in requested interval"),
-                    true,
-                ))
-            }
+            // `S-49` ①: one source failing while the other is empty (or both empty/failing) is a
+            // coverage gap for this interval, not a reason to abort the crypto bar sync. The
+            // caller records `missing_stablecoin_fx`; no placeholder rate is produced.
+            _ => return Ok((Vec::new(), primary_provider.into(), primary_url)),
         };
         rates.sort_by_key(|r| r.effective_date);
         Ok((rates, provider.into(), endpoint))
@@ -985,8 +996,11 @@ impl AppService {
         version: i64,
         summary: &mut SyncSummaryDto,
     ) -> Result<(), ErrorEnvelope> {
+        // `S-49` ② root cause: the stablecoin/USD rates synchronized earlier in this same sync
+        // belong to the still-unpublished `version`; reading only published versions found none,
+        // so every derived asset/USD rate was reported missing. Include the pending version.
         let lookup: HashMap<_, _> = self
-            .load_fx_rates(version)?
+            .load_fx_rates_with_pending(version, Some(version))?
             .into_iter()
             .map(|r| {
                 (
@@ -995,14 +1009,17 @@ impl AppService {
                 )
             })
             .collect();
-        let mut seen = BTreeSet::new();
+        // Second root cause: de-duplicating by base asset processed only the first market
+        // (BINANCE sorts before OKX). Every subscribed market contributes; a date is reported
+        // missing only when no market could derive the asset/USD rate for it.
+        let mut covered: BTreeSet<(String, NaiveDate)> = BTreeSet::new();
+        let mut uncovered: BTreeMap<(String, NaiveDate), String> = BTreeMap::new();
         for id in subscribed {
             let instrument = &registry.instruments[id];
             if !registry
                 .assets
                 .get(&instrument.base_asset_id)
                 .is_some_and(|a| a.kind == delta_core::AssetKind::Crypto)
-                || !seen.insert(instrument.base_asset_id.clone())
             {
                 continue;
             }
@@ -1022,6 +1039,8 @@ impl AppService {
                     true,
                     &lookup,
                 ) {
+                    covered.insert((instrument.base_asset_id.clone(), bar.session_date));
+                    uncovered.remove(&(instrument.base_asset_id.clone(), bar.session_date));
                     rates.push(FxRateRecord {
                         id: format!(
                             "FX:{}:USD:{}:{}:{version}",
@@ -1038,19 +1057,25 @@ impl AppService {
                         carried_from_date: None,
                         dataset_version: version,
                     });
-                } else {
-                    summary.quality_issues.push(source_warning(
-                        id,
-                        bar.session_date,
-                        version,
-                        "missing_fee_asset_fx",
-                    ));
+                } else if !covered.contains(&(instrument.base_asset_id.clone(), bar.session_date)) {
+                    uncovered
+                        .entry((instrument.base_asset_id.clone(), bar.session_date))
+                        .or_insert_with(|| id.clone());
                 }
             }
             summary.fx_rates_committed += self
                 .store
                 .upsert_fx_rates(&rates, None)
                 .map_err(sync_error)?;
+        }
+        // Valuation-only (`S-49` ③): recorded against the fee asset, never against bar prices.
+        for ((asset, date), _) in uncovered {
+            summary.quality_issues.push(source_warning(
+                &asset,
+                date,
+                version,
+                "missing_fee_asset_fx",
+            ));
         }
         Ok(())
     }

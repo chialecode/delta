@@ -7,7 +7,7 @@ use delta_app::{
     TrainingReplayMode, UpsertTrainingNoteRequest, BUILTIN_FEE_CRYPTO_RATE_ID,
     BUILTIN_FEE_US_EQUITY_PER_SHARE_ID, BUILTIN_FEE_ZERO_COST_ID,
 };
-use delta_core::{parse_decimal_lossless, AttachedBracket};
+use delta_core::{parse_decimal_lossless, AttachedBracket, FillRule};
 use rust_decimal::Decimal;
 use serde::Serialize;
 use serde_json::json;
@@ -15,9 +15,12 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+#[path = "training_m5_cmd.rs"]
+mod m5;
+
 pub fn print_training_usage() {
     let text = "\
-delta-cli training - M4 K-line replay training & simulation commands (JSON output)
+delta-cli training - K-line replay training & simulation commands (JSON output)
 Usage:
   delta-cli training create [--market any|us_equity_etf|crypto_spot] [--instrument <id>]
                             [--from <YYYY-MM-DD>] [--to <YYYY-MM-DD>]
@@ -46,7 +49,10 @@ Usage:
   delta-cli training fee-profiles [list | get --id <id> | save --json <draft> | delete --id <id> --yes] [--data-dir <dir>]
   delta-cli training self-eval --run-id <id> [--decision-score <1..5> [--discipline-score <1..5>] [--summary <text>]] [--data-dir <dir>]
   delta-cli training evidence --run-id <id> --evidence-id <id> [--data-dir <dir>]";
-    println!("{}", sanitize_terminal_output(text));
+    println!(
+        "{}",
+        sanitize_terminal_output(&format!("{text}{}", m5::M5_USAGE))
+    );
 }
 
 /// Serialize `value` as pretty JSON while ensuring every ASCII/Unicode control character
@@ -294,11 +300,17 @@ pub fn execute_training_cli(
             cmd_evidence(&svc, sub_args)?
         }
         other => {
-            return Err(ErrorEnvelope::new(
-                "invalid_subcommand",
-                format!("unknown 'training' subcommand '{other}'"),
-                false,
-            ))
+            let mut svc = open_svc()?;
+            match m5::dispatch_m5(other, &mut svc, sub_args) {
+                Some(result) => result?,
+                None => {
+                    return Err(ErrorEnvelope::new(
+                        "invalid_subcommand",
+                        format!("unknown 'training' subcommand '{other}'"),
+                        false,
+                    ))
+                }
+            }
         }
     };
 
@@ -493,6 +505,7 @@ fn cmd_create(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnve
     let mut flag_no_hidden = false;
     let mut flag_start = false;
     let mut flag_prepare_only = false;
+    let mut flag_independent = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -555,6 +568,19 @@ fn cmd_create(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnve
             "--initial-cash" => {
                 let v = next_flag_value("create", flag, inline, args, &mut i)?;
                 req.initial_cash = parse_dec_arg(flag, &v)?;
+                flag_independent = true;
+            }
+            "--independent" => {
+                reject_inline_bool_val("create", flag, inline)?;
+                flag_independent = true;
+            }
+            "--amount" => {
+                let v = next_flag_value("create", flag, inline, args, &mut i)?;
+                req.allocation = Some(parse_dec_arg(flag, &v)?);
+            }
+            "--timeframe" => {
+                let v = next_flag_value("create", flag, inline, args, &mut i)?;
+                req.timeframe = m5::parse_timeframe_arg(&v)?;
             }
             "--fee-profile" => {
                 raw_fee_profile = Some(next_flag_value("create", flag, inline, args, &mut i)?);
@@ -597,6 +623,15 @@ fn cmd_create(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnve
     if flag_no_hidden {
         req.hidden_mode = false;
     }
+    // `S-52`: CLI runs are funded from the practice account unless independent capital is asked.
+    if flag_independent && req.allocation.is_some() {
+        return Err(ErrorEnvelope::new(
+            "invalid_arg",
+            "--amount funds the run from the practice account; it cannot be combined with --initial-cash/--independent",
+            false,
+        ));
+    }
+    req.use_practice_account = !flag_independent;
     if flag_prepare_only {
         req.create_and_start = false;
     }
@@ -737,6 +772,7 @@ fn cmd_order(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvel
     let mut take_profit: Option<Decimal> = None;
     let mut stop_loss: Option<Decimal> = None;
     let mut priority: Option<i32> = None;
+    let mut fill_rule: Option<FillRule> = None;
     let mut no_trade_plan = false;
 
     let mut i = 0;
@@ -805,6 +841,20 @@ fn cmd_order(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvel
             "--no-trade-plan" => {
                 reject_inline_bool_val("order", flag, inline)?;
                 no_trade_plan = true;
+            }
+            "--fill-rule" => {
+                let v = next_flag_value("order", flag, inline, args, &mut i)?;
+                fill_rule = match v.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+                    "visible_close" | "quick" => Some(FillRule::VisibleClose),
+                    "next_open_path" | "next_open" => Some(FillRule::NextOpenPath),
+                    other => {
+                        return Err(ErrorEnvelope::new(
+                            "invalid_arg",
+                            format!("unknown --fill-rule '{other}' (expected visible-close or next-open-path)"),
+                            false,
+                        ))
+                    }
+                };
             }
             _ => return Err(unknown_flag_err("order", &args[i])),
         }
@@ -881,6 +931,7 @@ fn cmd_order(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvel
             quantity,
             tif: tif.unwrap_or(TimeInForce::Gtc),
             priority,
+            fill_rule: None,
         }
     } else {
         let order_side = side.ok_or_else(|| {
@@ -985,6 +1036,7 @@ fn cmd_order(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvel
             quantity,
             tif: tif.unwrap_or(TimeInForce::Day),
             priority,
+            fill_rule,
         }
     };
 
@@ -1774,7 +1826,7 @@ mod tests {
         QuietCommandResult, ResolvedAppPaths, SimRejectCode, TrainingNoteDto,
         TrainingOrderPreviewDto, TrainingReplayResultDto, TrainingReportDto, TrainingRevealDto,
         TrainingRunSummaryDto, TrainingStepReceiptDto, TrainingWorkspaceSnapshotDto,
-        UserSelfEvaluationDto, HIDDEN_INSTRUMENT_ID, SIM_ENGINE_VERSION,
+        UserSelfEvaluationDto, HIDDEN_INSTRUMENT_ID,
     };
     use delta_core::{to_canonical_text, CalendarSessionKind};
     use delta_data::{query_calendar_session, SqliteStore};
@@ -2159,7 +2211,11 @@ mod tests {
         assert_eq!(created.run_id, "TRN-A15-PARITY");
         assert_eq!(created.status, SimRunStatus::Active);
         assert_eq!(created.dataset_version, seeded_dsv);
-        assert_eq!(created.engine_version, SIM_ENGINE_VERSION);
+        assert_eq!(created.engine_version, delta_app::SIM_ENGINE_VERSION_M5);
+        assert_eq!(
+            created.practice_account_id, None,
+            "--initial-cash keeps independent capital"
+        );
         assert_eq!(
             created.fee_profile_version_id,
             BUILTIN_FEE_US_EQUITY_PER_SHARE_ID
@@ -2782,6 +2838,7 @@ mod tests {
                 "5",
                 "--seed",
                 "12345",
+                "--independent",
                 "--start",
             ]);
         }
@@ -3058,5 +3115,139 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(ev_val["kind"], "sim_fill");
+    }
+
+    /// `S-55` / `M5-W06`: the M5 CLI commands drive the same service as the desktop; the
+    /// account, analysis and run numbers printed by the CLI equal the host DTOs.
+    #[test]
+    fn test_m5_cli_practice_account_quick_fill_undo_drawings_and_parity() {
+        use chrono::TimeZone;
+        use delta_app::market_fixture::MarketFixtureServer;
+        use delta_app::{PracticeAccountDto, TrainingDrawingDto, TrainingHistoryRowDto};
+        let sandbox = CliTrainingSandbox::new("m5");
+        let fixture =
+            MarketFixtureServer::start(Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap())
+                .unwrap();
+        let mut prep = vec![
+            "prepare-data".to_string(),
+            "--timeframe".into(),
+            "1d".into(),
+        ];
+        for (k, v) in fixture.base_urls() {
+            prep.push("--base-url".into());
+            prep.push(format!("{k}={v}"));
+        }
+        let out = sandbox.run_cli_ok(prep);
+        let summary: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(summary["failed"], 0, "{out}");
+        let status: serde_json::Value =
+            serde_json::from_str(&sandbox.run_cli_ok(["prepare-data", "--status"])).unwrap();
+        assert_eq!(status["needs_preparation"], false);
+
+        let created: TrainingRunSummaryDto = serde_json::from_str(&sandbox.run_cli_ok([
+            "create",
+            "--market",
+            "crypto_spot",
+            "--instrument",
+            "BINANCE:BTC/USDT",
+            "--timeframe",
+            "1d",
+            "--amount",
+            "60000",
+            "--seed",
+            "5",
+            "--start",
+        ]))
+        .unwrap();
+        assert_eq!(
+            created.practice_account_id.as_deref(),
+            Some("PRACTICE:USDT")
+        );
+        assert_eq!(created.initial_cash, Decimal::from(60_000));
+        let run = created.run_id.clone();
+
+        let r: TrainingStepReceiptDto = serde_json::from_str(&sandbox.run_cli_ok([
+            "order",
+            "market",
+            "--run-id",
+            &run,
+            "--side",
+            "buy",
+            "--qty",
+            "0.01",
+            "--fill-rule",
+            "visible-close",
+        ]))
+        .unwrap();
+        assert!(r
+            .events
+            .iter()
+            .any(|e| matches!(e, delta_app::SimEvent::OrderFilled { .. })));
+        let _ = sandbox.run_cli_ok(["undo", "--run-id", &run]);
+        let drawing: TrainingDrawingDto = serde_json::from_str(&sandbox.run_cli_ok([
+            "drawing",
+            "add",
+            "--run-id",
+            &run,
+            "--kind",
+            "horizontal",
+            "--anchor",
+            "3:50000",
+        ]))
+        .unwrap();
+        let listed: Vec<TrainingDrawingDto> =
+            serde_json::from_str(&sandbox.run_cli_ok(["drawing", "list", "--run-id", &run]))
+                .unwrap();
+        assert_eq!(listed, vec![drawing.clone()]);
+        let _ = sandbox.run_cli_ok([
+            "drawing",
+            "delete",
+            "--run-id",
+            &run,
+            "--drawing-id",
+            &drawing.drawing_id,
+        ]);
+        // Withdrawal above the available balance is refused through the CLI too.
+        let refused = sandbox.run_cli_subprocess([
+            "account",
+            "transfer",
+            "--currency",
+            "USDT",
+            "--withdraw",
+            "40001",
+        ]);
+        assert_ne!(refused.status_code, Some(0));
+        assert!(
+            refused.stderr.contains("WITHDRAWAL_EXCEEDS_AVAILABLE"),
+            "{}",
+            refused.stderr
+        );
+        let _ = sandbox.run_cli_ok(["abandon", "--run-id", &run]);
+
+        let cli_account: PracticeAccountDto =
+            serde_json::from_str(&sandbox.run_cli_ok(["account", "show", "--currency", "USDT"]))
+                .unwrap();
+        let cli_analysis: serde_json::Value = serde_json::from_str(&sandbox.run_cli_ok([
+            "account",
+            "analysis",
+            "--currency",
+            "USDT",
+        ]))
+        .unwrap();
+        let cli_history: Vec<TrainingHistoryRowDto> =
+            serde_json::from_str(&sandbox.run_cli_ok(["history"])).unwrap();
+        let host = sandbox.open_host();
+        assert_eq!(host.show_practice_account("USDT").unwrap(), cli_account);
+        assert_eq!(
+            serde_json::to_value(host.practice_account_analysis("USDT").unwrap()).unwrap(),
+            cli_analysis
+        );
+        assert_eq!(host.training_history().unwrap(), cli_history);
+        assert_eq!(
+            cli_account.available,
+            Decimal::from(100_000),
+            "undo + abandon at cost"
+        );
+        assert_eq!(cli_history[0].status, SimRunStatus::Abandoned);
     }
 }

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
 
 const CORE_LIBRARY_TABLES: &[&str] = &[
     "library",
@@ -62,6 +62,7 @@ pub(crate) fn collect_library_table_counts(
         .iter()
         .chain(crate::m2_schema::SCHEMA_4_TABLES.iter())
         .chain(crate::m4_schema::SCHEMA_5_TABLES.iter())
+        .chain(crate::m5_schema::SCHEMA_6_TABLES.iter())
     {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
@@ -911,6 +912,7 @@ impl SqliteStore {
         }
         crate::m2_schema::apply_schema_4_ddl(&tx, schema)?;
         crate::m4_schema::apply_schema_5_ddl(&tx, schema)?;
+        crate::m5_schema::apply_schema_6_ddl(&tx, schema)?;
         tx.execute(
             "UPDATE library SET schema_version=?1",
             params![CURRENT_SCHEMA_VERSION],
@@ -1175,10 +1177,19 @@ impl SqliteStore {
                     "UPDATE bar SET valid_to_version = ?1 WHERE id = ?2",
                     params![dataset_version, old_id],
                 )?;
+                let issue_key = if bar.timeframe == "1d" {
+                    bar.session_date.to_string()
+                } else {
+                    format!(
+                        "{}:{}",
+                        bar.timeframe,
+                        bar.open_at.format("%Y-%m-%dT%H:%MZ")
+                    )
+                };
                 let issue = DataQualityIssue {
                     id: format!(
                         "DQI:REV:{}:{}:{dataset_version}",
-                        bar.instrument_id, bar.session_date
+                        bar.instrument_id, issue_key
                     ),
                     dataset_version,
                     instrument_id: bar.instrument_id.clone(),
@@ -1205,10 +1216,22 @@ impl SqliteStore {
                 revision_issues.push(issue);
             }
 
-            let row_id = format!(
-                "BAR:{}:{}:{}:{}:{}:{dataset_version}",
-                bar.instrument_id, bar.timeframe, adj_str, bar.source, bar.session_date
-            );
+            // Daily ids keep their historical session_date key; intraday ids key on the open instant.
+            let row_id = if bar.timeframe == "1d" {
+                format!(
+                    "BAR:{}:{}:{}:{}:{}:{dataset_version}",
+                    bar.instrument_id, bar.timeframe, adj_str, bar.source, bar.session_date
+                )
+            } else {
+                format!(
+                    "BAR:{}:{}:{}:{}:{}:{dataset_version}",
+                    bar.instrument_id,
+                    bar.timeframe,
+                    adj_str,
+                    bar.source,
+                    bar.open_at.format("%Y-%m-%dT%H:%MZ")
+                )
+            };
             tx.execute(
                 "INSERT INTO bar (
                     id, instrument_id, timeframe, session, session_date, open_at, close_at,

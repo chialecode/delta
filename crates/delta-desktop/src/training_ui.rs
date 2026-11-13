@@ -179,6 +179,39 @@ pub struct TrainingUiState {
     pub training_ai_report: Option<AiReviewReport>,
     pub training_ai_error: Option<ErrorEnvelope>,
     pub opened_training_evidence: Option<Value>,
+    /// M5 chart-trading workbench state (`S-54`).
+    pub wb: crate::training_workbench::WorkbenchState,
+    pub practice_account: Option<delta_app::PracticeAccountDto>,
+    pub history: Vec<delta_app::TrainingHistoryRowDto>,
+    pub analysis: Option<delta_app::AccountReport>,
+    pub aggregated: Option<delta_app::TrainingAggregatedViewDto>,
+    pub data_status: Option<delta_app::TrainingDataStatusDto>,
+    pub prepare_job: Option<delta_app::JobId>,
+    /// Last reported preparation phase; a change means a batch finished, so readiness is
+    /// re-read and timeframes that are ready can start while later batches still run.
+    pub prepare_phase: String,
+    pub side_panel: TrainingSidePanel,
+}
+
+impl TrainingUiState {
+    /// Whether a default BTC run of `timeframe` can start now (even while preparation runs).
+    pub fn default_timeframe_ready(&self, timeframe: delta_app::Timeframe) -> bool {
+        self.data_status.as_ref().is_some_and(|s| {
+            s.timeframes
+                .iter()
+                .any(|t| t.timeframe == timeframe && t.candidate_ready == Some(true))
+        })
+    }
+}
+
+/// Overlay panels opened from the workbench top bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrainingSidePanel {
+    #[default]
+    None,
+    History,
+    Analysis,
+    Transfer,
 }
 
 #[derive(Clone)]
@@ -240,6 +273,48 @@ pub enum TrainingUiAction {
         run_id: String,
         evidence_id: String,
     },
+    // ---- M5 workbench (`S-54`) ----
+    /// New run: default BTC/USDT practice run; prepares data first when none is available.
+    StartDefaultRun {
+        timeframe: delta_app::Timeframe,
+        hidden_mode: bool,
+    },
+    PrepareDefaultData,
+    PollPrepareJob,
+    /// Quick buy/sell at the visible close (only from a mouse click on the ledger buttons).
+    QuickTrade {
+        run_id: String,
+        side: OrderSide,
+        quantity: Decimal,
+    },
+    ModifyOrder {
+        run_id: String,
+        request: delta_app::ModifyTrainingOrderRequest,
+    },
+    UndoLast(String),
+    /// One continuous-play step: the same atomic advance plus auto-pause handling.
+    PlayStep(String),
+    AbandonRun(String),
+    RestartRun(String),
+    SaveDrawing {
+        run_id: String,
+        drawing: delta_app::TrainingDrawingDto,
+    },
+    DeleteDrawing {
+        run_id: String,
+        drawing_id: String,
+    },
+    ClearDrawings(String),
+    TransferFunds {
+        currency: String,
+        kind: delta_app::PracticeTransferKind,
+        amount: Decimal,
+    },
+    OpenSidePanel(TrainingSidePanel),
+    SetViewTimeframe {
+        run_id: String,
+        view: Option<delta_app::Timeframe>,
+    },
 }
 
 pub(crate) fn preserve_training_draft_edits(
@@ -258,6 +333,21 @@ pub(crate) fn preserve_training_draft_edits(
     }
     if original.self_eval_draft != current.self_eval_draft {
         completed.self_eval_draft = current.self_eval_draft.clone();
+    }
+    // Workbench UI edits made while an action ran (tool, toggles, proportions, locks) win;
+    // the action's own results (drawings, playback bookkeeping, draft consumption) stay.
+    if original.wb != current.wb {
+        let done = completed.wb.clone();
+        completed.wb = current.wb.clone();
+        completed.wb.drawings = done.drawings;
+        completed.wb.playback.in_flight = done.playback.in_flight;
+        if original.wb.playback.playing == current.wb.playback.playing {
+            completed.wb.playback.playing = done.playback.playing;
+            completed.wb.playback.last_pause_reason = done.playback.last_pause_reason;
+        }
+        if original.wb.draft == current.wb.draft {
+            completed.wb.draft = done.draft;
+        }
     }
     if completed.active_run_id.is_some() && completed.active_run_id == current.active_run_id {
         if let (Some(orig_vp), Some(cur_vp), Some(comp_vp)) = (
@@ -328,10 +418,308 @@ fn load_workspace_into_state(
     effective_vp.total_bars = snap.chart_slice.total_visible_bars;
     effective_vp.visible_start = snap.chart_slice.visible_start_index;
     effective_vp.visible_end = snap.chart_slice.visible_end_index;
+    if state.training.active_run_id.as_deref() != Some(run_id) {
+        state.training.wb = crate::training_workbench::WorkbenchState::default();
+    }
+    state.training.wb.drawings = state.host.list_training_drawings(run_id)?;
+    state.training.practice_account = match snap.run.practice_account_id.as_deref() {
+        Some(_) => Some(state.host.show_practice_account(&snap.run.quote_currency)?),
+        None => None,
+    };
+    state.training.aggregated = match state.training.wb.view_timeframe {
+        Some(view) => state.host.get_training_aggregated_view(run_id, view).ok(),
+        None => None,
+    };
     state.training.active_run_id = Some(run_id.to_string());
     state.training.chart_viewport = Some(effective_vp);
     state.training.workspace = Some(snap);
     state.training.mode = TrainingViewMode::Workspace;
+    Ok(())
+}
+
+/// Default M5 run request: BTC/USDT, practice account, the chosen timeframe (`S-48`, `S-54`).
+pub fn default_btc_run_request(
+    timeframe: delta_app::Timeframe,
+    hidden_mode: bool,
+) -> CreateTrainingRunRequest {
+    CreateTrainingRunRequest {
+        market_category: TrainingMarketCategory::CryptoSpot,
+        instrument_id: Some(delta_app::DEFAULT_TRAINING_INSTRUMENT.to_string()),
+        fee_profile_version_id: delta_app::BUILTIN_FEE_CRYPTO_RATE_ID.to_string(),
+        hidden_mode,
+        create_and_start: true,
+        timeframe,
+        use_practice_account: true,
+        ..CreateTrainingRunRequest::default()
+    }
+}
+
+fn finish_into_report(state: &mut WorkbenchSharedState, run_id: &str) -> Result<(), ErrorEnvelope> {
+    let rep = state.host.get_training_report(run_id)?;
+    if let Some(se) = &rep.self_evaluation {
+        state.training.self_eval_draft.decision_score = se.decision_score;
+        state.training.self_eval_draft.plan_discipline_score = se.plan_discipline_score;
+    }
+    state.training.report = Some(rep);
+    state.training.reveal = None;
+    state.training.wb.playback.playing = false;
+    state.training.mode = TrainingViewMode::Report;
+    Ok(())
+}
+
+fn apply_trade_receipt(
+    state: &mut WorkbenchSharedState,
+    run_id: &str,
+    result: Result<TrainingStepReceiptDto, ErrorEnvelope>,
+    ok_notice: &str,
+) -> Result<(), ErrorEnvelope> {
+    match result {
+        Ok(receipt) => {
+            state.training.last_step_receipt = Some(receipt);
+            state.training.order_preview = None;
+            state.training.last_order_rejection = None;
+            load_workspace_into_state(state, run_id, None)?;
+            refresh_training_lists(state)?;
+            state.ui_notice = ok_notice.to_string();
+            Ok(())
+        }
+        Err(err) => {
+            if let Ok(rej) = serde_json::from_str::<OrderRejection>(&err.message) {
+                let human = format_rejection_message(&rej);
+                state.training.last_order_rejection = Some(rej);
+                return Err(ErrorEnvelope::new(err.code, human, false));
+            }
+            Err(err)
+        }
+    }
+}
+
+fn active_quote_currency(state: &WorkbenchSharedState) -> String {
+    state
+        .training
+        .workspace
+        .as_ref()
+        .map(|w| w.run.quote_currency.clone())
+        .unwrap_or_else(|| "USDT".into())
+}
+
+fn apply_m5_training_action(
+    state: &mut WorkbenchSharedState,
+    action: TrainingUiAction,
+) -> Result<(), ErrorEnvelope> {
+    match action {
+        TrainingUiAction::StartDefaultRun {
+            timeframe,
+            hidden_mode,
+        } => {
+            let status = state
+                .host
+                .training_data_status(delta_app::DEFAULT_TRAINING_INSTRUMENT, true)?;
+            let ready = status
+                .timeframes
+                .iter()
+                .any(|t| t.timeframe == timeframe && t.candidate_ready == Some(true));
+            state.training.data_status = Some(status);
+            if !ready {
+                apply_m5_training_action(state, TrainingUiAction::PrepareDefaultData)?;
+                state.ui_notice = format!(
+                    "比特币 {} 训练数据尚未就绪，已开始准备；完成后再点“新一局”",
+                    timeframe.as_str()
+                );
+                return Ok(());
+            }
+            let summary = state
+                .host
+                .create_training_run(default_btc_run_request(timeframe, hidden_mode))?;
+            refresh_training_lists(state)?;
+            state.training.report = None;
+            state.training.reveal = None;
+            state.training.last_step_receipt = None;
+            state.training.chart_viewport = None;
+            state.training.side_panel = TrainingSidePanel::None;
+            load_workspace_into_state(state, &summary.run_id, None)?;
+            state.ui_notice = "新一局已开始（练习账户资金，与真实资产隔离）".into();
+        }
+        TrainingUiAction::PrepareDefaultData => {
+            if state.training.prepare_job.is_none() {
+                let job = state.host.start_prepare_training_data(
+                    delta_app::PrepareTrainingDataRequest::default(),
+                    std::time::Duration::from_secs(30 * 60),
+                )?;
+                state.training.prepare_job = Some(job);
+            }
+            state.ui_notice = "正在准备比特币训练数据（币安为主、欧易核验）".into();
+        }
+        TrainingUiAction::PollPrepareJob => {
+            if let Some(job) = state.training.prepare_job {
+                let snap = state.host.poll_job_throttled(job)?;
+                if !snap.progress.phase.is_empty() {
+                    state.ui_notice = format!("训练数据准备中：{}", snap.progress.phase);
+                }
+                if snap.progress.phase != state.training.prepare_phase && !snap.worker_finished {
+                    state.training.prepare_phase = snap.progress.phase.clone();
+                    // Batches publish atomically one by one: refresh readiness so the timeframes
+                    // already prepared (daily first) can start without waiting for the rest.
+                    state.training.data_status = Some(
+                        state
+                            .host
+                            .training_data_status(delta_app::DEFAULT_TRAINING_INSTRUMENT, true)?,
+                    );
+                }
+                if snap.worker_finished {
+                    state.training.prepare_job = None;
+                    state.training.data_status = Some(
+                        state
+                            .host
+                            .training_data_status(delta_app::DEFAULT_TRAINING_INSTRUMENT, true)?,
+                    );
+                    state.ui_notice = match &snap.state {
+                        delta_app::JobState::Succeeded => {
+                            "比特币训练数据已准备好，可以开始新一局".into()
+                        }
+                        delta_app::JobState::Failed(e)
+                        | delta_app::JobState::Cancelled(e)
+                        | delta_app::JobState::TimedOut(e) => format!(
+                            "训练数据准备未完成：{}（可重试，已完成的批次保留）",
+                            e.message
+                        ),
+                        delta_app::JobState::Running => state.ui_notice.clone(),
+                    };
+                }
+            }
+        }
+        TrainingUiAction::QuickTrade {
+            run_id,
+            side,
+            quantity,
+        } => {
+            let result = state
+                .host
+                .submit_training_order(&run_id, TrainingOrderRequestDto::quick(side, quantity));
+            let notice = if side == OrderSide::Buy {
+                "已按当前收盘价买入（可 Ctrl+Z 撤销）"
+            } else {
+                "已按当前收盘价卖出（可 Ctrl+Z 撤销）"
+            };
+            apply_trade_receipt(state, &run_id, result, notice)?;
+        }
+        TrainingUiAction::ModifyOrder { run_id, request } => {
+            let result = state.host.modify_training_order(&run_id, request);
+            apply_trade_receipt(
+                state,
+                &run_id,
+                result,
+                "挂单已改价/改量（下一根开盘起生效，可撤销）",
+            )?;
+        }
+        TrainingUiAction::UndoLast(run_id) => {
+            let result = state.host.undo_training_last(&run_id);
+            apply_trade_receipt(state, &run_id, result, "已撤销上一步操作")?;
+        }
+        TrainingUiAction::PlayStep(run_id) => match state.host.advance_training_bar(&run_id) {
+            Ok(receipt) => {
+                state
+                    .training
+                    .wb
+                    .playback
+                    .on_step_done(Some(&receipt), false);
+                let finished = receipt.run.status != SimRunStatus::Active;
+                state.training.last_step_receipt = Some(receipt);
+                if finished {
+                    refresh_training_lists(state)?;
+                    finish_into_report(state, &run_id)?;
+                    state.ui_notice = "已完成全部训练步数，请查看报告".into();
+                } else {
+                    load_workspace_into_state(state, &run_id, None)?;
+                    if !state.training.wb.playback.playing {
+                        if let Some(reason) = state.training.wb.playback.last_pause_reason.clone() {
+                            state.ui_notice = reason;
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                state.training.wb.playback.on_step_done(None, true);
+                return Err(err);
+            }
+        },
+        TrainingUiAction::AbandonRun(run_id) => {
+            state.host.abandon_training_run(&run_id)?;
+            refresh_training_lists(state)?;
+            finish_into_report(state, &run_id)?;
+            state.ui_notice = "本局已放弃并结算到练习账户（照常计入分析）".into();
+        }
+        TrainingUiAction::RestartRun(run_id) => {
+            let summary = state.host.restart_training_run(&run_id)?;
+            refresh_training_lists(state)?;
+            state.training.report = None;
+            state.training.reveal = None;
+            state.training.chart_viewport = None;
+            load_workspace_into_state(state, &summary.run_id, None)?;
+            state.ui_notice = "已放弃上一局并以相同设置开始新一局".into();
+        }
+        TrainingUiAction::SaveDrawing { run_id, drawing } => {
+            let saved = state.host.save_training_drawing(&run_id, drawing)?;
+            state.training.wb.drawings = state.host.list_training_drawings(&run_id)?;
+            state.training.wb.selected_drawing = Some(saved.drawing_id);
+            state.ui_notice = "画线已保存在本机".into();
+        }
+        TrainingUiAction::DeleteDrawing { run_id, drawing_id } => {
+            state.host.delete_training_drawing(&run_id, &drawing_id)?;
+            state.training.wb.drawings = state.host.list_training_drawings(&run_id)?;
+            state.training.wb.selected_drawing = None;
+            state.ui_notice = "画线已删除".into();
+        }
+        TrainingUiAction::ClearDrawings(run_id) => {
+            let n = state.host.clear_training_drawings(&run_id)?;
+            state.training.wb.drawings.clear();
+            state.training.wb.selected_drawing = None;
+            state.training.wb.pending_confirm = None;
+            state.ui_notice = format!("已清除 {n} 条画线");
+        }
+        TrainingUiAction::TransferFunds {
+            currency,
+            kind,
+            amount,
+        } => {
+            let acc = state
+                .host
+                .transfer_practice_funds(&currency, kind, amount)?;
+            state.training.practice_account = Some(acc);
+            state.ui_notice = "资金划转完成".into();
+        }
+        TrainingUiAction::OpenSidePanel(panel) => {
+            match panel {
+                TrainingSidePanel::History => {
+                    state.training.history = state.host.training_history()?;
+                }
+                TrainingSidePanel::Analysis => {
+                    let ccy = active_quote_currency(state);
+                    state.training.analysis = Some(state.host.practice_account_analysis(&ccy)?);
+                }
+                TrainingSidePanel::Transfer => {
+                    let ccy = active_quote_currency(state);
+                    state.training.practice_account = Some(state.host.show_practice_account(&ccy)?);
+                }
+                TrainingSidePanel::None => {}
+            }
+            state.training.side_panel = panel;
+        }
+        TrainingUiAction::SetViewTimeframe { run_id, view } => {
+            state.training.wb.view_timeframe = view;
+            state.training.aggregated = match view {
+                Some(v) => Some(state.host.get_training_aggregated_view(&run_id, v)?),
+                None => None,
+            };
+        }
+        _ => {
+            return Err(ErrorEnvelope::new(
+                "INTERNAL_ROUTING",
+                "non-M5 training action routed to the M5 handler",
+                false,
+            ))
+        }
+    }
     Ok(())
 }
 
@@ -345,6 +733,7 @@ pub(crate) fn format_rejection_message(rej: &OrderRejection) -> String {
         SimRejectCode::InsufficientPosition => "模拟账户可用持仓不足（不支持裸卖空或超额卖出）",
         SimRejectCode::InsufficientFundsAtFill => "成交结算时模拟账户可用资金不足",
         SimRejectCode::MissingReferencePrice => "缺少当前可见参考价格，无法预估市价单成本",
+        SimRejectCode::UntradableBar => "当前 K 线无成交量（不可交易），快捷单不能按收盘价成交",
     };
     let mut parts = vec![reason.to_string()];
     if rej.nearest_lower.is_some() || rej.nearest_upper.is_some() {
@@ -447,7 +836,7 @@ pub(crate) fn apply_training_action(
                 SimRunStatus::Preparing => {
                     let _ = state.host.start_training_run(&run_id)?;
                 }
-                SimRunStatus::Finished => {
+                SimRunStatus::Finished | SimRunStatus::Abandoned => {
                     let rep = state.host.get_training_report(&run_id)?;
                     state.training.reveal = if rep.run.revealed {
                         Some(state.host.reveal_training_run(&run_id)?)
@@ -725,6 +1114,7 @@ pub(crate) fn apply_training_action(
             state.training.opened_training_evidence = Some(payload);
             state.ui_notice = "已打开模拟训练证据记录".into();
         }
+        m5 => apply_m5_training_action(state, m5)?,
     }
     Ok(())
 }
@@ -749,13 +1139,14 @@ fn parse_dec_field(raw: &str, label: &str) -> Result<Decimal, ErrorEnvelope> {
     parse_decimal_lossless(raw.trim()).map_err(|_| parse_invalid(format!("{label}请填写合法数值")))
 }
 
-fn status_label(status: SimRunStatus) -> (&'static str, &'static str) {
+pub(crate) fn status_label(status: SimRunStatus) -> (&'static str, &'static str) {
     match status {
         SimRunStatus::Preparing => ("待启动", "secondary"),
         SimRunStatus::Active => ("进行中", "warning"),
         SimRunStatus::Paused => ("已暂停", "info"),
         SimRunStatus::Finished => ("已完成", "success"),
         SimRunStatus::Damaged => ("状态已损坏", "danger"),
+        SimRunStatus::Abandoned => ("已放弃", "secondary"),
     }
 }
 
@@ -799,7 +1190,7 @@ fn order_type_summary(order_type: &SimOrderType) -> String {
     }
 }
 
-fn ratio_metric_text(metric: &RatioMetric) -> String {
+pub(crate) fn ratio_metric_text(metric: &RatioMetric) -> String {
     match metric {
         RatioMetric::Computed(v) => to_canonical_text(*v),
         RatioMetric::NoClosedTrades => "—（无已平仓交易）".to_string(),
@@ -917,6 +1308,9 @@ impl CenterWorkspacePanel {
             fee_profile_version_id: draft.fee_profile_version_id,
             hidden_mode: draft.hidden_mode,
             create_and_start,
+            timeframe: delta_app::Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         })
     }
 
@@ -1064,6 +1458,12 @@ impl CenterWorkspacePanel {
             if let Some(vp) = g.training.chart_viewport.as_mut() {
                 vp.move_crosshair(None, None);
             }
+            let wb = &mut g.training.wb;
+            wb.draft = None;
+            wb.pending_confirm = None;
+            wb.pending_anchors.clear();
+            wb.dragging_order = None;
+            wb.tool = crate::training_workbench::WorkbenchTool::None;
         }
         self.training_workspace_focus.focus(window, cx);
         cx.notify();
@@ -1150,6 +1550,10 @@ impl CenterWorkspacePanel {
         let Some(run_id) = active_run_id else {
             return;
         };
+        if self.workbench_key_down(event, &run_id, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
 
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
@@ -1262,7 +1666,7 @@ impl CenterWorkspacePanel {
                 div()
                     .text_xs()
                     .text_color(Chrome::caption())
-                    .child("快捷键：下一根 N / → ｜ 暂停 P ｜ 委托数量 O ｜ 记录想法 J ｜ 退出输入/清光标 Esc ｜ 提交委托 Ctrl+Enter"),
+                    .child("快捷键：下一根 N / → ｜ 播放/暂停 空格 ｜ 射线 Q ｜ 水平线 W ｜ 线段 E ｜ 删除画线 Delete ｜ 撤销 Ctrl+Z ｜ 保存暂停 P ｜ 委托数量 O ｜ 记录想法 J ｜ 取消/清光标 Esc ｜ 提交委托 Ctrl+Enter（快捷买卖只响应鼠标点击）"),
             )
             .into_any_element()
     }
@@ -1346,6 +1750,8 @@ impl CenterWorkspacePanel {
                             ),
                     ),
             )
+            .child(self.render_default_btc_start(state, cx))
+            .when_some(self.render_training_side_panel(state, cx), |col, el| col.child(el))
             .when_some(del_preview, |col, preview| {
                 let run_id_confirm = preview.run_id.clone();
                 let preview_summary = SharedString::from(format!(
@@ -1941,11 +2347,35 @@ impl CenterWorkspacePanel {
             SharedString::from("AI 复盘：训练结束前已禁用（避免事中干扰独立决策）");
 
         let active_vp = state.training.chart_viewport.as_ref();
-        let mut chart =
-            KlineChartView::new("training-kline-chart", ws.chart_slice.clone(), convention)
-                .with_dataset_versions(Some(ws.run.dataset_version), Some(ws.run.dataset_version))
-                .with_crosshair(active_vp.and_then(|vp| vp.crosshair_index))
-                .with_crosshair_price(active_vp.and_then(|vp| vp.crosshair_price));
+        let aggregated = state
+            .training
+            .aggregated
+            .as_ref()
+            .filter(|_| state.training.wb.view_timeframe.is_some())
+            .and_then(|agg| crate::training_workbench_ui::aggregated_slice(&ws, agg));
+        let aggregated_view = aggregated.is_some();
+        let crosshair_on = state.training.wb.crosshair_enabled && !aggregated_view;
+        let mut chart = KlineChartView::new(
+            "training-kline-chart",
+            aggregated.unwrap_or_else(|| ws.chart_slice.clone()),
+            convention,
+        )
+        .with_dataset_versions(Some(ws.run.dataset_version), Some(ws.run.dataset_version))
+        .with_crosshair(
+            active_vp
+                .and_then(|vp| vp.crosshair_index)
+                .filter(|_| crosshair_on),
+        )
+        .with_crosshair_price(
+            active_vp
+                .and_then(|vp| vp.crosshair_price)
+                .filter(|_| crosshair_on),
+        )
+        .with_overlay(crate::training_workbench_ui::workbench_overlay(
+            &ws,
+            &state.training.wb,
+            aggregated_view,
+        ));
         if ws.run.is_identity_masked {
             chart = chart
                 .with_masked_training_labels(ws.run.display_symbol.clone(), ws.bar_labels.clone());
@@ -1985,12 +2415,17 @@ impl CenterWorkspacePanel {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|panel, event: &gpui_kit::MouseDownEvent, window, cx| {
                     panel.training_workspace_focus.focus(window, cx);
-                    panel.training_chart_pointer(event.position, true, cx);
+                    if !panel.workbench_chart_down(event.position, cx) {
+                        panel.training_chart_pointer(event.position, true, cx);
+                    }
                 }),
             )
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
-                cx.listener(|panel, _, _, _| panel.training_chart_drag = None),
+                cx.listener(|panel, event: &gpui_kit::MouseUpEvent, window, cx| {
+                    panel.training_chart_drag = None;
+                    panel.workbench_chart_up(event.position, window, cx);
+                }),
             )
             .on_scroll(
                 cx.listener(move |panel, event: &gpui_kit::ScrollEvent, window, cx| {
@@ -2043,6 +2478,10 @@ impl CenterWorkspacePanel {
             .as_ref()
             .map(|r| r.corporate_action_notices.clone())
             .unwrap_or_default();
+        let workbench_toolbar = self.render_workbench_toolbar(state, &ws, cx);
+        let info_row = crate::training_workbench_ui::render_info_row(&ws, active_vp, cx);
+        let ledger = self.render_practice_ledger(state, &ws, cx);
+        let side_panel = self.render_training_side_panel(state, cx);
 
         v_flex()
             .id("training-workspace-root")
@@ -2265,6 +2704,8 @@ impl CenterWorkspacePanel {
                             .flex_1()
                             .min_w(px(460.))
                             .gap_3()
+                            .child(workbench_toolbar)
+                            .child(info_row)
                             .child(
                                 h_flex()
                                     .gap_1p5()
@@ -2385,6 +2826,8 @@ impl CenterWorkspacePanel {
                             .w(px(360.))
                             .min_w(px(320.))
                             .gap_3()
+                            .when_some(side_panel, |c, el| c.child(el))
+                            .child(ledger)
                             .child(self.render_training_order_ticket(
                                 &run_id,
                                 &order_draft,

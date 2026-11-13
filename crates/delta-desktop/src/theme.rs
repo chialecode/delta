@@ -1,6 +1,6 @@
 //! DELTA desktop visual theme: a light, dense trading-terminal palette in the spirit of the
 //! Longbridge desktop client (white surfaces, hairline borders, dark primary actions, compact
-//! 13 px type). Only presentation tokens live here; financial colors still go through
+//! 15 px type). Only presentation tokens live here; financial colors still go through
 //! [`crate::MarketColorConvention`] so up/down always carries a sign and a word.
 
 use gpui_kit::component::theme::{Theme, ThemeMode};
@@ -50,8 +50,8 @@ impl Chrome {
 pub fn apply_delta_theme(cx: &mut App) {
     Theme::change(ThemeMode::Light, None, cx);
     Theme::update(cx, |theme| {
-        theme.font_size = px(13.);
-        theme.mono_font_size = px(12.);
+        theme.font_size = px(15.);
+        theme.mono_font_size = px(14.);
         theme.radius = px(4.);
         theme.radius_lg = px(6.);
         theme.shadow = false;

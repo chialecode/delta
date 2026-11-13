@@ -22,10 +22,10 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 chrono-tz = "0.10.4"
 uuid = { version = "1.11", features = ["v4", "v5", "serde"] }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 csv = "1.4.0"
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.42", features = ["serialize"] }
 rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "gzip", "stream"] }
@@ -33,11 +33,11 @@ eventsource-stream = "0.2.3"
 futures-util = "0.3.34"
 bytes = "1.12.1"
 gpui-kit = "=0.9.0"
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "=9.4.2", default-features = false, features = ["deflate"] }
 thiserror = "2.0"
 semver = "1.0.28"
-ed25519-dalek = "2.2"
-getrandom = "0.3"
+ed25519-dalek = "3.0"
+getrandom = "0.4"
 winresource = "0.1"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -46,6 +46,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_IO",
     "Win32_System_JobObjects",

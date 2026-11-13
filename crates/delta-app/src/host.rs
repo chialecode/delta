@@ -800,7 +800,7 @@ impl AppService {
                     false,
                 )
             })?;
-            if run.status != delta_data::SimRunStatus::Finished {
+            if !run.status.is_ended() {
                 return Err(ErrorEnvelope::new(
                     "SCOPE_DENIED",
                     format!(

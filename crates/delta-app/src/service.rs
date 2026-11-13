@@ -41,6 +41,10 @@ pub use sync::SyncRequest;
 #[path = "export.rs"]
 mod export;
 
+#[path = "training_data.rs"]
+mod training_data;
+pub use training_data::*;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorEnvelope {
     pub code: String,
@@ -1536,18 +1540,29 @@ impl AppService {
     }
 
     fn load_fx_rates(&self, max_version: i64) -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
+        self.load_fx_rates_with_pending(max_version, None)
+    }
+
+    /// Published rates up to `max_version`, plus the rows of one still-unpublished version that is
+    /// being assembled inside the current sync transaction (`S-49` ②: derived crypto/USD rates
+    /// must see the stablecoin rates written moments earlier in the same version).
+    pub(crate) fn load_fx_rates_with_pending(
+        &self,
+        max_version: i64,
+        pending_version: Option<i64>,
+    ) -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
         let mut stmt = self
             .store
             .conn()
             .prepare(
                 "SELECT id, base_currency, quote_currency, rate, effective_date,
                         effective_at, observed_at, source, quality, carried_from_date, dataset_version
-                 FROM fx_rate JOIN dataset_publication p ON p.version_num = fx_rate.dataset_version
-                 WHERE dataset_version <= ?1 ORDER BY dataset_version ASC, effective_date ASC, CASE WHEN base_currency='USDT' AND source='coinbase' THEN 2 WHEN base_currency='USDC' AND source='bitstamp' THEN 2 WHEN source='frankfurter' THEN 2 ELSE 1 END ASC, source DESC",
+                 FROM fx_rate LEFT JOIN dataset_publication p ON p.version_num = fx_rate.dataset_version
+                 WHERE dataset_version <= ?1 AND (p.version_num IS NOT NULL OR dataset_version = ?2) ORDER BY dataset_version ASC, effective_date ASC, CASE WHEN base_currency='USDT' AND source='coinbase' THEN 2 WHEN base_currency='USDC' AND source='bitstamp' THEN 2 WHEN source='frankfurter' THEN 2 ELSE 1 END ASC, source DESC",
             )
             .map_err(|e| ErrorEnvelope::new("query_fx_failed", e.to_string(), false))?;
         let rows = stmt
-            .query_map(params![max_version], |r| {
+            .query_map(params![max_version, pending_version.unwrap_or(-1)], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,

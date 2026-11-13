@@ -39,7 +39,7 @@ impl Locale {
 }
 
 /// Primary left-sidebar navigation keys allowed in M4 (`S-15`, `S-46`, `3.1`).
-/// Undelivered M5 strategy entries remain intentionally excluded.
+/// Undelivered M6 strategy entries remain intentionally excluded.
 pub const PRIMARY_NAV_KEYS: &[&str] = &[
     "nav.overview",
     "nav.market",
@@ -514,7 +514,7 @@ impl I18nCatalog {
 
     fn zh_cn(key: &str) -> &'static str {
         match key {
-            // Navigation (S-15 / S-46: delivered capabilities; strategy remains excluded until M5)
+            // Navigation (S-15 / S-46: delivered capabilities; strategy remains excluded until M6)
             "nav.overview" => "总览",
             "nav.market" => "市场",
             "nav.assets" => "资产",
@@ -931,7 +931,7 @@ mod tests {
         assert_eq!(tr("quality.partial"), "已知部分估值 (Partial)");
         assert_eq!(tr("autosave.failed"), "保存失败（可重试）");
 
-        // Scope honesty (S-15 / S-46): M4 delivers training; M5 strategy remains excluded
+        // Scope honesty (S-15 / S-46): M4/M5 deliver training; M6 strategy remains excluded
         for &key in PRIMARY_NAV_KEYS.iter().chain(DOCK_PANEL_NAV_KEYS.iter()) {
             assert!(is_in_scope_nav_key(key));
             assert_ne!(I18nCatalog::t(Locale::ZhCn, key), "未定义文案");

@@ -1,6 +1,6 @@
 # 项目关键事实与接续入口
 
-更新：2026-11-07（按 [D-20](decisions/confirmed-decisions.md) 从文档治理基线重建）。本文保留项目的关键入口和上下文；具体事实以所链接正本为准。
+更新：2026-11-14（按 [D-20](decisions/confirmed-decisions.md) 从文档治理基线重建；D-33 插入 M5 训练工作台）。本文保留项目的关键入口和上下文；具体事实以所链接正本为准。
 
 ## 产品与投入重点
 
@@ -10,6 +10,8 @@ DELTA 是本地优先的个人资产账本和投资复盘工作台，覆盖美�
 
 1. **M1（金融数据底座与账本核对核心）**：零桌面 GUI 依赖且按 [D-22](decisions/confirmed-decisions.md) **全项目 100% 纯 Rust 实现**，按 [D-23](decisions/confirmed-decisions.md) 聚焦用户主力平台（核心主力：**富途牛牛、欧易 OKX**；常用：**老虎证券、IBKR、长桥、嘉信、东方财富、币安**），构建 `delta-core`、`delta-data`、`delta-app`、`delta-cli`，打通美股/ETF（纯 Rust 直连 Yahoo Chart v8 / 东方财富美股日线免 Key 交叉核验，可选 Tiingo 官方 API）、加密现货（欧易 OKX 公开现货 REST + 币安公开行情镜像与归档）、法币/稳定币汇率（ECB/Frankfurter + Coinbase/Bitstamp/Kraken 真实 `USDT/USD`、`USDC/USD`）、交易日历（`XNYS`/`XNAS`/`CRYPTO_24_7`）及富途牛牛/欧易 OKX/IBKR/币安等账单导入与水位线自动增量同步。
 2. **M2（完整资产复盘桌面应用与 AI 证据问答）**：在 M1 数据底座跑通后，按 [D-21](decisions/confirmed-decisions.md) 与 [ADR-0003](decisions/0003-first-round-stack.md) 接入最新 **GPUI Kit（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**（K 线面板配视口滑动窗口切片）及参考 Codex 官方源码的自研窄 Rust 模型客户端（D-08）。
+
+3. **M3～M5（已完成的安装更新与 K 线训练，当前的训练工作台）**：M3 交付 Windows 安装包、版本与签名更新（D-31），M4 交付 K 线训练内核；按 [D-33](decisions/confirmed-decisions.md) 插入的 **M5 训练工作台**（当前阶段）默认以比特币训练，美股/ETF 与加密现货共用一套、不做期货，按 D-34 提供跨局练习账户、加密 4H/1H 与图上交易。策略研究顺延为 M6，扩展为 M7。
 
 ## 新接手时恢复哪些信息
 

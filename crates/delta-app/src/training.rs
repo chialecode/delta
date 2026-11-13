@@ -16,6 +16,8 @@ use delta_core::{
     SimOrder, SimOrderType, SimRejectCode, SimState, SimStepBar, SlippageSpec, TimeInForce,
     TrainingNoteRef, TrainingReport, TrainingReportInput, SIM_ENGINE_VERSION,
 };
+use delta_core::{FillRule, SimReplayer, Timeframe, FILL_RULE_VERSION_M5, SIM_ENGINE_VERSION_M5};
+use delta_data::CandidateQualityFilter;
 use delta_data::{
     CandidatePoolQuery, DeleteTrainingRunPreview, FeeChargingTier as DataFeeChargingTier,
     FeeCurrencyMode as DataFeeCurrencyMode, FeeProfileVersionRecord,
@@ -37,6 +39,9 @@ use crate::kline::{
     LodCandleDto, MarkerKind,
 };
 use crate::service::{AppService, ErrorEnvelope};
+
+/// Replayed state, per-seq recomputed hashes and the undo replayer at the latest boundary.
+pub(crate) type RecoveredSim = (SimState, Vec<(i64, String)>, SimReplayer);
 
 pub const SIMULATED_TRAINING_BADGE: &str = "模拟训练";
 pub const HIDDEN_INSTRUMENT_ID: &str = "HIDDEN:INSTRUMENT_A";
@@ -97,6 +102,16 @@ pub struct CreateTrainingRunRequest {
     pub fee_profile_version_id: String,
     pub hidden_mode: bool,
     pub create_and_start: bool,
+    /// Frozen bar timeframe (`S-50`): crypto `1d`/`4h`/`1h`, US equity/ETF `1d` only.
+    #[serde(default)]
+    pub timeframe: Timeframe,
+    /// Fund the run from the practice account of its quote currency (`S-52`). When false the
+    /// run has independent capital (`initial_cash`) like M4 runs.
+    #[serde(default)]
+    pub use_practice_account: bool,
+    /// Allocation from the practice account; `None` = all available funds.
+    #[serde(default)]
+    pub allocation: Option<Decimal>,
 }
 
 impl Default for CreateTrainingRunRequest {
@@ -117,6 +132,9 @@ impl Default for CreateTrainingRunRequest {
             fee_profile_version_id: BUILTIN_FEE_ZERO_COST_ID.to_string(),
             hidden_mode: true,
             create_and_start: false,
+            timeframe: Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         }
     }
 }
@@ -223,6 +241,29 @@ pub struct TrainingRunSummaryDto {
     pub created_at: String,
     pub updated_at: String,
     pub finished_at: Option<String>,
+    /// `S-50`: frozen timeframe of the run.
+    #[serde(default = "default_tf_label")]
+    pub timeframe: String,
+    /// `S-52`: practice account funding the run; `None` = independent capital (M4 runs).
+    #[serde(default)]
+    pub practice_account_id: Option<String>,
+    #[serde(default)]
+    pub fill_rule_version: Option<String>,
+    /// Quick fills, modifies and undos of the run; filled only by the post-run AI tool
+    /// (`S-55`), absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_counts: Option<TrainingOperationCountsDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrainingOperationCountsDto {
+    pub quick_fill_count: u64,
+    pub modify_count: u64,
+    pub undo_count: u64,
+}
+
+fn default_tf_label() -> String {
+    "1d".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,9 +304,27 @@ pub struct TrainingOrderRequestDto {
     pub tif: TimeInForce,
     #[serde(default)]
     pub priority: Option<i32>,
+    /// `visible_close` = quick order filled now at the visible close (`S-51` ①, m5 runs only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_rule: Option<FillRule>,
 }
 
 impl TrainingOrderRequestDto {
+    /// Quick buy/sell at the current visible close (`S-51` ①).
+    pub fn quick(side: OrderSide, quantity: Decimal) -> Self {
+        Self {
+            kind: OrderSubmitKind::Single {
+                side,
+                order_type: SimOrderType::Market,
+                attached_bracket: None,
+            },
+            quantity,
+            tif: TimeInForce::Day,
+            priority: None,
+            fill_rule: Some(FillRule::VisibleClose),
+        }
+    }
+
     pub fn single(
         side: OrderSide,
         order_type: SimOrderType,
@@ -282,6 +341,7 @@ impl TrainingOrderRequestDto {
             quantity,
             tif,
             priority: None,
+            fill_rule: None,
         }
     }
 
@@ -301,6 +361,7 @@ impl TrainingOrderRequestDto {
             quantity,
             tif,
             priority: None,
+            fill_rule: None,
         }
     }
 }
@@ -665,7 +726,7 @@ fn map_order_status_to_storage(status: OrderStatus) -> SimOrderStatus {
     }
 }
 
-fn sim_order_to_record(run_id: &str, order: &SimOrder) -> SimOrderRecord {
+pub(crate) fn sim_order_to_record(run_id: &str, order: &SimOrder) -> SimOrderRecord {
     let (order_type_str, limit_price, stop_price) = match order.order_type {
         SimOrderType::Market => ("market".to_string(), None, None),
         SimOrderType::Limit { limit_price } => ("limit".to_string(), Some(limit_price), None),
@@ -718,7 +779,7 @@ fn sim_order_to_record(run_id: &str, order: &SimOrder) -> SimOrderRecord {
     }
 }
 
-fn sim_fill_to_record(run_id: &str, fill: &SimFill) -> SimFillRecord {
+pub(crate) fn sim_fill_to_record(run_id: &str, fill: &SimFill) -> SimFillRecord {
     let side_str = match fill.side {
         OrderSide::Buy => "buy",
         OrderSide::Sell => "sell",
@@ -741,14 +802,14 @@ fn sim_fill_to_record(run_id: &str, fill: &SimFill) -> SimFillRecord {
     }
 }
 
-fn map_storage_err(code: &'static str, err: StorageError) -> ErrorEnvelope {
+pub(crate) fn map_storage_err(code: &'static str, err: StorageError) -> ErrorEnvelope {
     ErrorEnvelope::new(code, err.to_string(), false)
 }
 
 /// Why a recovery/replay attempt failed (`S-43`). Only `Integrity` (hash, command, bar or
 /// checkpoint mismatch) is evidence that the run is corrupted and may mark it `damaged`;
 /// a `Storage` read failure is surfaced unchanged and leaves the run as it was.
-enum ReplayFailure {
+pub(crate) enum ReplayFailure {
     Integrity(String),
     Storage(ErrorEnvelope),
 }
@@ -760,7 +821,7 @@ impl From<String> for ReplayFailure {
 }
 
 impl ReplayFailure {
-    fn into_envelope(self, integrity_code: &'static str) -> ErrorEnvelope {
+    pub(crate) fn into_envelope(self, integrity_code: &'static str) -> ErrorEnvelope {
         match self {
             Self::Integrity(reason) => ErrorEnvelope::new(integrity_code, reason, false),
             Self::Storage(err) => err,
@@ -768,8 +829,17 @@ impl ReplayFailure {
     }
 }
 
-fn map_sim_err(err: SimError) -> ErrorEnvelope {
+pub(crate) fn map_sim_err(err: SimError) -> ErrorEnvelope {
     match err {
+        SimError::OrderNotModifiable { .. } => {
+            ErrorEnvelope::new("ORDER_NOT_MODIFIABLE", err.to_string(), false)
+        }
+        SimError::UndoUnavailable(_) => {
+            ErrorEnvelope::new("UNDO_UNAVAILABLE", err.to_string(), false)
+        }
+        SimError::EngineFeatureUnavailable { .. } => {
+            ErrorEnvelope::new("ENGINE_FEATURE_UNAVAILABLE", err.to_string(), false)
+        }
         SimError::OrderRejected(rej) => ErrorEnvelope::new(
             rej.code.as_str(),
             serde_json::to_string(&rej).unwrap_or(rej.message),
@@ -792,7 +862,7 @@ fn map_sim_err(err: SimError) -> ErrorEnvelope {
 
 #[inline]
 pub fn is_run_identity_masked(run: &SimulationRunRecord, session: &TrainingSessionRecord) -> bool {
-    session.hidden_mode && !(run.status == SimRunStatus::Finished && session.revealed)
+    session.hidden_mode && !(run.status.is_ended() && session.revealed)
 }
 
 pub fn hidden_display_symbol_for_category(market_category: &str) -> String {
@@ -1156,7 +1226,10 @@ fn build_training_chart_slice_with_warmup(
         let slice = KlineWindowSliceDto {
             instrument_id: out_instrument_id.to_string(),
             venue: out_venue.to_string(),
-            timeframe: "1d".to_string(),
+            timeframe: raw_bars_with_warmup
+                .first()
+                .map(|b| b.timeframe.clone())
+                .unwrap_or_else(|| "1d".to_string()),
             adjustment,
             visible_start_index: start,
             visible_end_index: end,
@@ -1198,7 +1271,7 @@ fn generate_random_seed_u64() -> Result<u64, ErrorEnvelope> {
     Ok(u64::from_be_bytes(bytes))
 }
 
-fn scrub_sim_event(
+pub(crate) fn scrub_sim_event(
     ev: &SimEvent,
     masked: bool,
     quote_currency: &str,
@@ -1321,6 +1394,21 @@ fn scrub_sim_event(
             visible_until: None,
             cancelled_order_ids,
         },
+        SimEvent::OrderModified {
+            order_id,
+            quantity,
+            limit_price,
+            stop_price,
+            ..
+        } => SimEvent::OrderModified {
+            order_id,
+            instrument_id: HIDDEN_INSTRUMENT_ID.to_string(),
+            quantity,
+            limit_price,
+            stop_price,
+            eligible_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+        },
+        ev @ SimEvent::CommandUndone { .. } => ev,
     }
 }
 
@@ -1600,8 +1688,36 @@ impl AppService {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn build_initial_sim_state(
         &self,
+        quote_currency: &str,
+        initial_cash: Decimal,
+        fee_profile_rec: &FeeProfileVersionRecord,
+        real_instrument_id: &str,
+        dataset_version: i64,
+        history_start_at: DateTime<Utc>,
+        initial_visible_until: DateTime<Utc>,
+    ) -> Result<SimState, ErrorEnvelope> {
+        self.build_initial_sim_state_for(
+            SIM_ENGINE_VERSION,
+            "1d",
+            quote_currency,
+            initial_cash,
+            fee_profile_rec,
+            real_instrument_id,
+            dataset_version,
+            history_start_at,
+            initial_visible_until,
+        )
+    }
+
+    /// Initial state for a run's frozen engine and timeframe (`m4-sim-1` or `m5-sim-2`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn build_initial_sim_state_for(
+        &self,
+        engine_version: &str,
+        timeframe: &str,
         quote_currency: &str,
         initial_cash: Decimal,
         fee_profile_rec: &FeeProfileVersionRecord,
@@ -1616,7 +1732,7 @@ impl AppService {
             .store()
             .query_training_visible_final_bars(&TrainingBarPortQuery {
                 instrument_id: real_instrument_id.to_string(),
-                timeframe: "1d".to_string(),
+                timeframe: timeframe.to_string(),
                 source: None,
                 dataset_version,
                 warmup_start_at: Some(history_start_at),
@@ -1634,6 +1750,20 @@ impl AppService {
         })?;
         let mut initial_closes = BTreeMap::new();
         initial_closes.insert(real_instrument_id.to_string(), last_bar.close);
+        if engine_version == SIM_ENGINE_VERSION_M5 {
+            let tradable = SimStepBar::from_bar(last_bar.clone()).is_effectively_tradable();
+            return SimState::new_m5(
+                quote_currency.to_ascii_uppercase(),
+                initial_cash,
+                core_fp,
+                vec![spec],
+                Some(initial_visible_until),
+                initial_closes,
+                timeframe,
+                BTreeMap::from([(real_instrument_id.to_string(), tradable)]),
+            )
+            .map_err(map_sim_err);
+        }
         SimState::new(
             quote_currency.to_ascii_uppercase(),
             initial_cash,
@@ -1652,8 +1782,23 @@ impl AppService {
         session: &TrainingSessionRecord,
         events: &[delta_data::SimulationEventRecord],
     ) -> Result<(SimState, Vec<(i64, String)>), ReplayFailure> {
+        self.replay_events_with_replayer(initial_state, run, session, events)
+            .map(|(st, h, _)| (st, h))
+    }
+
+    fn replay_events_with_replayer(
+        &self,
+        initial_state: SimState,
+        run: &SimulationRunRecord,
+        session: &TrainingSessionRecord,
+        events: &[delta_data::SimulationEventRecord],
+    ) -> Result<RecoveredSim, ReplayFailure> {
         if events.is_empty() {
-            return Ok((initial_state, Vec::new()));
+            return Ok((
+                initial_state.clone(),
+                Vec::new(),
+                SimReplayer::new(initial_state),
+            ));
         }
         let max_vis = events
             .iter()
@@ -1678,7 +1823,7 @@ impl AppService {
                 .store()
                 .query_training_visible_final_bars(&TrainingBarPortQuery {
                     instrument_id: session.real_instrument_id.clone(),
-                    timeframe: "1d".to_string(),
+                    timeframe: session.timeframe.clone(),
                     source: None,
                     dataset_version: run.dataset_version,
                     warmup_start_at: Some(lower_bound),
@@ -1692,6 +1837,9 @@ impl AppService {
             }
         }
 
+        // The replay start is always a bar boundary (initial state, a bar advance, or for
+        // `m5-sim-2` a boundary checkpoint), so undo events rebuild exactly (`S-51` ③).
+        let mut replayer = SimReplayer::new(initial_state.clone());
         let mut cur_state = initial_state;
         let mut step_hashes = Vec::with_capacity(events.len());
         for ev in events {
@@ -1706,12 +1854,14 @@ impl AppService {
                         )
                     })?;
                     let sb = SimStepBar::from_bar(bar.clone());
-                    sim_step(&cur_state, cmd, Some(&sb))
+                    replayer
+                        .apply(&cur_state, ev.seq as u64, cmd, Some(&sb))
                         .map_err(|e| format!("replay step failed at seq {}: {e}", ev.seq))?
                         .0
                 }
                 _ => {
-                    sim_step(&cur_state, cmd, None)
+                    replayer
+                        .apply(&cur_state, ev.seq as u64, cmd, None)
                         .map_err(|e| format!("replay command failed at seq {}: {e}", ev.seq))?
                         .0
                 }
@@ -1720,18 +1870,77 @@ impl AppService {
             step_hashes.push((ev.seq, h));
             cur_state = next_state;
         }
-        Ok((cur_state, step_hashes))
+        Ok((cur_state, step_hashes, replayer))
     }
 
     fn compute_recovery_hashes_for_bundle(
         &self,
         bundle: &SimulationRecoveryBundle,
     ) -> Result<(SimState, Vec<(i64, String)>), ReplayFailure> {
+        self.compute_recovery_full(bundle).map(|(st, h, _)| (st, h))
+    }
+
+    /// Recovery that also returns the undo replayer positioned at the latest bar boundary.
+    pub(crate) fn compute_recovery_full(
+        &self,
+        bundle: &SimulationRecoveryBundle,
+    ) -> Result<RecoveredSim, ReplayFailure> {
         let session = bundle
             .session
             .as_ref()
             .ok_or_else(|| format!("missing training_session for run '{}'", bundle.run.run_id))?;
 
+        // `m5-sim-2`: undo needs the state at the latest bar boundary, so recovery starts from
+        // the latest checkpoint that sits on a boundary (seq 0, a bar advance or finish).
+        let boundary_bundle;
+        let bundle = if bundle.run.engine_version == SIM_ENGINE_VERSION_M5 {
+            match &bundle.latest_checkpoint {
+                Some(cp) if cp.seq > 0 => {
+                    let at_boundary = bundle
+                        .all_events
+                        .get((cp.seq - 1) as usize)
+                        .is_some_and(|e| matches!(e.event_kind.as_str(), "advance_bar" | "finish"));
+                    if at_boundary {
+                        bundle
+                    } else {
+                        let checkpoints = self
+                            .store()
+                            .list_sim_checkpoints(&bundle.run.run_id)
+                            .map_err(|e| {
+                                ReplayFailure::Storage(map_storage_err("CHECKPOINT_LOAD_FAILED", e))
+                            })?;
+                        let chosen = checkpoints
+                            .into_iter()
+                            .filter(|c| {
+                                c.seq == 0
+                                    || bundle.all_events.get((c.seq - 1) as usize).is_some_and(
+                                        |e| {
+                                            matches!(
+                                                e.event_kind.as_str(),
+                                                "advance_bar" | "finish"
+                                            )
+                                        },
+                                    )
+                            })
+                            .max_by_key(|c| c.seq);
+                        let after = chosen.as_ref().map(|c| c.seq).unwrap_or(0);
+                        let mut b = bundle.clone();
+                        b.events_after_checkpoint = b
+                            .all_events
+                            .iter()
+                            .filter(|e| e.seq > after)
+                            .cloned()
+                            .collect();
+                        b.latest_checkpoint = chosen;
+                        boundary_bundle = b;
+                        &boundary_bundle
+                    }
+                }
+                _ => bundle,
+            }
+        } else {
+            bundle
+        };
         let (start_state, mut hashes) = match &bundle.latest_checkpoint {
             Some(cp) => {
                 let mut cp_state: SimState = serde_json::from_str(&cp.state_json).map_err(|e| {
@@ -1762,7 +1971,9 @@ impl AppService {
                     })
                     .unwrap_or(session.visible_until);
                 let init_state = self
-                    .build_initial_sim_state(
+                    .build_initial_sim_state_for(
+                        &bundle.run.engine_version,
+                        &session.timeframe,
                         &bundle.run.quote_currency,
                         bundle.run.initial_cash,
                         &bundle.fee_profile,
@@ -1777,7 +1988,7 @@ impl AppService {
             }
         };
 
-        let (final_state, step_hashes) = self.replay_events_on_state(
+        let (final_state, step_hashes, replayer) = self.replay_events_with_replayer(
             start_state,
             &bundle.run,
             session,
@@ -1792,7 +2003,7 @@ impl AppService {
             )
             .into());
         }
-        Ok((final_state, hashes))
+        Ok((final_state, hashes, replayer))
     }
 
     fn find_initial_visible_until_for_session(
@@ -1817,7 +2028,7 @@ impl AppService {
             .store()
             .query_training_visible_final_bars(&TrainingBarPortQuery {
                 instrument_id: session.real_instrument_id.clone(),
-                timeframe: "1d".to_string(),
+                timeframe: session.timeframe.clone(),
                 source: None,
                 dataset_version: run.dataset_version,
                 warmup_start_at: Some(session.history_start_at),
@@ -2062,6 +2273,10 @@ impl AppService {
             created_at: run.created_at.clone(),
             updated_at: run.updated_at.clone(),
             finished_at: run.finished_at.clone(),
+            timeframe: session.timeframe.clone(),
+            practice_account_id: session.practice_account_id.clone(),
+            fill_rule_version: session.fill_rule_version.clone(),
+            operation_counts: None,
         })
     }
 
@@ -2153,7 +2368,7 @@ impl AppService {
         Ok(())
     }
 
-    fn load_pool_query_metadata(
+    pub(crate) fn load_pool_query_metadata(
         &self,
         run: &SimulationRunRecord,
         session: &TrainingSessionRecord,
@@ -2188,6 +2403,8 @@ impl AppService {
             instrument_id: None,
             start_date: None,
             end_date: None,
+            timeframe: session.timeframe.clone(),
+            quality_filter: Default::default(),
         })
     }
 
@@ -2195,7 +2412,34 @@ impl AppService {
         &mut self,
         req: CreateTrainingRunRequest,
     ) -> Result<TrainingRunSummaryDto, ErrorEnvelope> {
-        if req.initial_cash <= Decimal::ZERO {
+        if req.timeframe.is_intraday() && req.market_category == TrainingMarketCategory::UsEquityEtf
+        {
+            return Err(ErrorEnvelope::new(
+                "TIMEFRAME_NOT_SUPPORTED",
+                "美股/ETF 本阶段只有日线；4 小时与 1 小时级别仅支持加密现货",
+                false,
+            ));
+        }
+        if let (true, Some(id)) = (req.timeframe.is_intraday(), req.instrument_id.as_deref()) {
+            if !(id.starts_with("BINANCE:") || id.starts_with("OKX:")) {
+                return Err(ErrorEnvelope::new(
+                    "TIMEFRAME_NOT_SUPPORTED",
+                    "美股/ETF 本阶段只有日线；4 小时与 1 小时级别仅支持加密现货",
+                    false,
+                ));
+            }
+        }
+        if req.use_practice_account {
+            if let Some(a) = req.allocation {
+                if a <= Decimal::ZERO {
+                    return Err(ErrorEnvelope::new(
+                        "INVALID_ALLOCATION",
+                        "划拨金额必须大于 0",
+                        false,
+                    ));
+                }
+            }
+        } else if req.initial_cash <= Decimal::ZERO {
             return Err(ErrorEnvelope::new(
                 "INVALID_INITIAL_CASH",
                 "initial_cash must be strictly positive",
@@ -2226,6 +2470,9 @@ impl AppService {
             instrument_id: req.instrument_id.clone(),
             start_date: req.start_date,
             end_date: req.end_date,
+            timeframe: req.timeframe.as_str().to_string(),
+            // M5 runs exclude only price-affecting quality kinds (`S-49` ③).
+            quality_filter: CandidateQualityFilter::PriceAffectingOnly,
         };
         let pool = self
             .store()
@@ -2254,9 +2501,49 @@ impl AppService {
             chosen.symbol.clone()
         };
 
-        let init_state = self.build_initial_sim_state(
+        // `S-52`: fund from the practice account of the run's quote currency.
+        let practice = if req.use_practice_account {
+            let account = self.ensure_practice_account(&chosen.quote_currency)?;
+            if let Some(busy) = self.open_run_on_account(&account.id)? {
+                return Err(ErrorEnvelope::new(
+                    "PRACTICE_ACCOUNT_BUSY",
+                    format!(
+                        "练习账户 {} 还有未结束的一局（{busy}），请先结束或放弃当前这局",
+                        account.quote_currency
+                    ),
+                    false,
+                ));
+            }
+            let available = self
+                .store()
+                .practice_account_balance(&account.id)
+                .map_err(|e| map_storage_err("PRACTICE_ACCOUNT_FAILED", e))?;
+            let amount = req.allocation.unwrap_or(available);
+            if amount <= Decimal::ZERO || amount > available {
+                return Err(ErrorEnvelope::new(
+                    "INSUFFICIENT_PRACTICE_FUNDS",
+                    format!(
+                        "划拨金额 {} 超出练习账户可用 {}",
+                        to_canonical_text(amount),
+                        to_canonical_text(available)
+                    ),
+                    false,
+                ));
+            }
+            Some((account.id, amount))
+        } else {
+            None
+        };
+        let initial_cash = practice
+            .as_ref()
+            .map(|(_, amount)| *amount)
+            .unwrap_or(req.initial_cash);
+
+        let init_state = self.build_initial_sim_state_for(
+            SIM_ENGINE_VERSION_M5,
+            req.timeframe.as_str(),
             &chosen.quote_currency,
-            req.initial_cash,
+            initial_cash,
             &fee_profile,
             &chosen.instrument_id,
             dataset_version,
@@ -2277,10 +2564,10 @@ impl AppService {
             kind: "training".to_string(),
             seed,
             dataset_version,
-            engine_version: SIM_ENGINE_VERSION.to_string(),
+            engine_version: SIM_ENGINE_VERSION_M5.to_string(),
             fee_profile_version_id: fee_profile.id.clone(),
             quote_currency: chosen.quote_currency.to_ascii_uppercase(),
-            initial_cash: req.initial_cash,
+            initial_cash,
             status: SimRunStatus::Preparing,
             parent_run_id: None,
             latest_seq: 0,
@@ -2307,6 +2594,9 @@ impl AppService {
             current_step_index: 0,
             total_steps: i64::try_from(chosen.train_len).unwrap_or(250),
             revealed: false,
+            timeframe: req.timeframe.as_str().to_string(),
+            practice_account_id: None,
+            fill_rule_version: Some(FILL_RULE_VERSION_M5.to_string()),
         };
         let init_cp = SimCheckpointRecord {
             run_id: run_id.clone(),
@@ -2317,10 +2607,39 @@ impl AppService {
             created_at: now_str,
         };
 
-        self.store_mut()
-            .create_training_run(&run_rec, &session_rec, Some(&init_cp))
-            .map_err(|e| map_storage_err("CREATE_TRAINING_RUN_FAILED", e))?;
-        self.save_pool_query_metadata(&run_id, dataset_version, &pool_query)?;
+        // Run creation, allocation entry and pool metadata commit together.
+        self.store()
+            .conn()
+            .execute_batch("SAVEPOINT create_training_run")
+            .map_err(|e| ErrorEnvelope::new("CREATE_TRAINING_RUN_FAILED", e.to_string(), false))?;
+        let created = (|| -> Result<(), ErrorEnvelope> {
+            self.store_mut()
+                .create_training_run(&run_rec, &session_rec, Some(&init_cp))
+                .map_err(|e| map_storage_err("CREATE_TRAINING_RUN_FAILED", e))?;
+            if let Some((account_id, amount)) = &practice {
+                self.store_mut()
+                    .allocate_practice_run(&run_id, account_id, *amount, Utc::now())
+                    .map_err(|e| {
+                        if e.to_string().contains("PRACTICE_ACCOUNT_BUSY") {
+                            ErrorEnvelope::new("PRACTICE_ACCOUNT_BUSY", e.to_string(), false)
+                        } else {
+                            map_storage_err("PRACTICE_ALLOCATION_FAILED", e)
+                        }
+                    })?;
+            }
+            self.save_pool_query_metadata(&run_id, dataset_version, &pool_query)?;
+            Ok(())
+        })();
+        let sql = if created.is_ok() {
+            "RELEASE create_training_run"
+        } else {
+            "ROLLBACK TO create_training_run; RELEASE create_training_run"
+        };
+        self.store()
+            .conn()
+            .execute_batch(sql)
+            .map_err(|e| ErrorEnvelope::new("CREATE_TRAINING_RUN_FAILED", e.to_string(), false))?;
+        created?;
 
         if req.create_and_start {
             return self.start_training_run(&run_id);
@@ -2383,13 +2702,26 @@ impl AppService {
                 .map_err(map_sim_err)?;
         let chosen = &pool.candidates[*sampled.last().expect("non-empty sample sequence")];
 
+        if session.practice_account_id.is_some()
+            && !chosen
+                .quote_currency
+                .eq_ignore_ascii_case(&run.quote_currency)
+        {
+            return Err(ErrorEnvelope::new(
+                "PRACTICE_CURRENCY_MISMATCH",
+                "重新抽到的标的报价币种与本局练习账户不同；请放弃本局后按目标币种新开一局",
+                false,
+            ));
+        }
         let next_display_symbol = if session.hidden_mode {
             hidden_display_symbol_for_category(&chosen.market_category)
         } else {
             chosen.symbol.clone()
         };
 
-        let init_state = self.build_initial_sim_state(
+        let init_state = self.build_initial_sim_state_for(
+            &run.engine_version,
+            &session.timeframe,
             &chosen.quote_currency,
             run.initial_cash,
             &fee_profile,
@@ -2848,6 +3180,7 @@ impl AppService {
             priority: req.priority.unwrap_or(0),
             kind: req.kind,
             eligible_at_hint: None,
+            fill_rule: req.fill_rule,
         };
         match preview_order_submission(&state, &submit_req) {
             Ok(mut preview) => {
@@ -2916,6 +3249,7 @@ impl AppService {
             priority: req.priority.unwrap_or(0),
             kind: req.kind,
             eligible_at_hint: None,
+            fill_rule: req.fill_rule,
         };
         let cmd = SimCommand::SubmitOrder(submit_req);
         let cmd_json = serde_json::to_string(&cmd)
@@ -2934,21 +3268,23 @@ impl AppService {
             Err(e) => return Err(map_sim_err(e)),
         };
 
+        // Every order changed by the command (a quick fill also fills it) and every new fill.
         let mut created_orders = Vec::new();
-        for ev in &events {
-            if let SimEvent::OrderSubmitted { order_ids, .. } = ev {
-                for oid in order_ids {
-                    if let Some(ord) = next_state.orders.get(oid) {
-                        created_orders.push(sim_order_to_record(run_id, ord));
-                    }
-                }
+        for (oid, next_ord) in &next_state.orders {
+            if state.orders.get(oid) != Some(next_ord) {
+                created_orders.push(sim_order_to_record(run_id, next_ord));
             }
         }
+        let new_fills: Vec<SimFillRecord> = next_state.fills[state.fills.len()..]
+            .iter()
+            .map(|f| sim_fill_to_record(run_id, f))
+            .collect();
 
         let new_seq = bundle.run.latest_seq + 1;
         let new_state_hash = next_state.state_hash();
         let now = Utc::now();
-        let checkpoint = (new_seq % 20 == 0).then(|| SimCheckpointRecord {
+        // `m5-sim-2` keeps checkpoints on bar boundaries only (undo rebuilds from them).
+        let checkpoint = (new_seq % 20 == 0 && !next_state.is_m5()).then(|| SimCheckpointRecord {
             run_id: run_id.to_string(),
             seq: new_seq,
             reason: SimCheckpointReason::Periodic20,
@@ -2969,7 +3305,7 @@ impl AppService {
             new_step_index: session.current_step_index,
             new_state_hash: new_state_hash.clone(),
             orders_to_upsert: created_orders,
-            fills_to_insert: Vec::new(),
+            fills_to_insert: new_fills,
             notes_to_upsert: Vec::new(),
             checkpoint,
             committed_at: now,
@@ -3047,7 +3383,7 @@ impl AppService {
         let new_seq = bundle.run.latest_seq + 1;
         let new_state_hash = next_state.state_hash();
         let now = Utc::now();
-        let checkpoint = (new_seq % 20 == 0).then(|| SimCheckpointRecord {
+        let checkpoint = (new_seq % 20 == 0 && !next_state.is_m5()).then(|| SimCheckpointRecord {
             run_id: run_id.to_string(),
             seq: new_seq,
             reason: SimCheckpointReason::Periodic20,
@@ -3181,7 +3517,12 @@ impl AppService {
         let new_seq = bundle.run.latest_seq + 1;
         let new_state_hash = next_state.state_hash();
         let now = Utc::now();
-        let periodic_cp = (new_seq % 20 == 0 && !reached_end).then(|| SimCheckpointRecord {
+        let periodic_due = if next_state.is_m5() {
+            new_step_index % 20 == 0
+        } else {
+            new_seq % 20 == 0
+        };
+        let periodic_cp = (periodic_due && !reached_end).then(|| SimCheckpointRecord {
             run_id: run_id.to_string(),
             seq: new_seq,
             reason: SimCheckpointReason::Periodic20,
@@ -3304,7 +3645,7 @@ impl AppService {
         let session = bundle.session.as_ref().ok_or_else(|| {
             ErrorEnvelope::new("SESSION_NOT_FOUND", "missing training_session", false)
         })?;
-        if bundle.run.status == SimRunStatus::Finished {
+        if bundle.run.status.is_ended() {
             let summary = self.build_training_run_summary_dto(&bundle.run, session)?;
             return Ok(TrainingStepReceiptDto {
                 run: summary,
@@ -3357,9 +3698,33 @@ impl AppService {
             checkpoint: Some(finish_cp),
             committed_at: now,
         };
-        self.store_mut()
+        // Finishing and the practice-account settlement commit together (`S-52`).
+        self.store()
+            .conn()
+            .execute_batch("SAVEPOINT finish_and_settle")
+            .map_err(|e| ErrorEnvelope::new("FINISH_COMMIT_FAILED", e.to_string(), false))?;
+        let finished = self
+            .store_mut()
             .commit_simulation_step_atomic(&step_commit)
-            .map_err(|e| map_storage_err("FINISH_COMMIT_FAILED", e))?;
+            .map_err(|e| map_storage_err("FINISH_COMMIT_FAILED", e))
+            .and_then(|_| {
+                self.settle_practice_run(
+                    run_id,
+                    session,
+                    next_state.total_equity_at_last_close(),
+                    "本局结算",
+                )
+            });
+        let sql = if finished.is_ok() {
+            "RELEASE finish_and_settle"
+        } else {
+            "ROLLBACK TO finish_and_settle; RELEASE finish_and_settle"
+        };
+        self.store()
+            .conn()
+            .execute_batch(sql)
+            .map_err(|e| ErrorEnvelope::new("FINISH_COMMIT_FAILED", e.to_string(), false))?;
+        finished?;
 
         let updated_run = self
             .store()
@@ -3400,7 +3765,7 @@ impl AppService {
         run_id: &str,
     ) -> Result<TrainingRevealDto, ErrorEnvelope> {
         let (bundle, _) = self.verify_and_recover_sim_state(run_id)?;
-        if bundle.run.status != SimRunStatus::Finished {
+        if !bundle.run.status.is_ended() {
             return Err(ErrorEnvelope::new(
                 "REVEAL_BEFORE_FINISH_DENIED",
                 format!(
@@ -3493,7 +3858,7 @@ impl AppService {
         })
     }
 
-    fn load_visible_index_maps(
+    pub(crate) fn load_visible_index_maps(
         &self,
         run_id: &str,
     ) -> Result<(VisibleCloseIndexMap, VisibleDateIndexMap), ErrorEnvelope> {
@@ -3562,7 +3927,35 @@ impl AppService {
             visible_cas,
             note_refs,
         );
-        let raw_report = compute_training_report(&report_input);
+        let mut raw_report = compute_training_report(&report_input);
+        if let Some(rule) = &session.fill_rule_version {
+            raw_report.limitations.items.push(delta_core::SampleLimitationItem {
+                code: "fill_rule".to_string(),
+                message: format!(
+                    "快捷单在下单时按当前已收盘 K 线的收盘价成交（另加不利点差与滑点、按最小价位不利取整并计费）；挂单、画线下单与止损止盈从下一根开盘起按路径撮合。成交规则版本 {rule}。"
+                ),
+            });
+        }
+        if session.practice_account_id.is_some() {
+            raw_report
+                .limitations
+                .items
+                .push(delta_core::SampleLimitationItem {
+                    code: "practice_settlement".to_string(),
+                    message:
+                        "练习账户结算额按最后一根已显示 K 线收盘价计算的权益，不假设卖出费用。"
+                            .to_string(),
+                });
+        }
+        if run.status == SimRunStatus::Abandoned {
+            raw_report
+                .limitations
+                .items
+                .push(delta_core::SampleLimitationItem {
+                    code: "abandoned".to_string(),
+                    message: "本局已放弃，照常计入训练历史与账户分析。".to_string(),
+                });
+        }
         let (report, equity_bar_labels) =
             scrub_training_report(raw_report, masked, history_bar_count);
         let summary = self.build_training_run_summary_dto(run, session)?;
@@ -3608,7 +4001,9 @@ impl AppService {
         })?;
 
         let init_vis = self.find_initial_visible_until_for_session(&bundle.run, session)?;
-        let scratch_init_state = self.build_initial_sim_state(
+        let scratch_init_state = self.build_initial_sim_state_for(
+            &bundle.run.engine_version,
+            &session.timeframe,
             &bundle.run.quote_currency,
             bundle.run.initial_cash,
             &bundle.fee_profile,
@@ -3642,6 +4037,17 @@ impl AppService {
                     let chosen_cp = all_cps
                         .iter()
                         .rev()
+                        .filter(|cp| {
+                            // `m5-sim-2`: only bar-boundary checkpoints can seed an undo-aware replay.
+                            bundle.run.engine_version != SIM_ENGINE_VERSION_M5
+                                || cp.seq == 0
+                                || bundle
+                                    .all_events
+                                    .get((cp.seq - 1) as usize)
+                                    .is_some_and(|e| {
+                                        matches!(e.event_kind.as_str(), "advance_bar" | "finish")
+                                    })
+                        })
                         .find(|cp| cp.seq > 0 && cp.seq < bundle.run.latest_seq)
                         .or_else(|| all_cps.last());
 
@@ -3978,7 +4384,7 @@ impl AppService {
             .store()
             .get_simulation_run(run_id)
             .map_err(|e| map_storage_err("RUN_NOT_FOUND", e))?;
-        if run.status != SimRunStatus::Finished {
+        if !run.status.is_ended() {
             return Err(ErrorEnvelope::new(
                 "ARCHIVE_BEFORE_FINISH_DENIED",
                 "仅已完成（finished）的模拟训练允许归档笔记至复盘日志",
@@ -4197,7 +4603,13 @@ impl AppService {
         generation: u64,
     ) -> Result<ResultEnvelope<TrainingRunSummaryDto>, ErrorEnvelope> {
         let (resolved, run_id) = self.ensure_finished_training_scope(scope)?;
-        let summary = self.get_training_run_summary(&run_id)?;
+        let mut summary = self.get_training_run_summary(&run_id)?;
+        let (_, state) = self.read_verified_sim_state(&run_id)?;
+        summary.operation_counts = Some(TrainingOperationCountsDto {
+            quick_fill_count: state.quick_fill_count,
+            modify_count: state.modify_count,
+            undo_count: state.undo_count,
+        });
         let evidence = vec![
             EvidenceRef {
                 kind: "fee_profile_version".to_string(),
@@ -5448,6 +5860,8 @@ mod tests {
                 history_len: 10,
                 train_len: 10,
                 reveal_len: 5,
+                timeframe: "1d".to_string(),
+                quality_filter: Default::default(),
             })
             .unwrap();
         assert!(!pool.candidates.is_empty());
@@ -5949,7 +6363,8 @@ mod tests {
                 run_id: Some("TRN-FP-V1".to_string()),
                 market_category: TrainingMarketCategory::UsEquityEtf,
                 instrument_id: Some(nvda.clone()),
-                start_date: Some(days[0]),
+                // Single candidate (training starts at days[5]); M5 pools hash the quality filter.
+                start_date: Some(days[1]),
                 end_date: Some(days[20]),
                 warmup_bars: 2,
                 history_bars: 3,
@@ -5961,6 +6376,9 @@ mod tests {
                 fee_profile_version_id: v1.record.id.clone(),
                 hidden_mode: false,
                 create_and_start: true,
+                timeframe: delta_core::Timeframe::D1,
+                use_practice_account: false,
+                allocation: None,
             })
             .unwrap();
 
@@ -6142,6 +6560,9 @@ mod tests {
                 fee_profile_version_id: v2.record.id.clone(),
                 hidden_mode: false,
                 create_and_start: true,
+                timeframe: delta_core::Timeframe::D1,
+                use_practice_account: false,
+                allocation: None,
             })
             .unwrap();
         let _ = host
@@ -6727,10 +7148,17 @@ mod tests {
 
         // 3. Reopen cleanly -> migrates 4 -> 5, preserves real ledger/notes/AI session, and Schema 4 reader refuses Schema 5!
         let mut svc = sandbox.open_service();
+        // M5: the reopen migrates straight to the current schema (6); M4 (schema 5) and
+        // v0.1.1 (schema 4) readers both refuse it.
         assert_eq!(
-            SqliteStore::check_schema_compatibility_at_version(&data_dir, 5).unwrap(),
-            5
+            SqliteStore::check_schema_compatibility_at_version(
+                &data_dir,
+                delta_data::CURRENT_SCHEMA_VERSION
+            )
+            .unwrap(),
+            delta_data::CURRENT_SCHEMA_VERSION
         );
+        assert!(SqliteStore::check_schema_compatibility_at_version(&data_dir, 5).is_err());
         assert_eq!(
             SqliteStore::list_schema_5_tables_on_disk(&data_dir)
                 .unwrap()

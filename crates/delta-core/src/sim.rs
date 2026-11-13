@@ -13,6 +13,11 @@ use thiserror::Error;
 
 /// Frozen simulation engine version identifier for M4 (`S-36`).
 pub const SIM_ENGINE_VERSION: &str = "m4-sim-1";
+/// M5 engine (`S-51`): `m4-sim-1` plus visible-close quick fills, order modify, single undo
+/// within the current bar and intraday `DAY` expiry. Old runs always replay as `m4-sim-1`.
+pub const SIM_ENGINE_VERSION_M5: &str = "m5-sim-2";
+/// Frozen per run and printed in the report's sample limitations (`S-51` ①).
+pub const FILL_RULE_VERSION_M5: &str = "m5-fill-1:quick=visible_close;orders=next_open_path";
 
 /// Market-order cash reservation buffer (`10%` above last visible close, `S-40`).
 pub const MARKET_BUY_RESERVATION_BUFFER_RATE: &str = "0.10";
@@ -71,6 +76,19 @@ pub enum SimError {
     InvalidSamplingRange(String),
     #[error("decimal arithmetic overflow in '{0}'")]
     ArithmeticOverflow(String),
+    #[error("order '{order_id}' cannot be modified in status '{}'", status.as_str())]
+    OrderNotModifiable {
+        order_id: String,
+        status: OrderStatus,
+    },
+    #[error("nothing to undo: {0}")]
+    UndoUnavailable(String),
+    #[error("'{feature}' requires engine {required}, run uses {actual}")]
+    EngineFeatureUnavailable {
+        feature: String,
+        required: String,
+        actual: String,
+    },
 }
 
 impl SimError {
@@ -1176,11 +1194,14 @@ pub enum SimRejectCode {
     InsufficientPosition,
     InsufficientFundsAtFill,
     MissingReferencePrice,
+    /// Quick fill on a bar with zero volume or not tradable (`S-51` ①).
+    UntradableBar,
 }
 
 impl SimRejectCode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::UntradableBar => "UNTRADABLE_BAR",
             Self::UnsupportedOrderType => "UNSUPPORTED_ORDER_TYPE",
             Self::InvalidTickSize => "INVALID_TICK_SIZE",
             Self::InvalidLotSize => "INVALID_LOT_SIZE",
@@ -1247,6 +1268,17 @@ pub struct OrderSubmitRequest {
     pub kind: OrderSubmitKind,
     /// Optional explicit next-session open timestamp for `eligible_at`; defaults to `submitted_at`.
     pub eligible_at_hint: Option<DateTime<Utc>>,
+    /// `m5-sim-2` only: `visible_close` fills a market order in the same command at the
+    /// current visible close; absent/`next_open_path` keeps the M4 path rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_rule: Option<FillRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillRule {
+    NextOpenPath,
+    VisibleClose,
 }
 
 impl OrderSubmitRequest {
@@ -1268,6 +1300,7 @@ impl OrderSubmitRequest {
                 attached_bracket: None,
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 
@@ -1290,6 +1323,7 @@ impl OrderSubmitRequest {
                 attached_bracket: Some(attached_bracket),
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 
@@ -1312,6 +1346,7 @@ impl OrderSubmitRequest {
                 is_trade_plan,
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 }
@@ -1580,6 +1615,45 @@ pub enum SimCommand {
         corporate_actions: Vec<CorporateActionRecord>,
     },
     Finish,
+    /// `m5-sim-2`: change price and/or quantity of an open order (atomic cancel + re-place;
+    /// the order becomes eligible from the next bar open, group links are kept).
+    ModifyOrder {
+        order_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quantity: Option<Decimal>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_price: Option<Decimal>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_price: Option<Decimal>,
+    },
+    /// `m5-sim-2`: void the logged command `target_seq` (the last live one since the last bar
+    /// advance). Applied by [`SimReplayer`], which restores the state saved before that command
+    /// while keeping id/sequence counters moving forward (never reused).
+    UndoLast {
+        target_seq: u64,
+    },
+}
+
+impl SimCommand {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::SubmitOrder(r) if r.fill_rule == Some(FillRule::VisibleClose) => "quick_fill",
+            Self::SubmitOrder(_) => "submit_order",
+            Self::CancelOrder { .. } => "cancel_order",
+            Self::AdvanceBar { .. } => "advance_bar",
+            Self::Finish => "finish",
+            Self::ModifyOrder { .. } => "modify_order",
+            Self::UndoLast { .. } => "undo_last",
+        }
+    }
+
+    /// Commands a user can undo (`S-51` ③): order entry, cancel, modify and quick fills.
+    pub fn is_undoable(&self) -> bool {
+        matches!(
+            self,
+            Self::SubmitOrder(_) | Self::CancelOrder { .. } | Self::ModifyOrder { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1631,6 +1705,18 @@ pub enum SimEvent {
     BarAdvanced {
         snapshot: Box<SimBarSnapshot>,
     },
+    OrderModified {
+        order_id: String,
+        instrument_id: String,
+        quantity: Decimal,
+        limit_price: Option<Decimal>,
+        stop_price: Option<Decimal>,
+        eligible_at: DateTime<Utc>,
+    },
+    CommandUndone {
+        target_seq: u64,
+        target_command: String,
+    },
     SessionFinished {
         visible_until: Option<DateTime<Utc>>,
         cancelled_order_ids: Vec<String>,
@@ -1668,6 +1754,23 @@ pub struct SimState {
     pub position_reservations: BTreeMap<String, PositionReservation>,
     pub applied_corporate_actions: BTreeSet<(String, NaiveDate, String)>,
     pub bar_snapshots: Vec<SimBarSnapshot>,
+    // ---- `m5-sim-2` fields: omitted from JSON when default so `m4-sim-1` hashes never change.
+    /// Frozen bar timeframe (`1d`, `4h`, `1h`); `None` = daily (M4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+    /// Whether the latest visible bar of each instrument could trade (quick fills).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_bar_tradable: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub quick_fill_count: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub modify_count: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub undo_count: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 impl SimState {
@@ -1750,9 +1853,57 @@ impl SimState {
             position_reservations: BTreeMap::new(),
             applied_corporate_actions: BTreeSet::new(),
             bar_snapshots: Vec::new(),
+            timeframe: None,
+            last_bar_tradable: BTreeMap::new(),
+            quick_fill_count: 0,
+            modify_count: 0,
+            undo_count: 0,
         };
         state.normalize_fields();
         Ok(state)
+    }
+
+    /// `m5-sim-2` initial state: same as [`SimState::new`] plus the frozen timeframe and the
+    /// tradability of the last visible history bar per instrument.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_m5(
+        quote_currency: impl Into<String>,
+        initial_cash: Decimal,
+        fee_profile: FeeProfileVersion,
+        instruments: Vec<SimInstrumentSpec>,
+        initial_visible_until: Option<DateTime<Utc>>,
+        initial_last_closes: BTreeMap<String, Decimal>,
+        timeframe: &str,
+        last_bar_tradable: BTreeMap<String, bool>,
+    ) -> Result<Self, SimError> {
+        let mut state = Self::new(
+            quote_currency,
+            initial_cash,
+            fee_profile,
+            instruments,
+            initial_visible_until,
+            initial_last_closes,
+        )?;
+        state.engine_version = SIM_ENGINE_VERSION_M5.to_string();
+        state.timeframe = Some(timeframe.to_string());
+        state.last_bar_tradable = last_bar_tradable;
+        Ok(state)
+    }
+
+    pub fn is_m5(&self) -> bool {
+        self.engine_version == SIM_ENGINE_VERSION_M5
+    }
+
+    fn timeframe_duration(&self) -> chrono::Duration {
+        match self.timeframe.as_deref() {
+            Some("1h") => chrono::Duration::hours(1),
+            Some("4h") => chrono::Duration::hours(4),
+            _ => chrono::Duration::days(1),
+        }
+    }
+
+    fn is_intraday(&self) -> bool {
+        matches!(self.timeframe.as_deref(), Some("1h") | Some("4h"))
     }
 
     pub fn normalize_fields(&mut self) {
@@ -2330,10 +2481,527 @@ fn next_res_id(res_seq: u64) -> String {
     format!("SIM-RES-{res_seq:06}")
 }
 
+fn require_m5(state: &SimState, feature: &str) -> Result<(), SimError> {
+    if state.is_m5() {
+        Ok(())
+    } else {
+        Err(SimError::EngineFeatureUnavailable {
+            feature: feature.to_string(),
+            required: SIM_ENGINE_VERSION_M5.to_string(),
+            actual: state.engine_version.clone(),
+        })
+    }
+}
+
+fn reject(code: SimRejectCode, message: String, field: Option<&str>) -> SimError {
+    SimError::rejected(OrderRejection {
+        code,
+        message,
+        field: field.map(str::to_string),
+        nearest_lower: None,
+        nearest_upper: None,
+        required: None,
+        available: None,
+    })
+}
+
+/// Quick order (`S-51` ①): a market order filled inside this command at the current visible
+/// close plus adverse spread/slippage, adverse tick rounding and fees. Zero-volume or
+/// untradable bars are rejected; insufficient cash or position is rejected (never shrunk).
+fn quick_fill_into_state(
+    state: &mut SimState,
+    req: OrderSubmitRequest,
+) -> Result<Vec<SimEvent>, SimError> {
+    require_m5(state, "visible_close quick fill")?;
+    if state.finished {
+        return Err(SimError::SessionFinished);
+    }
+    let OrderSubmitKind::Single {
+        side,
+        order_type,
+        attached_bracket,
+    } = &req.kind
+    else {
+        return Err(reject(
+            SimRejectCode::InvalidOrderParams,
+            "quick fills are single market orders".into(),
+            Some("kind"),
+        ));
+    };
+    if *order_type != SimOrderType::Market || attached_bracket.is_some() {
+        return Err(reject(
+            SimRejectCode::InvalidOrderParams,
+            "quick fills are plain market orders without attached exits".into(),
+            Some("order_type"),
+        ));
+    }
+    let side = *side;
+    let spec = state
+        .instruments
+        .get(&req.instrument_id)
+        .cloned()
+        .ok_or_else(|| SimError::UnknownInstrument(req.instrument_id.clone()))?;
+    let qty = validate_step_multiple(req.quantity, spec.lot_size).map_err(|v| {
+        SimError::rejected(OrderRejection {
+            code: SimRejectCode::InvalidLotSize,
+            message: format!(
+                "quantity {} violates lot_size {}",
+                to_canonical_text(v.invalid_value),
+                to_canonical_text(v.step_size)
+            ),
+            field: Some("quantity".into()),
+            nearest_lower: v.nearest_lower,
+            nearest_upper: v.nearest_upper,
+            required: None,
+            available: None,
+        })
+    })?;
+    let close = state
+        .last_close_by_instrument
+        .get(&req.instrument_id)
+        .copied()
+        .ok_or_else(|| {
+            reject(
+                SimRejectCode::MissingReferencePrice,
+                format!("no visible close for {}", req.instrument_id),
+                None,
+            )
+        })?;
+    if !state
+        .last_bar_tradable
+        .get(&req.instrument_id)
+        .copied()
+        .unwrap_or(false)
+    {
+        return Err(reject(
+            SimRejectCode::UntradableBar,
+            "the current bar has zero volume or is not tradable; quick fill rejected".into(),
+            None,
+        ));
+    }
+    let close_at = state.visible_until.ok_or_else(|| {
+        reject(
+            SimRejectCode::MissingReferencePrice,
+            "no visible bar".into(),
+            None,
+        )
+    })?;
+    let probe = SimOrder {
+        order_id: String::new(),
+        order_seq: 0,
+        instrument_id: req.instrument_id.clone(),
+        side,
+        order_type: SimOrderType::Market,
+        tif: req.tif,
+        priority: req.priority,
+        quantity: qty,
+        parent_group_id: None,
+        parent_order_id: None,
+        oco_peer_order_id: None,
+        reservation_id: None,
+        group_role: OrderGroupRole::Standalone,
+        has_trade_plan: false,
+        status: OrderStatus::Active,
+        reject_code: None,
+        cancel_reason: None,
+        submitted_at: close_at,
+        eligible_at: close_at,
+        updated_at: close_at,
+        activated_bar_close_at: None,
+        activated_stage: None,
+        activated_path_price: None,
+    };
+    let fill_price = compute_execution_price_for_order(
+        &probe,
+        BarPathStage::HighToClose,
+        close,
+        spec.tick_size,
+        &state.fee_profile,
+    );
+    let settlement = settle_order_fees(
+        &state.fee_profile,
+        side,
+        &spec.base_asset_id,
+        &spec.quote_currency,
+        &[SyntheticFillInput {
+            fill_id: "QUICK".into(),
+            quantity: qty,
+            fill_price,
+        }],
+    )?;
+    match side {
+        OrderSide::Buy => {
+            let need = -settlement.fills[0].net_quote_cash_delta;
+            let avail = state.available_cash();
+            if need > avail {
+                return Err(SimError::rejected(OrderRejection {
+                    code: SimRejectCode::InsufficientFunds,
+                    message: format!(
+                        "insufficient available cash: required {}, available {}",
+                        to_canonical_text(need),
+                        to_canonical_text(avail)
+                    ),
+                    field: Some("quantity".into()),
+                    nearest_lower: None,
+                    nearest_upper: None,
+                    required: Some(need),
+                    available: Some(avail),
+                }));
+            }
+        }
+        OrderSide::Sell => {
+            let avail = state.available_position(&req.instrument_id);
+            if qty > avail {
+                return Err(SimError::rejected(OrderRejection {
+                    code: SimRejectCode::InsufficientPosition,
+                    message: format!(
+                        "insufficient available position: required {}, available {}",
+                        to_canonical_text(qty),
+                        to_canonical_text(avail)
+                    ),
+                    field: Some("quantity".into()),
+                    nearest_lower: None,
+                    nearest_upper: None,
+                    required: Some(qty),
+                    available: Some(avail),
+                }));
+            }
+        }
+    }
+    let seq = state.next_order_seq;
+    state.next_order_seq += 1;
+    let order_id = next_order_id(seq);
+    let mut order = probe;
+    order.order_id = order_id.clone();
+    order.order_seq = seq;
+    // A sell needs its quantity locked like any sell order until the fill consumes it.
+    if side == OrderSide::Sell {
+        let r = next_res_id(state.next_reservation_seq);
+        state.next_reservation_seq += 1;
+        state.position_reservations.insert(
+            r.clone(),
+            PositionReservation {
+                reservation_id: r.clone(),
+                instrument_id: req.instrument_id.clone(),
+                quantity: qty,
+                order_ids: vec![order_id.clone()],
+            },
+        );
+        order.reservation_id = Some(r);
+    }
+    state.orders.insert(order_id.clone(), order);
+    let mut events = vec![SimEvent::OrderSubmitted {
+        order_ids: vec![order_id.clone()],
+        parent_group_id: None,
+        cash_reserved: Decimal::ZERO,
+        position_reserved: if side == OrderSide::Sell {
+            qty
+        } else {
+            Decimal::ZERO
+        },
+    }];
+    let open_at = close_at - state.timeframe_duration();
+    let bar = BarRecord {
+        id: format!(
+            "VISIBLE-CLOSE:{}:{}",
+            req.instrument_id,
+            close_at.to_rfc3339()
+        ),
+        instrument_id: req.instrument_id.clone(),
+        timeframe: state.timeframe.clone().unwrap_or_else(|| "1d".into()),
+        session: "visible_close".into(),
+        session_date: open_at.date_naive(),
+        open_at,
+        close_at,
+        open: close,
+        high: close,
+        low: close,
+        close,
+        volume: Decimal::ONE,
+        source: "visible_close".into(),
+        adjustment: AdjustmentKind::Raw,
+        is_final: true,
+        valid_from_version: 0,
+        valid_to_version: None,
+        raw_payload_hash: None,
+    };
+    let trig = TriggerMatch {
+        order_id: order_id.clone(),
+        priority: req.priority,
+        instrument_id: req.instrument_id.clone(),
+        order_seq: seq,
+        trigger_path_price: close,
+        distance_from_cur: Decimal::ZERO,
+        fill_price,
+    };
+    let mut buys = BTreeMap::new();
+    let mut sells = BTreeMap::new();
+    execute_triggered_order(
+        state,
+        &trig,
+        BarPathStage::HighToClose,
+        &bar,
+        &mut buys,
+        &mut sells,
+        &mut events,
+    )?;
+    if state.orders.get(&order_id).map(|o| o.status) != Some(OrderStatus::Filled) {
+        return Err(reject(
+            SimRejectCode::InsufficientFundsAtFill,
+            "quick fill could not be executed".into(),
+            None,
+        ));
+    }
+    state.quick_fill_count += 1;
+    Ok(events)
+}
+
+/// Modify (`S-51` ②): price and/or quantity of an open order, equivalent to an atomic cancel
+/// and re-place. The order keeps its id, group and OCO links; reservations are recomputed and it
+/// becomes eligible from the next bar open. Filled, expired, cancelled or rejected orders refuse.
+fn modify_order_into_state(
+    state: &mut SimState,
+    order_id: &str,
+    quantity: Option<Decimal>,
+    limit_price: Option<Decimal>,
+    stop_price: Option<Decimal>,
+) -> Result<Vec<SimEvent>, SimError> {
+    require_m5(state, "modify order")?;
+    if state.finished {
+        return Err(SimError::SessionFinished);
+    }
+    let order = state
+        .orders
+        .get(order_id)
+        .cloned()
+        .ok_or_else(|| SimError::UnknownOrder(order_id.to_string()))?;
+    if !order.status.is_open_or_pending() {
+        return Err(SimError::OrderNotModifiable {
+            order_id: order_id.to_string(),
+            status: order.status,
+        });
+    }
+    if quantity.is_none() && limit_price.is_none() && stop_price.is_none() {
+        return Err(reject(
+            SimRejectCode::InvalidOrderParams,
+            "modify needs a new quantity or price".into(),
+            None,
+        ));
+    }
+    let new_type = match (order.order_type, limit_price, stop_price) {
+        (SimOrderType::Limit { limit_price: old }, lp, None) => SimOrderType::Limit {
+            limit_price: lp.unwrap_or(old),
+        },
+        (SimOrderType::StopMarket { stop_price: old }, None, sp) => SimOrderType::StopMarket {
+            stop_price: sp.unwrap_or(old),
+        },
+        (SimOrderType::Market, None, None) => SimOrderType::Market,
+        _ => return Err(reject(
+            SimRejectCode::InvalidOrderParams,
+            "the new price must match the order type (limit price for limit, stop price for stop)"
+                .into(),
+            Some("price"),
+        )),
+    }
+    .canonical();
+    let linked = order.parent_order_id.is_some() || order.oco_peer_order_id.is_some();
+    let new_qty = quantity.unwrap_or(order.quantity);
+    if linked && new_qty != order.quantity {
+        return Err(reject(
+            SimRejectCode::InvalidOrderParams,
+            "quantity of OCO / attached exit legs follows their group; change the price only"
+                .into(),
+            Some("quantity"),
+        ));
+    }
+    let spec = state.instruments[&order.instrument_id].clone();
+    if let Some(p) = new_type.limit_price().or(new_type.stop_price()) {
+        validate_tick_field(p, spec.tick_size, "price").map_err(SimError::OrderRejected)?;
+    }
+    // Keep the take-profit above the stop-loss within an OCO / bracket pair.
+    if let Some(peer) = order
+        .oco_peer_order_id
+        .as_ref()
+        .and_then(|id| state.orders.get(id))
+    {
+        let (tp, sl) = match (new_type, peer.order_type) {
+            (SimOrderType::Limit { limit_price }, SimOrderType::StopMarket { stop_price }) => {
+                (limit_price, stop_price)
+            }
+            (SimOrderType::StopMarket { stop_price }, SimOrderType::Limit { limit_price }) => {
+                (limit_price, stop_price)
+            }
+            _ => (Decimal::ONE, Decimal::ZERO),
+        };
+        if tp <= sl {
+            return Err(reject(
+                SimRejectCode::InvalidOrderParams,
+                "take-profit must stay strictly above the stop-loss".into(),
+                Some("price"),
+            ));
+        }
+    }
+    let at = state.visible_until.unwrap_or(order.submitted_at);
+    // Re-validate funds / position as a fresh order with this order's reservation released.
+    if order.status != OrderStatus::PendingParent && !linked {
+        let mut probe = state.clone();
+        release_order_reservation(&mut probe, order_id);
+        if let Some(o) = probe.orders.get_mut(order_id) {
+            o.status = OrderStatus::Cancelled;
+        }
+        let req = OrderSubmitRequest {
+            instrument_id: order.instrument_id.clone(),
+            quantity: new_qty,
+            tif: order.tif,
+            priority: order.priority,
+            kind: OrderSubmitKind::Single {
+                side: order.side,
+                order_type: new_type,
+                attached_bracket: None,
+            },
+            eligible_at_hint: None,
+            fill_rule: None,
+        };
+        let preview = preview_order_submission(&probe, &req)?;
+        release_order_reservation(state, order_id);
+        let res_id = next_res_id(state.next_reservation_seq);
+        state.next_reservation_seq += 1;
+        if preview.cash_reservation_required > Decimal::ZERO {
+            state.cash_reservations.insert(
+                res_id.clone(),
+                CashReservation {
+                    reservation_id: res_id.clone(),
+                    order_id: order_id.to_string(),
+                    instrument_id: order.instrument_id.clone(),
+                    amount: preview.cash_reservation_required,
+                },
+            );
+        } else {
+            state.position_reservations.insert(
+                res_id.clone(),
+                PositionReservation {
+                    reservation_id: res_id.clone(),
+                    instrument_id: order.instrument_id.clone(),
+                    quantity: preview.position_reservation_required,
+                    order_ids: vec![order_id.to_string()],
+                },
+            );
+        }
+        if let Some(o) = state.orders.get_mut(order_id) {
+            o.reservation_id = Some(res_id);
+            o.quantity = preview.quantity;
+        }
+    }
+    let o = state.orders.get_mut(order_id).expect("order exists");
+    o.order_type = new_type;
+    o.submitted_at = at;
+    o.eligible_at = at;
+    o.updated_at = at;
+    if o.status == OrderStatus::Active {
+        o.status = OrderStatus::Accepted;
+    }
+    let event = SimEvent::OrderModified {
+        order_id: order_id.to_string(),
+        instrument_id: o.instrument_id.clone(),
+        quantity: o.quantity,
+        limit_price: new_type.limit_price(),
+        stop_price: new_type.stop_price(),
+        eligible_at: at,
+    };
+    state.modify_count += 1;
+    Ok(vec![event])
+}
+
+/// Undo-aware command reducer (`S-51` ③). Since the latest bar boundary (initial state, a bar
+/// advance, or a boundary checkpoint) it keeps each live undoable command together with the
+/// exact state before it. `UndoLast` voids the most recent live command by restoring that state,
+/// so cash, position, fees, reservations and the ids of every surviving order/fill are restored
+/// exactly (no re-numbering), while id counters only move forward. Nothing at or before a bar
+/// advance can be undone.
+#[derive(Debug, Clone)]
+pub struct SimReplayer {
+    live: Vec<(u64, SimCommand, SimState)>,
+}
+
+impl SimReplayer {
+    /// `boundary` is the state at the latest bar boundary; undo never reaches behind it.
+    pub fn new(boundary: SimState) -> Self {
+        let _ = boundary;
+        Self { live: Vec::new() }
+    }
+
+    /// The seq the next `UndoLast` would void, if any.
+    pub fn undo_target(&self) -> Option<(u64, &SimCommand)> {
+        self.live.last().map(|(s, c, _)| (*s, c))
+    }
+
+    pub fn apply(
+        &mut self,
+        current: &SimState,
+        seq: u64,
+        command: SimCommand,
+        bar: Option<&SimStepBar>,
+    ) -> Result<(SimState, Vec<SimEvent>), SimError> {
+        match command {
+            SimCommand::UndoLast { target_seq } => {
+                require_m5(current, "undo")?;
+                if current.finished {
+                    return Err(SimError::SessionFinished);
+                }
+                let Some((last_seq, last_cmd, before)) = self.live.last().cloned() else {
+                    return Err(SimError::UndoUnavailable(
+                        "no command since the last bar advance".into(),
+                    ));
+                };
+                if last_seq != target_seq {
+                    return Err(SimError::UndoUnavailable(format!(
+                        "only the latest command (seq {last_seq}) can be undone, not {target_seq}"
+                    )));
+                }
+                self.live.pop();
+                let mut rebuilt = before;
+                // Counters never move backwards: ids voided by an undo are not reused.
+                rebuilt.command_seq = current.command_seq + 1;
+                rebuilt.next_order_seq = rebuilt.next_order_seq.max(current.next_order_seq);
+                rebuilt.next_fill_seq = rebuilt.next_fill_seq.max(current.next_fill_seq);
+                rebuilt.next_group_seq = rebuilt.next_group_seq.max(current.next_group_seq);
+                rebuilt.next_reservation_seq = rebuilt
+                    .next_reservation_seq
+                    .max(current.next_reservation_seq);
+                rebuilt.undo_count = current.undo_count + 1;
+                rebuilt.normalize_fields();
+                Ok((
+                    rebuilt,
+                    vec![SimEvent::CommandUndone {
+                        target_seq,
+                        target_command: last_cmd.kind_str().to_string(),
+                    }],
+                ))
+            }
+            cmd @ (SimCommand::AdvanceBar { .. } | SimCommand::Finish) => {
+                let out = step(current, cmd, bar)?;
+                self.live.clear();
+                Ok(out)
+            }
+            cmd => {
+                let undoable = cmd.is_undoable();
+                let out = step(current, cmd.clone(), None)?;
+                if undoable && current.is_m5() {
+                    self.live.push((seq, cmd, current.clone()));
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
 fn submit_order_into_state(
     state: &mut SimState,
     req: OrderSubmitRequest,
 ) -> Result<Vec<SimEvent>, SimError> {
+    if req.fill_rule == Some(FillRule::VisibleClose) {
+        return quick_fill_into_state(state, req);
+    }
     let preview = preview_order_submission(state, &req)?;
     let submitted_at = state
         .visible_until
@@ -3109,7 +3777,7 @@ fn validate_bar_ohlc(bar: &BarRecord) -> Result<(), SimError> {
 }
 
 /// Process a batch of simultaneous bars (single bar in M4 training, or multi-instrument bars
-/// sharing `event_time` in M5 backtest) with deterministic ordering `(event_time, priority, instrument_id, order_seq)`.
+/// sharing `event_time` in M6 backtest) with deterministic ordering `(event_time, priority, instrument_id, order_seq)`.
 pub fn step_multi_bars(
     state: &SimState,
     step_bars: &[SimStepBar],
@@ -3309,7 +3977,10 @@ pub fn step_multi_bars(
         }
     }
 
-    // End of bar: expire remaining active/accepted DAY orders on each bar (including untradable/zero-volume bars, `M4-A-06`)
+    // End of bar: expire remaining active/accepted DAY orders on each bar (including untradable/zero-volume bars, `M4-A-06`).
+    // Daily bars: after the first eligible bar. `m5-sim-2` intraday (`S-51` ④): at the end of
+    // the UTC calendar day containing `eligible_at`.
+    let intraday = next.is_intraday();
     for sb in &sorted_bars {
         let day_expire_ids: Vec<String> = next
             .orders
@@ -3320,6 +3991,7 @@ pub fn step_multi_bars(
                     && o.tif == TimeInForce::Day
                     && sb.bar.close_at > o.submitted_at
                     && sb.bar.open_at >= o.eligible_at
+                    && (!intraday || sb.bar.close_at >= utc_day_end(o.eligible_at))
             })
             .map(|o| o.order_id.clone())
             .collect();
@@ -3366,6 +4038,10 @@ pub fn step_multi_bars(
             }
         }
 
+        if next.is_m5() {
+            next.last_bar_tradable
+                .insert(sb.bar.instrument_id.clone(), sb.is_effectively_tradable());
+        }
         next.last_close_by_instrument
             .insert(sb.bar.instrument_id.clone(), canon_decimal(sb.bar.close));
         next.last_close_at_by_instrument
@@ -3411,6 +4087,15 @@ pub fn step_multi_bars(
 
     next.normalize_fields();
     Ok((next, events))
+}
+
+/// End (exclusive) of the UTC calendar day containing `at`.
+fn utc_day_end(at: DateTime<Utc>) -> DateTime<Utc> {
+    at.date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("midnight")
+        .and_utc()
+        + chrono::Duration::days(1)
 }
 
 fn execute_triggered_order(
@@ -3691,6 +4376,22 @@ pub fn step(
             let sb = bar.ok_or(SimError::MissingBarInput)?;
             step_multi_bars(state, std::slice::from_ref(sb), &corporate_actions)
         }
+        SimCommand::ModifyOrder {
+            order_id,
+            quantity,
+            limit_price,
+            stop_price,
+        } => {
+            let mut next = state.clone();
+            let events =
+                modify_order_into_state(&mut next, &order_id, quantity, limit_price, stop_price)?;
+            next.command_seq += 1;
+            next.normalize_fields();
+            Ok((next, events))
+        }
+        SimCommand::UndoLast { .. } => Err(SimError::UndoUnavailable(
+            "undo is applied by SimReplayer with its bar-boundary state".into(),
+        )),
         SimCommand::Finish => {
             if state.finished {
                 return Err(SimError::SessionFinished);
@@ -5138,5 +5839,233 @@ mod tests {
         let hashes_a = run_script(init_a);
         let hashes_b = run_script(init_b);
         assert_eq!(hashes_a, hashes_b);
+    }
+
+    // ------------------------------------------------------------------
+    // `m5-sim-2` (`S-51`) hand-checkable fixtures
+    // ------------------------------------------------------------------
+
+    fn m5_state(cash: &str, fp: FeeProfileVersion, close: &str, tradable: bool) -> SimState {
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        SimState::new_m5(
+            "USD",
+            dec(cash),
+            fp,
+            vec![equity_spec("NASDAQ:AAPL", "AAPL", "1", "0.01")],
+            Some(t0),
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), dec(close))]),
+            "1d",
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), tradable)]),
+        )
+        .unwrap()
+    }
+
+    fn quick_req(side: OrderSide, qty: &str) -> SimCommand {
+        let mut req = OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            side,
+            SimOrderType::Market,
+            TimeInForce::Day,
+            dec(qty),
+        );
+        req.fill_rule = Some(FillRule::VisibleClose);
+        SimCommand::SubmitOrder(req)
+    }
+
+    fn costly_profile() -> FeeProfileVersion {
+        let mut fp = zero_fee_profile();
+        fp.notional_rate = dec("0.001");
+        fp.half_spread_bps = dec("20");
+        fp.slippage = SlippageSpec::Ticks(5);
+        fp.rounding_mode = FeeRoundingMode::HalfUp;
+        fp.rounding_scale = 2;
+        fp
+    }
+
+    fn reject_code(err: SimError) -> SimRejectCode {
+        err.rejection().expect("order rejection").code
+    }
+
+    #[test]
+    fn m5_quick_fill_at_visible_close_is_hand_checkable() {
+        let st = m5_state("10000", costly_profile(), "100", true);
+        assert_eq!(st.engine_version, SIM_ENGINE_VERSION_M5);
+        // Buy 40 @ close 100: + half spread 100 × 20 bps = 0.20, + 5 ticks = 0.05 -> 100.25.
+        // Notional 4010.00; fee 0.1% = 4.01; cash 10000 - 4010 - 4.01 = 5985.99.
+        let (st1, ev) = step(&st, quick_req(OrderSide::Buy, "40"), None).unwrap();
+        assert_eq!(st1.fills.len(), 1);
+        assert_eq!(st1.fills[0].fill_price, dec("100.25"));
+        assert_eq!(st1.fills[0].fee_amount, dec("4.01"));
+        assert_eq!(st1.cash_balance, dec("5985.99"));
+        assert_eq!(st1.quick_fill_count, 1);
+        assert_eq!(
+            st1.visible_until, st.visible_until,
+            "quick fills never move the clock"
+        );
+        assert!(ev.iter().any(|e| matches!(e, SimEvent::OrderFilled { .. })
+            || matches!(e, SimEvent::OrderSubmitted { .. })));
+        // Sell 40 @ 100: 100 - 0.20 - 0.05 = 99.75; notional 3990.00; fee 3.99.
+        let (st2, _) = step(&st1, quick_req(OrderSide::Sell, "40"), None).unwrap();
+        assert_eq!(st2.fills[1].fill_price, dec("99.75"));
+        assert_eq!(st2.fills[1].fee_amount, dec("3.99"));
+        assert_eq!(st2.cash_balance, dec("5985.99") + dec("3990") - dec("3.99"));
+    }
+
+    #[test]
+    fn m5_quick_fill_rounds_adversely_and_rejects_without_shrinking() {
+        let mut fp = zero_fee_profile();
+        fp.half_spread_bps = dec("7");
+        let st = m5_state("10000", fp.clone(), "100.01", true);
+        // 100.01 × 7 bps = 0.070007 -> buy raw 100.080007 rounds up to 100.09.
+        let (st1, _) = step(&st, quick_req(OrderSide::Buy, "1"), None).unwrap();
+        assert_eq!(st1.fills[0].fill_price, dec("100.09"));
+        // sell raw 99.939993 rounds down to 99.93.
+        let (st2, _) = step(&st1, quick_req(OrderSide::Sell, "1"), None).unwrap();
+        assert_eq!(st2.fills[1].fill_price, dec("99.93"));
+        // Insufficient cash: rejected, never reduced to an affordable quantity.
+        let err = step(&st, quick_req(OrderSide::Buy, "100"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::InsufficientFunds);
+        // Selling more than held: rejected.
+        let err = step(&st, quick_req(OrderSide::Sell, "1"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::InsufficientPosition);
+        // Zero-volume visible bar: rejected.
+        let untradable = m5_state("10000", fp, "100", false);
+        let err = step(&untradable, quick_req(OrderSide::Buy, "1"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::UntradableBar);
+        // `m4-sim-1` states never accept M5-only commands.
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let m4 = init_single_equity_state("10000", zero_fee_profile(), "1", "0.01", ("100", t0));
+        assert!(matches!(
+            step(&m4, quick_req(OrderSide::Buy, "1"), None).unwrap_err(),
+            SimError::EngineFeatureUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn m5_modify_and_undo_restore_exact_state_and_never_cross_an_advance() {
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let mut rp = SimReplayer::new(st.clone());
+        let limit = SimCommand::SubmitOrder(OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            OrderSide::Buy,
+            SimOrderType::Limit {
+                limit_price: dec("95"),
+            },
+            TimeInForce::Gtc,
+            dec("10"),
+        ));
+        let (s1, _) = rp.apply(&st, 1, limit, None).unwrap();
+        let oid = s1.orders.keys().next().unwrap().clone();
+        // Modify price and quantity in place (same id); reservation recomputed: 10 × 95 -> 20 × 96.
+        let modify = SimCommand::ModifyOrder {
+            order_id: oid.clone(),
+            quantity: Some(dec("20")),
+            limit_price: Some(dec("96")),
+            stop_price: None,
+        };
+        let (s2, _) = rp.apply(&s1, 2, modify, None).unwrap();
+        assert_eq!(s2.orders[&oid].quantity, dec("20"));
+        assert_eq!(
+            s2.orders[&oid].order_type,
+            SimOrderType::Limit {
+                limit_price: dec("96")
+            }
+        );
+        assert_eq!(s2.modify_count, 1);
+        // Undo the modify: the order is back to 10 @ 95 and cash/reservations match s1.
+        let (s3, ev) = rp
+            .apply(&s2, 3, SimCommand::UndoLast { target_seq: 2 }, None)
+            .unwrap();
+        assert!(matches!(
+            ev[0],
+            SimEvent::CommandUndone { target_seq: 2, .. }
+        ));
+        assert_eq!(s3.orders[&oid], s1.orders[&oid]);
+        assert_eq!(s3.cash_balance, s1.cash_balance);
+        assert_eq!(s3.undo_count, 1);
+        // Undoing the wrong target or past the boundary is refused.
+        assert!(matches!(
+            rp.apply(&s3, 4, SimCommand::UndoLast { target_seq: 99 }, None)
+                .unwrap_err(),
+            SimError::UndoUnavailable(_)
+        ));
+        // Advance a bar that trades through 95: the GTC limit fills at 95.
+        let bar = make_bar("NASDAQ:AAPL", 2025, 1, 3, "99", "100", "94", "97", "1000");
+        let (s4, _) = rp
+            .apply(
+                &s3,
+                4,
+                SimCommand::AdvanceBar {
+                    corporate_actions: Vec::new(),
+                },
+                Some(&SimStepBar::from_bar(bar)),
+            )
+            .unwrap();
+        assert_eq!(s4.fills.len(), 1);
+        assert_eq!(s4.fills[0].fill_price, dec("95"));
+        assert!(matches!(
+            rp.apply(&s4, 5, SimCommand::UndoLast { target_seq: 1 }, None)
+                .unwrap_err(),
+            SimError::UndoUnavailable(_)
+        ));
+        // A filled order cannot be modified.
+        let err = step(
+            &s4,
+            SimCommand::ModifyOrder {
+                order_id: oid,
+                quantity: None,
+                limit_price: Some(dec("90")),
+                stop_price: None,
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SimError::OrderNotModifiable { .. }));
+    }
+
+    #[test]
+    fn m5_undo_after_an_earlier_undo_keeps_surviving_ids_exact() {
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let mut rp = SimReplayer::new(st.clone());
+        let (s1, _) = rp
+            .apply(&st, 1, quick_req(OrderSide::Buy, "1"), None)
+            .unwrap();
+        let (s2, _) = rp
+            .apply(&s1, 2, SimCommand::UndoLast { target_seq: 1 }, None)
+            .unwrap();
+        // The voided id is not reused.
+        let (s3, _) = rp
+            .apply(&s2, 3, quick_req(OrderSide::Buy, "1"), None)
+            .unwrap();
+        let limit = SimCommand::SubmitOrder(OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            OrderSide::Buy,
+            SimOrderType::Limit {
+                limit_price: dec("95"),
+            },
+            TimeInForce::Gtc,
+            dec("10"),
+        ));
+        let (s4, _) = rp.apply(&s3, 4, limit, None).unwrap();
+        let ids: Vec<String> = s4.orders.keys().cloned().collect();
+        assert!(!ids.contains(&s1.orders.keys().next().unwrap().clone()));
+        let limit_id = ids.iter().max().unwrap().clone();
+        let modify = SimCommand::ModifyOrder {
+            order_id: limit_id.clone(),
+            quantity: None,
+            limit_price: Some(dec("94")),
+            stop_price: None,
+        };
+        let (s5, _) = rp.apply(&s4, 5, modify, None).unwrap();
+        let (s6, _) = rp
+            .apply(&s5, 6, SimCommand::UndoLast { target_seq: 5 }, None)
+            .unwrap();
+        // Same ids, same orders, fills, cash as before the modify; only counters moved on.
+        assert_eq!(s6.orders, s4.orders);
+        assert_eq!(s6.fills, s4.fills);
+        assert_eq!(s6.cash_balance, s4.cash_balance);
+        assert_eq!(s6.reserved_cash(), s4.reserved_cash());
+        assert_eq!(s6.next_order_seq, s5.next_order_seq);
+        assert_eq!(s6.undo_count, 2);
     }
 }

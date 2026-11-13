@@ -1,0 +1,23 @@
+{
+  "TRN-M4FX-CR": {
+    "candidate_pool_hash": "f73825712f2081aba3520f6a8a4504d55fc6486ce42f2c31a28c79d6f2bc42e5",
+    "engine_version": "m4-sim-1",
+    "latest_seq": 25,
+    "latest_state_hash": "48c9e6982dea58d981e2f39b57d29db8918e5e92c063fb81870f46486f6b30a2",
+    "status": "paused"
+  },
+  "TRN-M4FX-EQ": {
+    "candidate_pool_hash": "f343688a9cbda02ae266f58410e182d52b08ba3b0bf235c8e6508191ee216e63",
+    "engine_version": "m4-sim-1",
+    "latest_seq": 28,
+    "latest_state_hash": "faa62f01bde95269da1e2b4c3943014ccd56600284002f8c545b4315764ecdf2",
+    "status": "finished"
+  },
+  "TRN-M4FX-PREP": {
+    "candidate_pool_hash": "22dafb2ac0424ebd28cadd305b794527d7325b849d5595cf91754dbcbc745c73",
+    "engine_version": "m4-sim-1",
+    "latest_seq": 0,
+    "latest_state_hash": "aa834b9f4eee722b3820a3d106a4dd982c4c207dd8cb934422e468927cf7d93f",
+    "status": "preparing"
+  }
+}

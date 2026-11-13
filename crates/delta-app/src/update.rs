@@ -864,6 +864,28 @@ fn serve_loopback(
 mod tests {
     use super::*;
 
+    /// D-35 / M5-W08: the published v0.1.1 `latest.json` and detached signature (copied verbatim
+    /// from the GitHub release) must still verify with the embedded release key after the
+    /// `ed25519-dalek` 3 / `sha2` 0.11 / `getrandom` 0.4 upgrade; any field change must fail.
+    #[test]
+    fn published_v0_1_1_manifest_signature_still_verifies() {
+        let manifest: UpdateManifest = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/release/v0.1.1/latest.json"
+        ))
+        .unwrap();
+        let signature =
+            include_str!("../../../tests/fixtures/release/v0.1.1/delta-setup-0.1.1-x64.exe.sig");
+        let key = embedded_release_public_key().expect("embedded release key");
+        assert_eq!(manifest.version, "0.1.1");
+        verify_manifest_signature(&key, &manifest, signature).unwrap();
+        let mut tampered = manifest.clone();
+        tampered.sha256 = tampered.sha256.replace('5', "6");
+        assert!(verify_manifest_signature(&key, &tampered, signature).is_err());
+        let mut other = manifest;
+        other.version = "0.1.2".into();
+        assert!(verify_manifest_signature(&key, &other, signature).is_err());
+    }
+
     fn fixture(
         key: &SigningKey,
         channel: &str,

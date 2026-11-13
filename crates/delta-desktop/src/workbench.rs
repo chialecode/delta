@@ -985,6 +985,12 @@ pub struct CenterWorkspacePanel {
     chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
     pub(crate) training_plot_bounds: crate::chart_canvas::PlotBounds,
     pub(crate) training_chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
+    /// A workbench action produced on mouse-down, dispatched on mouse-up (drawing save).
+    pub(crate) pending_workbench_action: Option<crate::training_ui::TrainingUiAction>,
+    /// Playback / data-preparation ticker (`S-54`); exits by itself when idle.
+    pub(crate) training_ticker: Option<Task<()>>,
+    pub(crate) training_play_last: Option<std::time::Instant>,
+    pub(crate) training_prepare_last: Option<std::time::Instant>,
 }
 
 impl CenterWorkspacePanel {
@@ -1093,6 +1099,10 @@ impl CenterWorkspacePanel {
             chart_drag: None,
             training_plot_bounds: Default::default(),
             training_chart_drag: None,
+            pending_workbench_action: None,
+            training_ticker: None,
+            training_play_last: None,
+            training_prepare_last: None,
         }
     }
 
@@ -2680,7 +2690,7 @@ fn rail_item(
         .child(Icon::new(nav_icon(key)).size_5().text_color(fg))
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(px(12.))
                 .text_color(fg)
                 .when(active, |label| label.font_semibold())
                 .child(label),
@@ -3430,13 +3440,15 @@ pub fn run_desktop_entrypoint() -> ExitCode {
     }
     if has_flag("--help") || has_flag("-h") {
         println!(
-            "delta (M4) - GPUI desktop investment review & training workbench\n\
+            "delta (M5) - GPUI desktop investment review & training workbench\n\
              Flags:\n\
              - --data-dir <dir>\n\
              - --ui-smoke [--data-dir <dir>]\n\
              - --ui-bench [--data-dir <dir>]\n\
              - --m4-ui-smoke [--data-dir <dir>]\n\
              - --m4-ui-bench [--data-dir <dir>]\n\
+             - --m5-ui-smoke [--data-dir <dir>]\n\
+             - --m5-ui-bench [--data-dir <dir>]\n\
              - --build-info | --version | --help"
         );
         return ExitCode::SUCCESS;
@@ -3451,6 +3463,41 @@ pub fn run_desktop_entrypoint() -> ExitCode {
                     sanitize_terminal_output(&serde_json::to_string(&rep).unwrap_or_default())
                 );
                 ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", sanitize_terminal_output(&e.message));
+                ExitCode::from(1)
+            }
+        };
+    }
+
+    if has_flag("--m5-ui-smoke") {
+        return match crate::ui_verification_m5::run_m5_ui_smoke(cli_data_dir.as_deref()) {
+            Ok(rep) => {
+                println!(
+                    "{}",
+                    sanitize_terminal_output(&serde_json::to_string(&rep).unwrap_or_default())
+                );
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", sanitize_terminal_output(&e.message));
+                ExitCode::from(1)
+            }
+        };
+    }
+    if has_flag("--m5-ui-bench") {
+        return match crate::ui_verification_m5::run_m5_k02_playback_bench(cli_data_dir.as_deref()) {
+            Ok(rep) => {
+                println!(
+                    "{}",
+                    sanitize_terminal_output(&serde_json::to_string(&rep).unwrap_or_default())
+                );
+                if rep.passed {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
             }
             Err(e) => {
                 eprintln!("{}", sanitize_terminal_output(&e.message));

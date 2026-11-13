@@ -1,167 +1,125 @@
-# M4 v1.0 阶段验证与交付报告
+# M5 v1.0 阶段验证与交付报告
 
-更新：2026-11-13；角色：Agent B（实现与自检）、Agent A（集中技术审核）；唯一计划：[M4 阶段计划](stage-plan.md) v1.0，用例见 [m4-stage-cases.json](m4-stage-cases.json)。分支 `codex/m4-kline-training`；固定父提交 `45ac8c527ab5b51217d5f712deebd704e9d539ef`；**最终被测源码指纹 `02d0f1bdb3084b9e5d43d5f5e7ae1e05eab94a88049fc23ee9b28c13c69c727e`**（A 审核时为 `96254d7d…`，差异为[阶段内追加](#stage-additions)；B 自检指纹 `b104c94a…`，与 A 审核时的差异仅为 A 修正 F-01）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准。未跟踪 `workers/` 未读取、构建、修改或暂存；push、PR 与合并按 2026-11-14 的 ACT-13 授权执行；未创建 GitHub Release，未改远端设置。
+更新：2026-11-15；角色：Agent B（实现与自检）、Agent A（集中技术审核）。唯一计划：[M5 计划](stage-plan.md) v1.0，用例见 [m5-stage-cases.json](m5-stage-cases.json)；用户口径见 [D-33、D-34、D-35](../decisions/confirmed-decisions.md)。分支 `codex/m5-training-workbench`；固定阶段父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`；B 交付时整套门禁的被测源码指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`，**A 审核修正后的最终源码指纹 `9d51a55f4950522f5bfdbf25cba7629e94d3e899e210a14257036f976ec7f3e2`**（差异与验证见 [A 集中技术审核](#a-review)）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准（B 交付时的 SHA 写在交接说明中）。未跟踪的 `workers/` 未读取、构建、修改或暂存；未 push、未操作 PR、未发布版本。
 
 ## 当前判断
 
-**B 实现与自检：完成；A 集中技术审核：通过（2026-11-13，修正 1 项 P2，工程阻断 0，见 [A 集中技术审核](#a-集中技术审核2026-11-13)）；产品验收：未开始（`H-05`、`ACT-01` not-run）。** 以下 B 自检记录保留原指纹；A 在审核指纹 `96254d7d…` 下复跑的四阶段门禁见 A 审核一节，阶段内追加后在最终指纹 `02d0f1bd…` 下的复跑见[阶段内追加](#stage-additions)。B 自检指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa` 下，`verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` overall **passed**（`M4-G-01～06`、`M4-A-01～18`、`M4-K01～K03` 全部 passed），同一源码指纹下 `M1 v2.6`、`M2 v1.0`（`--ui-smoke --ui-bench`）与 `M3 v1.0`（`--installer --ui-smoke`）三阶段回归全部 **passed**。
+**B 实现与自检：完成；A 集中技术审核：通过（2026-11-15，修正 1 项阻断，工程阻断为零）；产品验收：未开始（`H-06` not-run）。** 在上述指纹下，`verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench --live-data` overall **passed**：`M5-G-01～07`、`M5-A-01～17`、`M5-L-01` 与 `M5-K01～K03` 全部 passed，`M5-M-01`（人工 H-06）not-run。同一指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）、M4 v1.0（`--ui-smoke --ui-bench`）回归全部 passed。门禁全程 `below_normal`、0 个可见窗口、前台焦点不变（D-25），开发者本机 `delta` / `delta-dev` 数据与文档目录未被触碰（D-26）。
 
-模拟与训练持久化位于独立的 `schema 5` 八张模拟表，不写入真实账本与 `fill` 表，训练创建、推进、笔记归档与删除前后 `ledger_revision` 均保持不变。结束后 AI 复盘在门禁中针对本机 `127.0.0.1` 双协议（`openai-responses` 与 `openai-chat-completions`）SSE 回环服务验证（`M4-A-14`），**不是真实在线模型服务**；真实在线模型复盘（`M4-L-01`，依赖可选 `ACT-01`）与训练实机体验（`M4-M-01`，[USER-ACTIONS](../../USER-ACTIONS.md) `H-05`）保持 `not-run`。门禁全程按 [D-25](../decisions/confirmed-decisions.md) 低优先级静默运行，可感知窗口数 `0`、前台焦点未变化，开发者本机 `%LOCALAPPDATA%\delta` 与 `%LOCALAPPDATA%\delta-dev` 未被触碰（[D-26](../decisions/confirmed-decisions.md)）。
+**真实公开源与录制夹具分开声明**：`M5-K01` / `M5-L-01` 是对币安、欧易真实公开服务的实跑（临时资料库，release 构建）；其余数据类用例使用 `crates/delta-app/src/market_fixture.rs` 的**完全合成**回环行情夹具（币安/欧易报文结构），不证明真实价格或服务可用性（见 [夹具来源](../../tests/fixtures/PROVENANCE.md#5-m5-追加夹具2026-11-15agent-b)）。
 
-## Spike 结论（第 5 节）
+## Spike 结论（计划第 5 节）
 
-| Spike | 实际验证 | 结论与发现 |
+| Spike | 实际验证 | 结论 |
 | --- | --- | --- |
-| M4-K01 截断数据端口 | 在 M1 夹具资料库上建立训练运行，把当前回放时钟 `visible_until` 之后的全部 `bar` 与 `corporate_action` 覆写为极端数值哨兵（`999999999`）与非十进制毒化字符串哨兵（`'POISON_FUTURE_BAR'`），同时构造多数据源同交易日 `close_at` 偏斜样本；依次读取桌面图表切片、SMA/EMA/MACD/RSI 指标、委托校验/预览、`delta-cli training show` 与 `ScopeTarget::TrainingRun` 下全部 5 个 `training.*` AI 工具输出，并逐步推进重复检查 | 通过，W02 继续。截断在 `crates/delta-data/src/m4_schema.rs` SQL 查询层（`is_final = 1` 且 `close_at <= visible_until`，公司行动 `ex_date <= effective_visible_ex_date(visible_until)`，覆盖加密现货 `00:00Z` UTC 日切边界）与单日按源优先级去重（`dedupe_bars_by_session_date`）完成；`crates/delta-app/src/` 生产代码对 `FROM bar` 裸 SQL 查询数为 `0`。所有消费者输出逐字节不含哨兵、指标预热终点永不晚于时钟、SQLite 触发器与宿主双重禁止时钟倒退 |
-| M4-K02 确定性重放 | 同一训练命令序列（市价/限价/止损市价/OCO/入场附带止盈止损、撤单、推进、公司行动、结束）在 `Scratch`（从头重放）、`FromCheckpoint`（从 `periodic_20` / `pause` 检查点恢复重放）与独立第二子进程三种方式下逐步校验 `state_hash` 与期末报告 | 通过，W03 继续。`delta-core::sim`（引擎版本 `m4-sim-1`）全程使用 `rust_decimal::Decimal`（零 `f64`/`f32`）、有序容器 `BTreeMap`/`BTreeSet`（零 `HashMap`/`HashSet`）、零系统时钟读取与 `SHA-256(seed ‖ purpose ‖ counter)` 计数器模式确定性随机数；`SimState::canonical_json()` 生成每步 `state_hash`，三种方式每步哈希与最终 `m4-report-1` 报告逐字节一致 |
-| M4-K03 下一根延迟 | 静态 CRT release 包 `delta.exe --m4-ui-bench`，低优先级并调用 `opt_out_of_execution_speed_throttling`（`power_throttling = "execution_speed_opt_out"`，[质量门禁](../dev-rules/quality-gates.md#foreground-quiet)），隐藏非激活原生窗口（`1400×950`），1,000 根可见历史 K 线＋默认 SMA/EMA/MACD/RSI＋持仓与挂单，20 步预热＋300 步实测“下一根”（含 SQLite 原子事务保存＋撮合＋时点拆股复权＋指标更新＋1,000 根视口切片＋GPUI 布局绘制＋DirectX `WM_PAINT`） | 通过，W06/W07 继续。实测 300 步分位数 `p50 = 31.151 ms`、`p95 = 39.966 ms`、`p99 = 57.453 ms`（`max = 131.345 ms`），满足 `p95 <= 100.0 ms` 门槛，原生图表重绘计数 `>= 300`、`visible_windows = 0`、`focus_stolen = false`。`TrainingDataPort` 对可见 K 线与指标采用增量缓存，且 `replay_events_on_state` 将重放行情扫描下界收敛至 `train_start_at`，无需启用检查点异步化备选分支 |
+| M5-K01 比特币全历史准备（真实公开源） | 空临时资料库，release 构建，默认请求（`BINANCE:BTC/USDT` 主、`OKX:BTC/USDT` 核验，`1d`/`4h`/`1h`）。首次准备 **857.1 s**（≤ 900 s）；随即增量 **0.5 ms / +0 根**（数据未落后一个周期，作业不发网络请求；真实的增量网络路径由夹具用例 `m5_prepare_failures_retry_and_incremental_update` 覆盖）；`1h` 候选池构建 **0.674 s**（≤ 2 s，70,199 个候选）；库增长 196.4 MB；失败批次 0；三个级别都能开局 | **通过**，但首次准备余量很小，登记 [PERF-01](../decisions/open-questions.md)。各批明细见下表。**本阶段内第一次实跑没有通过**：`1h` 候选池构建 152.5 s，同时发现币安 `1h` 归档里有偏离整点的 K 线。两项都已修复后重跑，见[实跑中发现并修复的问题](#live-findings) |
+| M5-K02 连续播放延迟 | release `delta.exe --m5-ui-bench`，隐藏非激活窗口，`1h` 局 1,000 根可见＋MA5/10/20/60、MACD、RSI＋20 条画线＋5 条挂单线＋成本线与成交标记，20 步预热＋300 步、每 150 ms 一根 | **通过**：每步 p50/p95/p99 = 39.5/**55.7**/59.8 ms（≤ 100），实际间隔 p50/p95/p99 = 156.2/**161.5**/164.8 ms（≤ 200）；分阶段 p95：推进 23.0、快照 19.8、练习账户 8.9、绘制 5.5、画线 0.2 ms。门禁按原始样本独立重算。开发中第一次测得 p95 148 ms，原因是训练端口每步查询按 `strftime` 全表扫描；增加索引 `idx_bar_training_port` 与等价的 `open_at` 区间预过滤后（结果行集不变）达标，未启用失败分支 |
+| M5-K03 撤销与旧版本重放 | 门禁进程跨进程驱动 `delta-cli training`：夹具准备数据→练习账户开局→快捷成交、限价、改单、快捷卖出后撤销、推进 25 根、推进后撤销被拒、再快捷成交、推进 3 根；CLI 从头/检查点重放（两个独立进程）与宿主从头/检查点重放 | **通过**：四路 `state_hash` 一致（`7835f308…`，34 步，检查点 seq 25），撤销后现金/持仓/成交逐字段复原。用真实 M4 代码生成的 schema 5 资料库（`tests/fixtures/libraries/m4-schema5`）验证：旧 `m4-sim-1` 运行在新代码下重放哈希与 M4 记录一致。开发中发现并修复一个确定性缺陷：撤销后订单号被重新分配，导致重放不一致；`SimReplayer` 改为保存命令前状态，编号计数只向前推进 |
+
+`M5-K01` 各批明细（真实公开源，2026-11-15 08:30Z 前后）：
+
+| 批次 | 根数 | 最早开盘 | 归档月 / REST 页 | 日内缺口 | 质量问题 | 跨源比较 / 偏离 > 50 bps / 最大偏离 | 耗时 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 币安 `1d` | 3,376 | 2017-08-18 | 111 / 1 | 0 | 0 | — | 125.1 s |
+| 欧易 `1d` | 3,230 | 2018-01-11 | 0 / 34 | 0 | 22 | 3,230 / 22 / 588.78 bps | 13.5 s |
+| 币安 `4h` | 20,246 | 2017-08-17 04:00 | 111 / 1 | 9 | 0 | — | 144.6 s |
+| 欧易 `4h` | 19,380 | 2018-01-11 08:00 | 0 / 195 | 0 | 61 | 19,364 / 149 / 472.57 bps | 84.2 s |
+| 币安 `1h` | 80,882 | 2017-08-17 04:00 | 111 / 1 | 28 | 0 | — | 160.3 s |
+| 欧易 `1h` | 77,517 | 2018-01-11 11:00 | 0 / 777 | 0 | 74 | 77,355 / 548 / 472.57 bps | 329.4 s |
+
+跨源偏离集中在 2018 年前后，只作为欧易（核验源）的价格质量问题记录，含这些日期的窗口不进入欧易候选池；币安（默认训练标的）价格不被改写。币安的日内缺口是交易所停机造成的真实缺口；任何训练窗口都不跨越缺口（连续性检查）。
+
+<a id="live-findings"></a>
+
+### 实跑中发现并修复的问题
+
+1. **币安 `1h` 归档含偏离整点的 K 线（真实数据缺陷）**：开发中第一次真实准备时，币安 `1h` 批整体失败。原因是 `BTCUSDT-1h-2018-02` 中，交易所 2018-02-08 停机恢复后发布的 43 根小时线偏移了 28 分 14.789 秒（2018-02-09 09:28 至 02-11 03:28）。修复：三个解析器（币安归档、币安 REST、欧易）跳过无法放到 UTC 网格上的 K 线，不平移、不补造数据；留下的空洞计为日内缺口，任何窗口都不会跨越它。回归测试 `providers::archive_member_tests::off_grid_archive_klines_are_skipped_not_fatal` 使用该月真实行的形状。修复后币安 `1h` 发布 80,882 根。
+2. **`1h` 候选池构建 152.5 s（性能缺陷）**：第一次完整门禁（指纹 `44b2a954…`，报告保留为 `.local/reports/m5/verify-stage-report-run1-44b2a954.json`）中，`M5-L-01` 因此判为 failed。原因是候选池对每个起点重扫整个窗口，并对每对相邻 K 线做 24 次 Decimal 除法的“未解释拆股跳变”检查。修复：每根 K 线与每对相邻 K 线的检查只算一次，窗口用前缀计数判断，接受的窗口与逐窗扫描完全相同（M4 候选池哈希与旧运行重放不变）。新增 `m4_schema::tests::test_m5_k01_large_1h_pool_excludes_gap_and_jump_windows_quickly`（30,000 根，含缺口与跳变，精确核对候选数）。修复后真实数据上 0.674 s。在此之前，用户每开一局 `1h` 或查看数据状态都要等约 2.5 分钟。
+3. **桌面要等全部批次才能开局**：准备作业运行时，所有“新一局”按钮都被禁用（约 15 分钟）。修复：作业阶段变化时（即某一批已原子发布）重新读取就绪状态，已就绪级别的按钮立即可用（日线约 2 分钟），状态行显示“已可开局：1d…”；测试 `prepared_timeframes_start_before_the_whole_job_finishes`。
+
+<a id="a-review"></a>
+
+## A 集中技术审核（2026-11-15）
+
+A 对照计划 v1.0、阶段 diff（父提交 `a44f86f` → B 交付提交 `708ee5c`）与 `.local/reports/m5/` 证据复核。B 交付证据先核对：门禁报告 overall passed、`release_data_dir_touched = false`、0 个可见窗口、`below_normal`；A 用独立脚本复算源码指纹，与报告中的 `c97131fc…` 一致。
+
+| 复核项 | 结论 |
+| --- | --- |
+| 截断在宿主层 | 通过：高一级别视图只由 `query_run_visible_final_bars` 的截断结果聚合，隐藏模式不返回 `open_at`；日内步进只查 `(visible_until, train_end_at]` 内的下一根 |
+| Decimal 可手算 | 通过：快捷成交夹具独立手算（100＋0.20 半点差＋0.05 滑点＝100.25，费用 4.01，现金 5,985.99）；不利取整与“不缩量拒绝”有反例 |
+| 撤销不跨推进 | 通过：`SimReplayer` 存命令前状态，推进/结束清空撤销栈，编号计数只前进；`m5-sim-2` 恢复从边界检查点（seq 0、推进或结束）开始，撤销在三路重放中一致 |
+| `m4-sim-1` 旧局哈希不变 | 通过：A 直接打开 `tests/fixtures/libraries/m4-schema5`：`schema_version = 5`、`training_session` 无 M5 列、三局 `m4-sim-1`，持久化哈希与 `expected.json` 一致；测试在新代码下两种重放均匹配，M4 候选池哈希头保持原字节 |
+| 练习账户守恒、放弃也结算 | 通过：结束（含到末根自动结束）与放弃都在同一 savepoint 内提交状态并追加结算分录；删除追加冲销；可用＝分录之和 |
+| 单击/拖动/单键不成交 | 通过：`command_for_key` 没有成交命令，只有在草稿已选方向时 `Ctrl+Enter` 才确认；输入框焦点吞掉 `N`/`→`/`Space`/`Q`/`W`/`E`/`Delete`/`Ctrl+Z`；草稿未选方向时 `Ctrl+Enter` 不落到委托面板 |
+| 迁移先备份 | 通过：schema < 6 时通用 `before-schema-<n>-*` 一致性备份；故障注入回滚后旧库与备份完好 |
+| off-grid K 线与跨缺口窗口 | 通过：三个解析器都跳过不在 UTC 网格上的 K 线，不平移、不补造；日内相邻对要求 `下一根开盘 == 本根收盘` 且 `收盘 == 开盘＋周期`。前缀计数池与原逐窗扫描等价（坏 K 线 `[start, end]`、坏相邻对与拆股跳变 `[start/warmup, end-1]`，跳变检查只看相邻对） |
+| verify_m5 live 与 G-06 | 通过：`deps.py` 退出码 2 记 not-run 且使总体为 not-run，永不记为通过；`M5-L-01`/`K01` 单独记录，只有全部批次断网才记 not-run，失败不冒充夹具结果 |
+| 真实源与夹具分开声明 | 通过：`market_fixture.rs` 标明完全合成；`PROVENANCE.md` §5 登记合成行情、真实 M4 代码生成的 schema 5 库与已发布 v0.1.1 清单/签名 |
+| M5-W08（计划 §10 专项） | 通过：`Cargo.lock` 中 `zip 9.4.2`、`quick-xml 0.42.0`（另有传递依赖 0.41.0，已在修复线以上）、`sha2 0.11.1`、`ed25519-dalek 3.0.0`、`getrandom 0.4.3`；生产代码唯一的解压点是 `read_single_csv_member`，路径穿越、绝对路径、符号链接、目录、多成员反例均被拒；v0.1.1 签名回归存在；A 复跑 `deps.py --audit` 结果为 passed（892 个包，0 个未处理漏洞，8 条“停止维护”提示） |
+
+**A-F01（阻断，已修正）：准备训练数据期间资料库不可写。** `prepare_one_batch` 在一个 `SAVEPOINT` 里完成整批下载；`create_dataset_version` 是该批第一次写入，之后写锁一直持有到下载结束（币安 1h 约 160 s，欧易 1h 约 330 s），而连接的 `busy_timeout` 是 5 s。A 的探针：日线已就绪、4h 批正在下载时开局，5.56 s 后返回 `database is locked`（还被误标为 `PRACTICE_ACCOUNT_FAILED`、不可重试）。所以 B 的“实跑修复 3”（准备中已就绪级别可开局）在真实应用里不生效，首次准备约 15 分钟内开局、推进、划转全部失败；后台增量更新时网络一慢也会这样（违背 S-48“不阻塞开局”）。修正：拆成两段——**下载阶段**（`fetch_training_batch`）不写资料库，原始报文留在内存；**提交阶段**（`commit_training_batch`）在 savepoint 内建 `dataset_version`、存原始报文、写 K 线、记质量、发布。原子性不变：失败或取消仍整体回滚，不建版本、不移水位线。行 ID 与 `valid_from_version` 本来就由存储层按提交版本生成。持锁时间实测（调试构建、全历史 1h 夹具）：币安 1.8 s、欧易 4.2 s（含跨源比较），release 更短，都在 5 s 以内。新增回归 `training_m5::tests::m5_runs_start_and_advance_while_a_prepare_batch_downloads`：4h 批下载期间开局并推进一根，要求 4 s 内完成且作业仍在下载；取消后 `dataset_version` 数量不变、4h 水位线为空。
+
+**同时修正（非阻断）**：币安 REST 分页原来用解析后最后一根已对齐 K 线推进游标；如果一整页都是偏离整点或未收盘的行，会提前结束分页，之后增量更新会永远停在“up_to_date”。现在改为用原始行中最新的开盘时间推进（`+1 ms`）。
+
+**未改、记录在案**：币安 2018-02-08 00:00 那根 1h 只覆盖 28 分钟（交易所停机），按整小时保留；它后面紧跟缺口，所以只可能出现在窗口末端。对训练影响很小，并入 [LOOP-07](../decisions/open-questions.md) 的停机缺口处理。
+
+**修正后验证**：`python scripts/quick_gate.py` passed（74 s，`-p delta-app` 84 项测试）；`python scripts/quick_gate.py --all` passed（108 s，全工作区 clippy 与测试）；`deps.py --audit` passed。按[两级门禁](../dev-rules/quality-gates.md#gate-tiers)，整套 `verify-stage`（M5 含 `--ui-smoke --ui-bench --live-data`，以及 M1～M4 回归）的证据仍对应 B 交付指纹 `c97131fc…`，没有重跑；A 修正只改动 `delta-app` 的 `training_data.rs` 与 `training_m5_tests.rs`，最终指纹 `9d51a55f…` 由快速门禁覆盖。审核时按指示没有碰 `delta-dev`；随后按用户要求重装开发版（[开发流程](../dev-rules/development-workflow.md#dev-install-at-handoff)）：`package-build` + `install-dev` 把 `0.1.2-dev.20261115093401`（`source_fingerprint = 9d51a55f…`，安装包 `dist/delta-dev-setup-0.1.2-dev.20261115093401-x64.exe`，`sha256 = aedb8bca…6696`）静默装到 `delta-dev`，替换 `0.1.2-dev.20261115084615`；正式版 `delta` 未触碰。
 
 ## 工作包与实现
 
-| 工作包 | 实现 | 验证入口 |
+| 工作包 | 实现 | 用例 |
 | --- | --- | --- |
-| M4-W01 回放时钟、抽样与数据端口 | `delta-data::m4_schema`：`query_training_visible_final_bars`、`query_run_visible_final_bars`、`query_next_training_step_bar`、`query_training_visible_corporate_actions`、`query_training_candidate_pool`（排除日历/覆盖缺口、`warning`/`partial` 质量问题、不完整公司行动与未解释跳变，计算 `candidate_pool_hash`）、`redraw_training_session_with_checkpoint`（开始前单 savepoint 更新抽样与初始检查点，开始后拒绝）。`delta-core::sim`：`DeterministicPrng`、`sample_candidate_sequence`（拒绝采样消除模偏差）、`derive_point_in_time_split_adjusted_bars`（仅回溯 `ex_date <= 当前时钟` 的拆股，分红不复权）。`delta-app::training`：`TrainingDataPort`、抽样前入库 `seed` 与 `candidate_pool_hash`、隐藏模式全链路脱敏（`标的 A（美股/ETF｜加密现货）`、`第 n 根`，直至 `finished` 且显式 `reveal`） | `M4-K01`、`M4-A-01`、`M4-A-02`、`M4-A-03` |
-| M4-W02 撮合与费用引擎 | `delta-core::sim`（`SIM_ENGINE_VERSION = "m4-sim-1"`）：纯函数 `step` / `step_multi_bars`（支持多标的固定排序：事件时间、优先级、标的 ID、订单序号）与 `preview_order_submission`。支持 `Market`、`Limit`、`StopMarket`、`Oco`（止盈限价＋止损市价）及入场单附带 `AttachedBracket`，有效期 `Day` / `Gtc`（`StopLimit` 明确拒绝）；第 `t` 根收盘后提交、`t+1` 开盘生效；固定 `O → L → H → C` 路径，先处理开盘跳空（限价改善不劣于限价，止损跳空按开盘价加不利滑点），附带单仅在入场点之后路径段激活，同根双触达先执行止损并累加 `ambiguous_fill_count`；`round_price_adverse_tick` 不利方向舍入，违反 `tick_size`/`lot_size` 拒绝并返回上下最近有效值；买单 `1.10 × last_close` 市价缓冲＋最大预估费用预留、OCO 两腿共享一份持仓预留，`INSUFFICIENT_FUNDS` / `INSUFFICIENT_POSITION` / 整单 `INSUFFICIENT_FUNDS_AT_FILL`（不缩量）；零成交量/停牌/不可交易 K 线不成交（`Day` 过期、`GTC` 保留）；除权日开盘前拆股调整持仓与单位成本并以 `corporate_action_split` 取消挂单，现金分红按除权日假设单次入账。`FeeProfileVersion` 与 `settle_order_fees`：可组合费率/按单位/固定费/按单最低最高（多笔成交在订单结束时结算一次）/报价或实收资产扣费/四种舍入/滑点与半点差独立配置 | `M4-A-03`、`M4-A-04`、`M4-A-05`、`M4-A-06`、`M4-A-07`、`M4-A-08` |
-| M4-W03 持久化、恢复与重放 | `delta-data::m4_schema` 与 `storage`：`CURRENT_SCHEMA_VERSION = 5`，`schema 4 → 5` 迁移前先经 SQLite Backup API 生成 `before-schema-4-*` 一致性快照（旧版读取器与 `schema > 5` 明确拒绝）；新增 8 张模拟/训练表（`fee_profile_version`、`simulation_run`、`training_session`、`sim_order`、`sim_fill`、`simulation_event`、`sim_checkpoint`、`training_note`）及不可变/时钟单调触发器；每步 `commit_simulation_step_atomic` 单事务提交，在 `initial`、每 20 步 `periodic_20`、`pause` 与 `finish` 写检查点；恢复时 `verify_or_mark_run_damaged` 重放命令并核对 `state_hash`，不一致标为 `damaged`；`create_retry_training_run` 建立带 `parent_run_id` 的独立新运行；`LibraryManifest::table_row_counts` 备份恢复核验、`export_library`（`simulation/simulation_bundle.json` + 8 张 CSV）与 `preview_delete_training_run` / `delete_training_run` | `M4-K02`、`M4-A-08`、`M4-A-09`、`M4-A-10`、`M4-A-11` |
-| M4-W04 训练报告 | `delta-core::sim_report`（`SIM_REPORT_VERSION = "m4-report-1"`）：`compute_training_report`、`compute_buy_and_hold_benchmark`、`bar_path_slice_extrema`。全 Decimal 计算期末权益与收益率、已实现/未实现损益、费用合计、收盘权益曲线与最大回撤、持仓时间占比、已关闭交易组（`flat → open → flat`）胜率（零盈亏单列）、盈亏比与 Profit Factor（`NoClosedTrades` / `NoLosses` / `NoWins` 显式状态）、带样本数的期望值、入场成交点后至出场点前路径段 MAE/MFE（单位价格与百分比）、`PlanExecutionSummary`（有计划交易按计划退出或记录偏离理由占比，无计划交易单列）、同期同资金同费用买入持有基准及结构化 `SampleLimitations` | `M4-A-12` |
-| M4-W05 训练笔记与 AI 复盘 | `delta-data::m4_schema` 与 `delta-app::{training, ai, host}`：训练中有无委托均可写 `training_note`（理由、情绪标签、关联委托），结束后 `archive_training_notes_to_journal` 经标准日志命令归档并标注“来自模拟训练”，不污染真实账本；用户自主评分（`save_training_self_evaluation`）与 AI 文本分离存储展示。新增 `ScopeTarget::TrainingRun(run_id)`：未结束运行一律以 `SIM_AI_REVIEW_REQUIRES_FINISHED` / `SCOPE_DENIED` 拒绝；结束后只开放 5 个只读工具（`training.run_summary`、`training.orders_and_fills`、`training.report`、`training.notes`、`training.revealed_bars`）并阻断真实账户工具；校验 `SIM-ORD-*` / `SIM-FILL-*` / `TRN-NOTE-*` 可打开证据引用与金融数值（剔除 `seed` 等元数据伪装），范围修订绑定 `latest_state_hash + revealed`；模型离线时训练与报告照常可用 | `M4-A-13`、`M4-A-14` |
-| M4-W06 桌面训练工作区与 CLI | `delta-desktop::{training_ui, workbench, components, controller, ui_forms, ui_verification}`：主导航新增“训练”页（运行列表、新建对话框、复用 `KlineViewport` 与自绘 K 线画布的十字光标/拖拽平移/滚轮缩放、常驻“模拟训练”标识、预计成本与费用预览下单面板、`Ctrl+Enter` 提交委托、`N`/`→` 推进下一根且焦点在输入框时绝不误提交、`P` 暂停/`O` 数量/`J` 笔记/`Esc` 退焦点清光标、结束→报告→显式“揭示”→AI 复盘）。`delta-cli::training_cmd`：`delta-cli training create\|list\|show\|order\|cancel\|advance\|note\|finish\|reveal\|report\|replay\|retry\|delete` 及辅助子命令，与桌面共用同步 `AppHost` 契约，非 TTY 删除强制 `--yes` 并转义终端控制字符 | `M4-A-15`、`M4-A-16`、`M4-A-17` |
-| M4-W07 门禁、清理、文档与回归 | `delta-cli::verify_m4`：`verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`；删除 M2 遗留 `Packager.toml` 并更新 `verify.rs` 指纹清单（加入 `docs/delivery/m4-stage-cases.json`）与 [仓库地图](../dev-rules/repo-map.md)；在 `verify.rs` 加固 `TEST-02`（M1 `lock_probe` 显式持锁就绪握手）；同步 [金融规则](../design/financial-engine.md)、[数据模型](../design/data-model.md)、[交互工作流](../design/interaction-and-workflows.md)、[AI 设计](../design/ai-design.md)、[统一接口](../design/integration-contracts.md)、[系统架构](../design/system-architecture.md)、[质量门禁](../dev-rules/quality-gates.md)、追踪表与台账，并在同指纹下跑通 M1/M2/M3/M4 门禁 | `M4-G-01～06`、`M4-A-17`、`M4-A-18` |
+| M5-W01 数据修复与比特币训练数据 | `delta-app::training_data`：`prepare_training_data`（按（标的，级别）分批，各批独立 `dataset_version` 原子发布；币安月度归档校验 `CHECKSUM`、近期走 REST；欧易 `history-candles` 分页；水位线续传并回读重叠 3 根；欧易对币安同级别跨源比较）、`start_prepare_training_data` 后台作业、`training_data_status`。S-49 三项修复：① 稳定币汇率缺口不再阻塞加密 K 线发布（只记估值类质量问题）；② `missing_fee_asset_fx` 误报消除（报价腿稳定币从现金结算一次）；③ 候选池只按影响价格的质量问题排除（`QualityImpact`，`CandidateQualityFilter::PriceAffectingOnly`）。归档成员安全读取 `read_single_csv_member` | A-01、A-02、A-03、L-01 |
+| M5-W02 加密多级别 | `delta-core::timeframe`（`1d`/`4h`/`1h` UTC 对齐、`aggregate_bars`），bar 行 ID 与质量键对日内级别使用开盘时刻，训练端口按级别截断，`idx_bar_training_port` 与区间预过滤，`get_training_aggregated_view` 只由已截断基础 K 线聚合，美股选日内级别明确拒绝 | A-04、A-05 |
+| M5-W03 练习账户与历史分析 | schema 6（`m5_schema.rs`）：`practice_account`、只追加 `practice_account_entry`、`training_drawing`、`training_session` 新列与 `abandoned` 状态，迁移前先备份（`before-schema-5-*`），故障注入回滚；`delta-core::account_report`（`m5-account-report-1`）；划转、开局划出、结束/放弃结算、删除冲销、训练历史 | A-10、A-11、A-12 |
+| M5-W04 引擎 `m5-sim-2` | 快捷单收盘成交（不利滑点/半点差与不利取整，零量 K 线拒绝，不缩量）、`ModifyOrder`、`UndoLast`（`SimReplayer` 保存命令前状态）、日内 `DAY` 在 UTC 日末过期；新字段为默认值时不进入规范化 JSON，`m4-sim-1` 哈希不变 | A-06、A-07、A-08、A-09、K03 |
+| M5-W05 训练工作台 | `training_workbench.rs` 纯交互模型（键位、工具、播放、画线下单草稿、默认比例、拖动改单与锁定，按构造保证单击/拖动/单键/播放步不成交）；`training_workbench_ui.rs`（工具栏、信息行、覆盖物、练习账户侧栏、默认比特币开局卡片、执行器时钟播放）；`chart_canvas::ChartOverlay`；`ui_verification_m5.rs`（`--m5-ui-smoke`、`--m5-ui-bench`）。开发中修复：草稿打开且未选选项时 `Ctrl+Enter` 落到普通委托面板提交（误触缺陷） | A-13、A-15、K02 |
+| M5-W06 CLI 与 AI | `delta-cli training prepare-data\|account\|history\|modify\|undo\|abandon\|restart\|view\|drawing`，`create --timeframe/--amount/--independent`，`order --fill-rule visible-close`；AI `training.run_summary` 增加级别、资金来源与有效操作次数；“已结束”含 `abandoned` | A-14 |
+| M5-W07 门禁、文档与回归 | `delta-cli::verify_m5`；源码指纹加入 `m5-stage-cases.json`、`.zip`（按二进制）与 `.sig`；训练数据状态查询移入存储端口（`training_bar_coverage`，保持 `delta-app` 无裸 `FROM bar`）；正本同步见下文 | G-01～07、A-16 |
+| M5-W08 依赖盘点与漏洞修复 | 升级 `zip` 2.6 → `=9.4.2`（修复含 Critical GHSA-m665-v7pm-7grj 在内的 6 条）、`quick-xml` 0.37 → 0.42（RUSTSEC-2026-0194/0195；适配新 API）、`sha2` 0.11、`ed25519-dalek` 3.0、`getrandom` 0.4；单成员归档读取拒绝路径穿越、绝对路径、符号链接、目录、多成员、非 `.csv` 与超过 16 MB 的成员；已发布 v0.1.1 的更新清单与签名用内置公钥验证仍通过（`update::tests::published_v0_1_1_manifest_signature_still_verifies`） | A-17 |
 
-## S-41 平台费用预设核查与阶段清理记录
-
-### 1. S-41 平台费用预设官方核查结论（2026-11-12）
-
-按计划 `S-41`，B 在 2026-11-12 对富途美股与欧易现货官方费率规则进行了核查：
-
-- **富途美股（Futu US Equity）**：官方佣金与平台使用费随开户主体地区（如香港、美国、新加坡等不同持牌实体）及用户所选套餐（阶梯式按月累计股数计费 vs 固定按股计费）变化，且卖出方向叠加随监管公告调整的 SEC 规费与 FINRA 交易活动费（TAF），无法在不引入隐含账户/日期假设的前提下折叠为单一静态预设。
-- **欧易现货（OKX Spot）**：官方现货费率按普通用户与 VIP 1～9（30 日交易量、资产量或 OKB 持仓）分级，且严格区分挂单（Maker）与吃单（Taker）费率；仅凭日线 OHLC 无法无歧义判定每笔限价单属于 Maker 还是 Taker。
-- **处置结果**：严格遵守 `S-41` 退出条件，本阶段**只内置 3 个明示为场景假设的模板**——`FPV:BUILTIN:ZERO_COST:v1`（`zero_cost`，零成本）、`FPV:BUILTIN:US_EQUITY_PER_SHARE_EXAMPLE:v1`（`us_equity_per_share_example`，美股按股收费示例）、`FPV:BUILTIN:CRYPTO_RATE_EXAMPLE:v1`（`crypto_rate_example`，加密按成交额示例），全部标记 `is_scenario_assumption = true`（`is_platform_preset = false`）；Rust 校验（`FeeProfileVersion::validate`）与 SQLite `CHECK` 约束同时强制任何非场景假设的内置预设必须具备非空官方来源 URL 与核查日期（`M4-A-08`）。富途美股与欧易现货平台预设保持在 [集中台账](../decisions/open-questions.md) `LOOP-06`。
-
-### 2. 阶段清理与 `TEST-02` 修复
-
-- **退役 `Packager.toml`（计划第 3 节）**：已从版本库删除 M2 遗留的 `Packager.toml`，同步移除 `crates/delta-cli/src/verify.rs` `source_fingerprint` 清单中的 `"Packager.toml"` 引用（并将 `"docs/delivery/m4-stage-cases.json"` 纳入源码指纹），同时更新 [仓库地图](../dev-rules/repo-map.md)。
-- **关闭 `TEST-02`（M1 `lock_probe` 冷启动超时）**：在 `crates/delta-cli/src/verify.rs` 中将 `M1-A-15` 独占锁探针改为先等待持锁子进程输出显式持锁就绪标记（放宽新编译 debug 可执行文件的冷启动等待上限），确认持锁后再启动第二进程严格断言锁冲突拒绝，不放宽任何独占锁语义。台账 `TEST-02` 已标为 `resolved`。
+计划第 3 节的注释修改（策略/回测由 M5 改称 M6）已在 `i18n.rs` 与 `sim.rs` 完成。
 
 ## 本轮实际验证
 
-最终被测源码指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa`，均在 Windows 11 本机以低优先级静默执行（[D-25](../decisions/confirmed-decisions.md)）：
+全部在 Windows 11 本机以低优先级静默执行，被测指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`：
 
 | 检查 | 结果 |
 | --- | --- |
-| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings` | passed（门禁 `M4-G-01～04` 实跑） |
-| `cargo test --workspace --locked` | passed：`138 passed / 0 failed / 2 ignored`（`delta-app` 73、`delta-cli` 13、`delta-core` 16、`delta-data` 14、`delta-desktop` 17、`delta-model` 5，耗时 `15,198 ms`，门禁 `M4-G-05`） |
-| `verify-stage --stage M1 --plan-version 2.6` | passed（同指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa`）：`22 passed / 5 not-run`（`M1-G-01～05`、`M1-A-01～17` 与 `POC-D01` 全部 passed：101 万行写入 `11,586 ms`、5,000 根版本区间查询 `14 ms`、备份恢复 `13,938 ms`；`M1-A-15` 显式持锁就绪握手 `23 ms` 通过；报告 `.local/reports/m1/verify-stage-report.json`） |
-| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` | passed（同指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa`）：`26 passed / 5 not-run`（`M2-G-01～06`、`M2-A-01～20` 与 `M2-K01～06` 全部 passed：首屏 `p95 = 244 ms`，10 万根 K 线原生帧 `p50/p95/p99 = 6.611 / 7.910 / 12.164 ms`，10 万行表格滚动 `p50/p95/p99 = 2.571 / 5.564 / 7.609 ms`；报告 `.local/reports/m2/verify-stage-report.json`） |
-| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | passed（同指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa`）：`16 passed / 3 not-run`（`M3-G-01～06`、`M3-A-01～10` 与 `M3-K01～04` 全部 passed：Inno Setup 7.1.1 双测试身份静默安装/共存/卸载、M2 便携版迁移、忙碌退避与 Ed25519 回环自动更新全部通过，开发者本机 2,474 个已安装文件零改动；报告 `.local/reports/m3/verify-stage-report.json`） |
-| `verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` | passed（同指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa`）：`24 passed / 2 not-run`，3 个 Spike（`M4-K01～K03`）全部 passed（`M4-G-01～06` 与 `M4-A-01～18` 全部 passed，`M4-M-01` 与 `M4-L-01` `not-run`；报告 `.local/reports/m4/verify-stage-report.json`，日志目录 `.local/reports/m4/logs-14076-1794516666413`） |
+| `python scripts/quick_gate.py`（每次修改后） | passed（最后一次 30 s） |
+| `verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench --live-data`（`cargo run --release -p delta-cli`） | **passed**，977 s；报告 `.local/reports/m5/verify-stage-report.json`，日志 `.local/reports/m5/logs-28856-1794731398193/` |
+| └ `M5-G-01～05`（文档、diff、fmt、clippy、`cargo test --workspace --locked`） | passed；测试 **171 passed / 0 failed / 2 ignored**（ignored 为需显式开启的 M1 公网探针与截图采集） |
+| └ `M5-G-06` `deps.py --audit` / 盘点 | passed：892 个包，0 个未处理漏洞，8 条“停止维护”类告警只列出（`instant`、`paste`、`rustls-pemfile`、`rustybuzz`、`ttf-parser`、`zbus_names`、`zvariant`、`zvariant_derive`，均为传递依赖，无修复版本）；盘点到期 0 项，未满 7 天 5 项（见下） |
+| └ `M5-G-07` 架构 | passed：19 个用例 ID 与清单一致；桌面 16 个源文件不访问核心引擎与存储；`account_report.rs` 只用 Decimal |
+| └ `--ui-smoke` | passed：release 隐藏原生窗口，默认比特币开局（练习账户）、播放 5 根、快捷成交后撤销、画线、结束、揭示，12 次图表绘制，0 个可见窗口（夹具数据） |
+| `verify-stage --stage M1 --plan-version 2.6` | passed（同指纹）：22 passed / 5 not-run |
+| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` | passed（同指纹）：26 passed / 5 not-run，`M2-K01～06` passed |
+| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | passed（同指纹）：16 passed / 3 not-run，`M3-K01～04` passed |
+| `verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` | passed（同指纹）：24 passed / 2 not-run，`M4-K01～K03` passed |
+| 本机开发版安装（`package-build` + `install-dev`） | 已装到 `delta-dev`：`0.1.2-dev.20261115084615`（上一版 `0.1.2-dev.20261113184806`），`source_fingerprint = c97131fc…`，安装包 `dist/delta-dev-setup-0.1.2-dev.20261115084615-x64.exe`；正式版 `delta` 未触碰 |
 
-M4 用例明细（报告 `.local/reports/m4/verify-stage-report.json`，日志在同目录 `logs-*`）：
+依赖盘点（D-35）：到期升级 0 项；未满 7 天、本阶段不升：`gpui-kit 0.9.1`（5 天）、`rusqlite 0.42.0`（4 天）、`uuid 1.29.2`（6 天）、`zip 9.6.0`（0 天）、工具链 `rust 1.100.0`（2 天，约 2026-11-20 满 7 天），登记 [DEPS-01](../decisions/open-questions.md)。`scripts/deps-exceptions.json` 无例外条目。没有回退的升级。
 
-| 用例 | 结果 | 实际证据（摘要） |
-| --- | --- | --- |
-| M4-G-01～06 | passed | `check_docs.py`、`git diff --check`、`fmt`、`clippy`、工作区测试实跑；架构与静音静态边界检查通过（`delta-app` 0 `pub async fn`、0 裸 `FROM bar` 查询、0 越界 `Command::new`、0 非回环绑定、`delta-desktop` 零越层依赖）；release `--m4-ui-smoke` 通过（`workspace_chart_paints = 2`、`total_chart_paints = 5`、`revealed_post_finish_bars = 60`、`power_throttling = "execution_speed_opt_out"`、`visible_windows = 0`、`focus_stolen = false`，耗时 `433 ms`） |
-| M4-A-01（K01） | passed | 未来 K 线与公司行动写入 `999999999` 与 `'POISON_FUTURE_BAR'` 哨兵及同交易日多源偏斜样本：图表切片、指标预热、委托校验、CLI `show` 与全部 AI 工具零泄漏；加密 `00:00Z` 边界、时钟单调与未完成前拒绝揭示全部通过 |
-| M4-A-02 | passed | `SHA-256` 计数器模式抽样与拒绝采样：同种子＋同 `candidate_pool_hash` 结果一致，缺口/`warning`/`partial`/缺公司行动区间全部排除，开始前重抽入库、开始后重抽拒绝，未揭示隐藏运行全链路无真实代码与日期 |
-| M4-A-03 | passed | 录制 Yahoo 拆股与现金分红夹具：除权日前图表不暴露未来拆股；除权日开盘前持仓数量×比例、单位成本÷比例、总成本不变，挂单以 `corporate_action_split` 取消，分红单次入账并在报告标注除权日入账假设 |
-| M4-A-04 | passed | 手算夹具：`t+1` 开盘生效，市价/限价跳空改善且不劣于限价，不利方向 `tick_size` 舍入，`StopLimit` 拒绝，违反 `tick_size`/`lot_size` 拒绝并提示最近合法上下界 |
-| M4-A-05 | passed | `O → L → H → C` 路径：OCO 同根双触达先执行止损、取消另一腿并计入 `ambiguous_fill_count`；跳空跌破止损按开盘价加不利滑点成交；入场附带止盈/止损仅在入场点之后路径段激活成交 |
-| M4-A-06 | passed | 买单 `1.10 × last_close` 缓冲与预估费用预留、OCO 共享单份持仓预留；`INSUFFICIENT_FUNDS`、`INSUFFICIENT_POSITION` 与跳空超缓冲整单 `INSUFFICIENT_FUNDS_AT_FILL`（不缩量，现金/持仓永不为负）；零成交量 K 线不成交，`DAY` 过期、`GTC` 保留 |
-| M4-A-07 | passed | 合成单笔与多笔部分成交在 `settle_order_fees` 结算：按单最低费在订单结束时只结算一次，按笔费用精确累加，四种舍入模式与精度一致，`received_asset` 扣费准确扣减实收资产数量 |
-| M4-A-08 | passed | `fee_profile_version` 被引用或内置后由 Rust 与 SQLite 触发器双重禁止原地修改/删除；派生 `v2` 只作用于新建运行，既有运行恢复与重放保持 `v1`；内置预设来源约束校验通过 |
-| M4-A-09 | passed | 暂停关闭重开状态一致；子进程 `crash_mid_advance`（`BEGIN IMMEDIATE`＋小缓存溢出落盘后 `abort()`）重开无半步、无重复成交；篡改 `state_hash` 重开标为 `damaged` 并拒绝继续推进 |
-| M4-A-10（K02） | passed | `Scratch`、`FromCheckpoint` 与第二进程三种重放每步 `state_hash` 及期末报告逐项一致；`retry` 生成引用 `parent_run_id` 的独立新运行，原运行委托、成交与报告不变 |
-| M4-A-11 | passed | v0.1.1（`schema 4`）资料库打开前自动创建 `before-schema-4-*` 备份并升级至 `schema 5`，旧版读取器与 `schema > 5` 明确拒绝；训练全流程 `ledger_revision` 与真实 `fill` 表不变；备份恢复（核对全部 8 张新表行数）、开放导出（`simulation/simulation_bundle.json`＋8 CSV）与删除预览/删除通过 |
-| M4-A-12 | passed | 手算报告夹具（盈亏交易组、分批加减仓、期末未平仓、零亏损、零交易、跨拆股回撤）：收益率、已实现/未实现、总费用、最大回撤、持仓占比、胜率（零盈亏单列）、Profit Factor、期望值、路径段 MAE/MFE、计划执行率、买入持有基准与样本限制全部一致 |
-| M4-A-13 | passed | 训练中有无委托均可记笔记；结束后归档经正常日志命令保存并标注“来自模拟训练”，真实账本无模拟成交，原训练笔记不变 |
-| M4-A-14 | passed | 双协议回环模型服务：未结束运行被宿主以 `SIM_AI_REVIEW_REQUIRES_FINISHED` 拒绝；结束后复盘引用可打开的 `SIM-ORD-*`/`SIM-FILL-*`/`TRN-NOTE-*` 证据，拦截模型捏造引用与未授权数值，笔记越权指令不扩大权限；模型离线时训练与报告正常可用 |
-| M4-A-15 | passed | `delta-cli training` 子进程驱动的同一运行在 CLI `show`/`report` JSON 与桌面 `AppHost` DTO 中持仓、现金、委托、成交、报告数值及数据/引擎/费用版本逐项一致 |
-| M4-A-16 | passed | GPUI 无头工作台测试：隐藏训练新建→下单（`Ctrl+Enter`）→`N`/`→` 推进（焦点在委托输入框时绝不误提交委托）→`P`/`O`/`J`/`Esc` 与图表十字光标/缩放→记笔记→结束→报告→显式“揭示”→AI 复盘；常驻“模拟训练”标识，揭示前无真实代码/日期，后台错误显式提示且不标成功 |
-| M4-A-17（K03） | passed | Release 隐藏原生窗口（`execution_speed_opt_out`），1,000 根可见历史＋默认指标，20 预热＋300 实测步“下一根”延迟 `p50 = 31.151 ms`、`p95 = 39.966 ms`、`p99 = 57.453 ms`（`max = 131.345 ms`）（门槛 `p95 <= 100.0 ms`），原始样本与硬件口径保存在 `.local/reports/m4/` |
-| M4-A-18 | passed | 门禁全程 `BELOW_NORMAL_PRIORITY_CLASS`、可感知窗口 `0`、焦点未变化、真实 `delta` / `delta-dev` 未触碰、无临时残留；同一指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa` 下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）全部 passed |
-| M4-M-01 / M4-L-01 | not-run | `H-05` 训练实机体验待用户在开发版安装包上执行；真实在线模型复盘需用户按可选 `ACT-01` 配置真实模型连接 |
+## 计划第 7 节不得缩减项
 
-## 与计划的补充说明（未缩减范围）
-
-- **结束与揭示两步显式分离（S-38 / S-46）**：点击“结束训练”（或执行不带 `--reveal` 的 `delta-cli training finish`）后，运行进入 `finished` 状态，但在用户显式点击“揭示”（或执行 `training reveal`）前，隐藏模式下的工作区、委托/成交、笔记、报告与 `training.*` AI 工具仍保持脱敏（`标的 A`、`第 n 根`），确保用户先阅读执行报告并完成自主评分，再揭示后续 60 根行情与真实标的/日期；揭示时同步推进 `ScopeTarget::TrainingRun` 的修订指纹。
-- **CLI 完整生命周期子命令**：除计划列出的 12 个核心子命令外，`delta-cli training` 补充暴露 `reveal`、`redraw`、`start`、`pause`、`resume`、`fee-profiles`、`self-eval`、`evidence`，全部调用同一 `AppService` / `AppHost` 同步方法，并对终端 JSON 输出中的控制字符（含 BEL `\x07`、ANSI 转义与 Unicode `Cc`）统一安全转义。
-- **零新增外部依赖**：`Cargo.toml` 与 `Cargo.lock` 在 M4 零改动，保持 M3 的 895 个第三方依赖包与既有许可盘点结论不变。
-
-## 验证边界与接续
-
-- **`not-run` 边界**：
-  - `M4-L-01`（真实在线模型 AI 复盘）：需用户按 [USER-ACTIONS](../../USER-ACTIONS.md) 可选 `ACT-01` 配置真实协议、端点、模型与密钥后独立验证；门禁 `M4-A-14` 为本机 `127.0.0.1` 双协议 SSE 回环演练，不宣称真实在线模型服务已测。
-  - `M4-M-01`（`H-05` 训练实机体验）：已在 [USER-ACTIONS](../../USER-ACTIONS.md) 补充 `H-05` 具体实机体验步骤，连同既有 `H-01～H-04`、`ACT-01`、`ACT-03`、`ACT-10` 私钥离线备份独立推进，不阻塞 A 技术审核。
-- **模型与范围假设（`LOOP-06`）**：M4 模拟引擎为日线、单标的训练界面、现货做多、整笔成交（不模拟盘口流动性与部分成交参与率）、固定 `O → L → H → C` 盘中路径、隐藏模式不变换价格水平、现金分红按除权日开盘前入账假设；部分成交、止损限价、做空/融资/衍生品、多标的同时训练、小时/分钟回放、训练中 AI 教练模式及富途美股/欧易现货真实平台费率预设保留在 [集中台账](../decisions/open-questions.md) `LOOP-06`，并在每份训练报告 `SampleLimitations` 中明示。
-- **首选下一步**：见下方 [接续](#接续)。
-
-## A 集中技术审核（2026-11-13）
-
-角色：Agent A；待审提交 `f5a127a92946509eec12afbf81784acd4ca25b9f`（父 `45ac8c5`）。A 用独立脚本从 `git archive HEAD` 重算源码指纹，与 B 声明的 `b104c94a…` 一致；B 的四份门禁报告 `overall_status = passed` 且均绑定该指纹；工作区仅有未跟踪 `workers/`（未读取、未暂存）。A 复跑 `cargo test --workspace --locked`（138 passed、0 failed、2 ignored），与 B 记录一致。对照计划第 4～7 节逐项复核实际 diff：
-
-| 审核点 | 结论与依据 |
+| 项 | 证据 |
 | --- | --- |
-| 未来数据截断与哨兵（M4-K01） | `m4_schema` 所有训练读取在 SQL `WHERE` 中绑定冻结 `dataset_version`、`is_final = 1` 与 `close_at <= visible_until`；“下一根”先只查元数据列 `MIN(session_date)`，再只物化该交易日的行，后续哨兵行从不经过 `map_bar_row`；公司行动按 `ex_date <= effective_visible_ex_date(...)` 在 SQL 截断，推进时以下一根 `close_at` 查询并只取 `ex_date` 等于该交易日的行；多源同日偏斜按同一 `source_priority` 去重，重放取到的 K 线与当初推进时一致。时点复权只回溯 `ex_date` 不晚于该标的最后可见交易日与时钟日期的拆股，分红不复权 |
-| 撮合与预留（m4-sim-1，S-36～S-40） | 第 t 根收盘提交、t+1 开盘生效；`O→L→H→C` 分段内按距当前路径点远近排序，成交后路径点前移，附带单只在激活点之后的路径段触发；限价跳空改善按开盘价加滑点且不劣于限价，止损跳空按开盘价加不利滑点；点差只用于市价单（与 S-39 一致）；买入止损的预留取 `max(止损价, 收盘价×1.1)`；`INSUFFICIENT_FUNDS_AT_FILL` 以“可用＋本单预留”判断并整单拒绝、级联撤销附带腿；零成交量不成交、`DAY` 过期；附带腿在桌面与 CLI 默认 `GTC`，不会随 `DAY` 入场单在当根后静默失效 |
-| 费用组件（S-41） | 按单最低/最高费只在最后一笔成交时结算一次，按单层级以累计未舍入金额舍入后再差额分摊；`received_asset` 扣费减少实收数量、现金只扣成交额；平台预设必须有 `https` 官方来源与核查日期（Rust 与 SQLite 双重约束），本阶段只内置 3 个场景假设模板 |
-| 公司行动（S-42） | 拆股：数量×比例、总成本不变、该标的全部挂单以 `corporate_action_split` 撤销；现金分红按除权日盘前入账并打标记；同一行动以 `(标的, ex_date, 类型)` 记账防重复 |
-| 迁移、隔离与持久化（S-43） | `schema < 5` 时先 `create_consistent_backup` 生成 `before-schema-4-*` 再在 savepoint 内迁移，`schema > 5` 拒绝；每步一个 savepoint，含 `expected_prev_seq` 乐观校验；删除只涉及 8 张模拟表，不动日志与账本；备份清单新增全部表行数并在恢复时核对 |
-| 重放（M4-K02） | 恢复＝最近检查点＋其后命令重放，逐步核对 `state_hash`；引擎零 `HashMap`/浮点/系统时钟。见下方 F-01 |
-| AI 权限（S-45） | `ScopeTarget::TrainingRun` 每次工具调用都重新解析范围并要求运行 `finished`；训练范围只放行 5 个 `training.*` 工具，账户范围拒绝 `training.*`；`run_id` 参数不能跨运行；修订指纹绑定 `latest_state_hash`＋`revealed`＋训练笔记；笔记文字中的数字不进入授权数值集合 |
-| 隐藏模式（S-38） | 摘要、委托、成交、笔记、事件、报告、图表切片与 AI 工具在 `hidden_mode && !(finished && revealed)` 时统一替换标的、日期与 K 线 ID；揭示前 `training.revealed_bars` 不返回任何后续行情 |
-| 快捷键与 CLI（S-46、S-47） | 单键 `N`/`→`/`P`/`O`/`J` 仅在无文本输入焦点且无修饰键时生效，提交只能 `Ctrl+Enter`；CLI 与桌面调用同一 `AppHost` 方法 |
-| 清理与 TEST-02 | `Packager.toml` 已删除，指纹清单同步；锁探针的持锁进程在拿到锁后才输出 `LOCKED`，父进程在 1.2 s 持锁期内严格断言冲突，锁语义未放宽 |
+| 截断在宿主层 | 训练端口 SQL 截断与哨兵测试；高一级别视图由宿主聚合，`m5_aggregated_view_matches_hand_calc_and_never_leaks_future_sentinel`；`M5-G-07` 桌面不访问存储/引擎 |
+| Decimal 可手算 | `m5_quick_fill_at_visible_close_is_hand_checkable`、`m5_quick_fill_modify_undo_and_settlement_are_hand_checkable`、`account_report_is_hand_checkable` |
+| 撤销不越过推进 | `m5_modify_and_undo_restore_exact_state_and_never_cross_an_advance`；门禁探针“推进后撤销被拒” |
+| `m4-sim-1` 旧运行哈希不变 | 真实 M4 资料库夹具 `m5_genuine_m4_library_upgrades_and_old_run_hashes_are_unchanged`；M4 回归同指纹通过 |
+| 练习账户守恒且放弃也结算 | `m5_abandon_restart_and_delete_keep_practice_account_conserved`；门禁探针放弃后 `equity == available`、无未结束分配 |
+| 任何单击/拖动/单键不直接成交 | `no_key_or_click_ever_trades`、`focused_input_swallows_workbench_keys`、无头流程（含已修复的 `Ctrl+Enter` 误触） |
+| 迁移先备份 | schema 5 → 6 先生成 `before-schema-5-*`，故障注入回滚后旧库与备份完好 |
 
-**A 修正（已 amend 进同一阶段提交）**：
+## 限制与集中待处理项
 
-- **F-01（P2，已修复）恢复重放把存储读取失败当成损坏**。触发：任何改变运行的操作（推进、下单、暂停等）先调用 `verify_and_recover_sim_state`，其中重放检查点之后的 `advance_bar` 需要经截断端口读 K 线；读取失败（磁盘 I/O 错误、表不可读）被转成与哈希不一致相同的字符串原因，`verify_or_mark_run_damaged` 随即把运行**永久**标记为 `damaged`，之后不能继续。预期（S-43）：只有哈希、命令、K 线或检查点不一致才标记损坏，读取失败应原样报错并保持运行不变。修复：`crates/delta-app/src/training.rs` 新增 `ReplayFailure { Integrity, Storage }`，`replay_events_on_state` 与 `compute_recovery_hashes_for_bundle` 区分两类；`verify_and_recover_sim_state` 遇 `Storage` 直接返回原错误、不调用标记，`Integrity` 行为不变。新增回归测试 `test_m4_a09_recovery_storage_read_failure_does_not_mark_run_damaged`：推进两根后让 `bar` 表不可读，修复前返回 `RUN_DAMAGED`（已实测失败），修复后返回 `TRAINING_PORT_FAILED`，运行仍为 `active`、`latest_seq = 2`，恢复表后可继续推进。原有篡改哈希即标记损坏的用例（M4-A-09）保持通过。
+- **H-06**（人工，`M5-M-01`）：训练工作台实机体验，步骤见 [USER-ACTIONS](../../USER-ACTIONS.md)；可顺延，不阻塞审核与远端动作。本机开发版已重装为包含 A-F01 修正的 `0.1.2-dev.20261115093401`（`9d51a55f…`）。
+- [LOOP-07](../decisions/open-questions.md)：画线撤销用 `Delete`、不进入 `Ctrl+Z` 栈；画线不能拖动编辑；聚合视图不画画线；停机缺口不跨源补齐。
+- [PERF-01](../decisions/open-questions.md)：首次准备 857～893 s，贴近 15 分钟上限（触发条件与做法已登记）。
+- [DEPS-01](../decisions/open-questions.md)：未满 7 天的新版本与工具链 1.100.0。
+- 门禁跨进程探针与 UI 冒烟/基准使用合成夹具；真实服务结果只来自 `--live-data`。
 
-**P3 观察（不要求返工，不登记台账）**：
+## 正本同步
 
-- F-02：`delta-core::sim` 与 `delta-data::m4_schema` 对多源公司行动的来源优先级顺序不同（前者 tiingo 优先，后者 yahoo 优先）。宿主端口已先去重、候选池排除多源比例冲突的区间，引擎实际只收到一条，结果不受影响；以后若直接向引擎传多源行动需先统一。
-- F-03：计划执行率中，未关联委托但写于交易组持有期内的任意非空笔记都算作“偏离时记录了理由”，口径偏宽；报告已分列有计划/无计划，口径可在 H-05 反馈后收紧。
-- F-04：关闭隐藏模式的运行在结束后、点击“揭示”前，AI 工具即可读到后续 60 根行情。隐藏模式下严格要求先揭示；非隐藏模式下标的本已公开，属复盘顺序体验问题。
-
-**A 复跑（审核指纹 `96254d7db4d8ae6a1dfda724d156ba815142d00e4816a9392ce02f943f90714a`，Windows 11 本机，低优先级静默）**：
-
-| 检查 | 结果 |
-| --- | --- |
-| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings` | passed |
-| `cargo test --workspace --locked` | passed：139 passed、0 failed、2 ignored（新增 F-01 回归测试） |
-| `verify-stage --stage M1 --plan-version 2.6` | passed：22 passed、5 not-run；日志 `.local/reports/m1/logs-22992-1794533088192/` |
-| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` | passed：26 passed、5 not-run；图表 p50/p95/p99 = 7.2/8.6/9.4 ms，表格 = 2.7/5.1/7.3 ms，首屏 p95 236 ms；日志 `.local/reports/m2/logs-24308-1794533201162/` |
-| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | passed：16 passed、3 not-run；日志 `.local/reports/m3/logs-18116-1794533472927/` |
-| `verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` | passed：24 passed、2 not-run（`M4-M-01`、`M4-L-01`），3 个 Spike passed；“下一根” p50/p95/p99 = 31.3/41.0/51.7 ms（max 77.5 ms），`execution_speed_opt_out`，0 可见窗口、焦点未变；日志 `.local/reports/m4/logs-8236-1794534319914/` |
-
-**K03 测量备注**：紧接 M3 安装包门禁之后的两次 M4 运行，“下一根” p95 为 85.2 ms 与 84.9 ms（p99 103～107 ms），仍在 100 ms 门槛内但余量小。为区分代码与环境，A 暂存修正、在 B 原树（`b104c94a…`）上复测得 p95 41.9 ms，随后恢复修正再测得 41.0 ms。两种代码在同一时段结果一致，说明偏高的两次来自安装门禁刚结束时的本机状态，F-01 只改错误分支，不影响性能。B 原树那次 M4 运行因 `M4-A-18` 拒绝与 M1～M3 报告指纹不一致而整体 failed，这是证据绑定的正确行为。各次报告留存于 `.local/a-review-m4/`。
-
-**边界**：AI 复盘只在本机回环服务上验证，不是真实在线模型；`M4-M-01`（H-05）与 `M4-L-01`（ACT-01）保持 not-run。帧与延迟结论只适用于退出节流的测量口径与本机环境（RTX 4070 SUPER、缩放 1.5）。
-
-<a id="stage-additions"></a>
-## 阶段内追加（用户 2026-11-13 要求，已 amend 进同一阶段提交）
-
-A 审核收敛后，用户在同一阶段内追加了与训练功能无关的要求（快捷方式、开发版图标、开发版安装时机），连同由此发现的指纹缺口一并修改，都在同一阶段提交里：
-
-| 要求 | 实现位置 | 验证 |
-| --- | --- | --- |
-| **安装快捷方式**：静默安装（无人参与）首次安装时 `delta` 与 `delta-dev` 都创建桌面与开始菜单快捷方式；覆盖安装或更新时正式版不新建，开发版每次重新创建桌面快捷方式（提示有新版本）、不新建开始菜单快捷方式；有人参与的安装在向导的“附加任务”页两项都可选，覆盖安装时默认勾选当前已有的 | `crates/delta-cli/installer/delta.iss`（`[Tasks]` / `[Icons]` 的 `WantStartMenuIcon`、`WantDesktopIcon`，首装由 HKCU 卸载键判断）；向导文字在 `delta-zh-CN.isl` / `delta-en.isl`；`installer.rs` 按身份传 `DesktopOnUpdate` | `M3-A-03` 首装后桌面快捷方式存在、`M3-A-04` 正式版覆盖安装不重建已删除的两个快捷方式、`M3-A-06` 开发版覆盖安装重建桌面且不建开始菜单、卸载后桌面快捷方式消失；模板指令由 `verify_m3` 核对 |
-| **源码指纹覆盖 `.isl`**：向导文字文件此前不在指纹里，改了它不会让门禁结果过期 | `crates/delta-cli/src/verify.rs` 指纹扩展名加 `isl` | 新指纹下四阶段全部重跑（下表） |
-| **应用图标**：正式版与开发版都改为深灰底 `#3C4043` 白色 “D”（字母高度 250–780、笔画 110，按 1024 单位，替换原来的青绿三角标志），开发版另加右下角琥珀色 “DEV” 角标、一眼区分（2026-11-14 再次调整） | `crates/delta-desktop/assets/icon-dev.svg` / `icon-dev.ico`（`scripts/generate_icon.py` 确定性生成，`icon.svg` / `icon.ico` 同步重画；先渲染 1024 像素再按面积平均缩成 16/24/32/48/64/128/256 各尺寸，小尺寸的笔画与角标粗细与大图一致，2026-11-14 用户指出角标粗细不一后改）；两个 `build.rs` 对 `delta-dev`、`delta-dev-test` 嵌入它，`installer.rs` 的 `identity_icon` 让安装程序与卸载项用同一图标 | 新增测试 `development_identities_carry_the_dev_icon_everywhere`；`M3` 的开发版测试身份安装包用新图标构建、安装与升级通过 |
-| **开发版安装时机**：每次需要用户人工检查时由 Agent 自动执行 `package-build` + `install-dev`（B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查），用户不用自己装；只为自动验证的打包与门禁不装（2026-11-14 用户纠正） | [协作流程](../dev-rules/development-workflow.md#dev-install-at-handoff)；`H-05` 第 ① 步改为先确认本机已是交付版本 | 请用户人工检查前执行（2026-11-14，图标统一缩放方法后）：`package-build` 生成 `dist/delta-dev-setup-0.1.2-dev.20261113184806-x64.exe`（`source_fingerprint` 与下表相同），`install-dev` 把本机 `delta-dev` 从 `0.1.2-dev.20261113180802` 静默更新到 `0.1.2-dev.20261113184806`（安装程序退出码 0，桌面快捷方式按开发版规则重建） |
-
-**最终指纹 `02d0f1bdb3084b9e5d43d5f5e7ae1e05eab94a88049fc23ee9b28c13c69c727e` 下的复跑（2026-11-14，图标改为先渲染 1024 像素再按面积平均缩小之后；Windows 11 本机，低优先级静默）**：
-
-| 检查 | 结果 |
-| --- | --- |
-| `python scripts/check_docs.py`、`git diff --check`、`cargo fmt --all --check` | passed |
-| `cargo test --workspace --locked` | passed：140 passed、0 failed、2 ignored |
-| `verify-stage --stage M1 --plan-version 2.6` | passed：22 passed、5 not-run；日志 `.local/reports/m1/logs-14288-1794593869943/` |
-| `verify-stage --stage M2 --plan-version 1.0 --ui-smoke --ui-bench` | passed：26 passed、5 not-run；图表 p50/p95/p99 = 7.1/8.2/9.9 ms，表格 = 3.2/4.8/6.6 ms；日志 `.local/reports/m2/logs-18560-1794593943561/` |
-| `verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke` | passed：16 passed、3 not-run；日志 `.local/reports/m3/logs-16484-1794594940697/`。同一指纹的前一次运行 failed：运行期间开发者本机真实的开始菜单 `DELTA Dev.lnk` 被外部删除（门禁只动 `DELTA Dev Test` 测试身份），`M3-A-10` 按规则判失败；未改代码，原样重跑通过 |
-| `verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` | passed：24 passed、2 not-run（`M4-M-01`、`M4-L-01`），3 个 Spike passed；“下一根” p50/p95/p99 = 31.8/41.7/43.8 ms（max 48.0 ms），0 可见窗口、焦点未变；日志 `.local/reports/m4/logs-17916-1794595639733/` |
-
-指纹只覆盖源码与夹具，本节文档修改不改变指纹，上述报告仍然有效。
-
-## 接续
-
-A 技术审核已收敛，工程阻断为零。用户已于 2026-11-14 授权 `ACT-13`（[USER-ACTIONS](../../USER-ACTIONS.md)）：推送 `codex/m4-kline-training`、创建到 `main` 的 PR，检查通过后 squash 合并并清理分支。H-05 实机体验、可选 ACT-01 真实模型与是否发布 v0.1.2 独立推进，不是该授权的前提。
+[数据模型](../design/data-model.md)（schema 6 三张表与新列、多级别 bar 行 ID、`idx_bar_training_port`）、[金融规则](../design/financial-engine.md)（§7.1 `m5-sim-2`、练习账户、`m5-account-report-1`）、[交互工作流](../design/interaction-and-workflows.md)（§6.1 训练工作台）、[设计规则](../design-rules/DESIGN.md)（训练图表覆盖物）、[系统架构](../design/system-architecture.md)（§9）、[统一接口](../design/integration-contracts.md)、[AI 设计](../design/ai-design.md)、[仓库地图](../dev-rules/repo-map.md)、[质量门禁](../dev-rules/quality-gates.md)、[追踪](traceability.json)（FR-TRN-07～09 → implemented）、[集中台账](../decisions/open-questions.md)、[USER-ACTIONS](../../USER-ACTIONS.md)（H-06 步骤）、[夹具来源](../../tests/fixtures/PROVENANCE.md)。

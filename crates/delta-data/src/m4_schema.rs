@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use delta_core::{
-    parse_decimal_lossless, to_canonical_text, AdjustmentKind, BarRecord, CalendarSessionKind,
-    CorporateActionRecord, CorporateActionType, InstrumentKind,
+    parse_decimal_lossless, quality_kind_impact, to_canonical_text, AdjustmentKind, BarRecord,
+    CalendarSessionKind, CorporateActionRecord, CorporateActionType, InstrumentKind, QualityImpact,
+    Timeframe,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::Decimal;
@@ -245,7 +246,33 @@ pub fn apply_schema_5_ddl(tx: &Connection, from_schema: i64) -> Result<(), Stora
         BEGIN
             SELECT RAISE(ABORT, 'fee_profile_version cannot be deleted once built-in or referenced by simulation_run');
         END;
+        "#,
+    )?;
 
+    recreate_schema_5_session_guard(tx)?;
+    seed_builtin_fee_profiles(tx)?;
+
+    if from_schema < 5 && FAIL_NEXT_SCHEMA_5_MIGRATION.with(|flag| flag.replace(false)) {
+        return Err(StorageError::MigrationFailed(
+            "injected mid-migration fault before schema 5 commit".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+/// The M4 session guard; schema 6 replaces it with a version that also covers `abandoned`.
+pub(crate) fn recreate_schema_5_session_guard(tx: &Connection) -> Result<(), StorageError> {
+    let has_v6: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('training_session') WHERE name = 'timeframe')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_v6 {
+        return Ok(());
+    }
+    tx.execute_batch(
+        r#"
         CREATE TRIGGER IF NOT EXISTS trg_training_session_monotonic_guard
         BEFORE UPDATE ON training_session
         BEGIN
@@ -266,15 +293,6 @@ pub fn apply_schema_5_ddl(tx: &Connection, from_schema: i64) -> Result<(), Stora
         END;
         "#,
     )?;
-
-    seed_builtin_fee_profiles(tx)?;
-
-    if from_schema < 5 && FAIL_NEXT_SCHEMA_5_MIGRATION.with(|flag| flag.replace(false)) {
-        return Err(StorageError::MigrationFailed(
-            "injected mid-migration fault before schema 5 commit".into(),
-        ));
-    }
-
     Ok(())
 }
 
@@ -532,11 +550,19 @@ pub enum SimRunStatus {
     Paused,
     Finished,
     Damaged,
+    /// Schema 6 (`S-52`): ended by "give up" / "restart"; settled like `Finished`, not resumable.
+    Abandoned,
 }
 
 impl SimRunStatus {
+    /// Ended runs (finished or abandoned): reports, reveal and AI review are available.
+    pub fn is_ended(&self) -> bool {
+        matches!(self, Self::Finished | Self::Abandoned)
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Abandoned => "abandoned",
             Self::Preparing => "preparing",
             Self::Active => "active",
             Self::Paused => "paused",
@@ -552,6 +578,7 @@ impl SimRunStatus {
             "paused" => Ok(Self::Paused),
             "finished" => Ok(Self::Finished),
             "damaged" => Ok(Self::Damaged),
+            "abandoned" => Ok(Self::Abandoned),
             other => Err(StorageError::IntegrityFailed(format!(
                 "unknown simulation_run status '{other}'"
             ))),
@@ -607,6 +634,19 @@ pub struct TrainingSessionRecord {
     pub current_step_index: i64,
     pub total_steps: i64,
     pub revealed: bool,
+    /// Schema 6 (`S-56`): frozen bar timeframe; `1d` for M4 rows.
+    #[serde(default = "default_session_timeframe")]
+    pub timeframe: String,
+    /// Practice account funding this run (`S-52`); `None` = independent M4 capital.
+    #[serde(default)]
+    pub practice_account_id: Option<String>,
+    /// Frozen fill-rule version (`S-51` ①); `None` for M4 runs.
+    #[serde(default)]
+    pub fill_rule_version: Option<String>,
+}
+
+fn default_session_timeframe() -> String {
+    "1d".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -789,6 +829,26 @@ pub struct CandidatePoolQuery {
     pub history_len: usize,
     pub train_len: usize,
     pub reveal_len: usize,
+    /// `"1d"` (all markets), `"4h"` / `"1h"` (crypto only, `S-50`). Absent in M4 metadata.
+    #[serde(default = "default_pool_timeframe")]
+    pub timeframe: String,
+    #[serde(default)]
+    pub quality_filter: CandidateQualityFilter,
+}
+
+fn default_pool_timeframe() -> String {
+    "1d".to_string()
+}
+
+/// Which data-quality kinds exclude bars from a candidate pool (`S-49` ③).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateQualityFilter {
+    /// M4 rule kept for redrawing `m4-sim-1` runs: every recorded kind excludes its date.
+    #[default]
+    AllKinds,
+    /// M5 rule: only kinds whose impact is `affects_price` exclude their date.
+    PriceAffectingOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -892,6 +952,15 @@ pub struct DeleteTrainingRunPreview {
     pub archived_journal_note_count: usize,
     pub checkpoint_count: usize,
     pub event_count: usize,
+    /// Schema 6: drawings owned by the run (deleted with it).
+    #[serde(default)]
+    pub drawing_count: usize,
+    /// Schema 6: practice-account entries of the run (kept; a reversal entry is appended).
+    #[serde(default)]
+    pub practice_entry_count: usize,
+    /// Schema 6: amount of the reversal entry appended on delete (`None` = no practice funding).
+    #[serde(default)]
+    pub practice_reversal: Option<Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -904,6 +973,13 @@ pub struct SimulationExportBundle {
     pub simulation_events: Vec<SimulationEventRecord>,
     pub sim_checkpoints: Vec<SimCheckpointRecord>,
     pub training_notes: Vec<TrainingNoteRecord>,
+    /// Schema 6 (`S-56`): practice accounts, their append-only entries and run drawings.
+    #[serde(default)]
+    pub practice_accounts: Vec<crate::m5_schema::PracticeAccountRecord>,
+    #[serde(default)]
+    pub practice_account_entries: Vec<crate::m5_schema::PracticeAccountEntryRecord>,
+    #[serde(default)]
+    pub training_drawings: Vec<crate::m5_schema::TrainingDrawingRecord>,
 }
 
 // ============================================================================
@@ -1154,6 +1230,9 @@ fn map_training_session_row(r: &rusqlite::Row<'_>) -> Result<TrainingSessionReco
         current_step_index: r.get(14)?,
         total_steps: r.get(15)?,
         revealed: revealed_i != 0,
+        timeframe: r.get(17)?,
+        practice_account_id: r.get(18)?,
+        fill_rule_version: r.get(19)?,
     })
 }
 
@@ -1315,12 +1394,22 @@ fn source_priority(source: &str) -> u8 {
     }
 }
 
-fn dedupe_bars_by_session_date(bars: Vec<BarRecord>) -> Vec<BarRecord> {
-    let mut by_date: BTreeMap<NaiveDate, BarRecord> = BTreeMap::new();
+/// Deduplicate multi-source bars deterministically by `source_priority`. Daily bars key on
+/// `session_date` (unchanged since M4); intraday bars key on their UTC `open_at` (`S-50`).
+pub fn dedupe_bars_by_session_date(bars: Vec<BarRecord>) -> Vec<BarRecord> {
+    let mut by_date: BTreeMap<(NaiveDate, i64), BarRecord> = BTreeMap::new();
     for bar in bars {
-        match by_date.get(&bar.session_date) {
+        let key = (
+            bar.session_date,
+            if bar.timeframe == "1d" {
+                0
+            } else {
+                bar.open_at.timestamp()
+            },
+        );
+        match by_date.get(&key) {
             None => {
-                by_date.insert(bar.session_date, bar);
+                by_date.insert(key, bar);
             }
             Some(existing) => {
                 let new_prio = (
@@ -1334,7 +1423,7 @@ fn dedupe_bars_by_session_date(bars: Vec<BarRecord>) -> Vec<BarRecord> {
                     existing.id.as_str(),
                 );
                 if new_prio < cur_prio {
-                    by_date.insert(bar.session_date, bar);
+                    by_date.insert(key, bar);
                 }
             }
         }
@@ -1385,6 +1474,7 @@ impl SqliteStore {
     /// populate real ledger events, notes, and AI sessions first and then exercise
     /// the real 4 -> 5 migration path!
     pub fn downgrade_to_schema_4_for_test(&mut self) -> Result<(), StorageError> {
+        self.downgrade_to_schema_5_for_test()?;
         let tx = self.conn_mut().savepoint()?;
         tx.execute_batch(
             r#"
@@ -1775,7 +1865,7 @@ impl SqliteStore {
                 "simulation_run latest_state_hash must be non-empty".into(),
             ));
         }
-        if session.revealed && run.status != SimRunStatus::Finished {
+        if session.revealed && !run.status.is_ended() {
             return Err(StorageError::IntegrityFailed(
                 "training_session cannot start revealed before run is finished".into(),
             ));
@@ -1817,8 +1907,9 @@ impl SqliteStore {
                 run_id, hidden_mode, market_category, display_symbol, real_instrument_id,
                 candidate_pool_hash, redraw_count, redraw_history_json,
                 warmup_start_at, history_start_at, train_start_at, train_end_at, reveal_end_at,
-                visible_until, current_step_index, total_steps, revealed
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                visible_until, current_step_index, total_steps, revealed,
+                timeframe, practice_account_id, fill_rule_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 session.run_id,
                 if session.hidden_mode { 1 } else { 0 },
@@ -1837,6 +1928,9 @@ impl SqliteStore {
                 session.current_step_index,
                 session.total_steps,
                 if session.revealed { 1 } else { 0 },
+                session.timeframe,
+                session.practice_account_id,
+                session.fill_rule_version,
             ],
         )?;
 
@@ -1916,7 +2010,8 @@ impl SqliteStore {
                 "SELECT run_id, hidden_mode, market_category, display_symbol, real_instrument_id,
                         candidate_pool_hash, redraw_count, redraw_history_json,
                         warmup_start_at, history_start_at, train_start_at, train_end_at, reveal_end_at,
-                        visible_until, current_step_index, total_steps, revealed
+                        visible_until, current_step_index, total_steps, revealed,
+                        timeframe, practice_account_id, fill_rule_version
                  FROM training_session
                  WHERE run_id = ?1",
                 params![run_id],
@@ -2140,6 +2235,9 @@ impl SqliteStore {
             current_step_index: 0,
             total_steps: orig_session.total_steps,
             revealed: false,
+            timeframe: orig_session.timeframe,
+            practice_account_id: None,
+            fill_rule_version: orig_session.fill_rule_version,
         };
 
         self.create_training_run(&new_run, &new_session, initial_checkpoint)
@@ -2210,6 +2308,10 @@ impl SqliteStore {
                    OR strftime('%Y-%m-%dT%H:%M:%fZ', open_at) >= strftime('%Y-%m-%dT%H:%M:%fZ', ?5)
                )
                AND strftime('%Y-%m-%dT%H:%M:%fZ', close_at) <= strftime('%Y-%m-%dT%H:%M:%fZ', ?6)
+               -- Index-friendly superset bounds (date-padded, valid for any offset format);
+               -- the exact strftime predicates above decide membership.
+               AND (?5 IS NULL OR open_at >= date(?5, '-2 days'))
+               AND open_at <= date(?6, '+3 days')
              ORDER BY open_at ASC, id ASC",
         )?;
 
@@ -2253,7 +2355,7 @@ impl SqliteStore {
         };
         self.query_training_visible_final_bars(&TrainingBarPortQuery {
             instrument_id: session.real_instrument_id,
-            timeframe: "1d".to_string(),
+            timeframe: session.timeframe.clone(),
             source: None,
             dataset_version: run.dataset_version,
             warmup_start_at: lower,
@@ -2261,6 +2363,73 @@ impl SqliteStore {
             visible_until: session.visible_until,
             previous_visible_until: None,
         })
+    }
+
+    /// Intraday (`S-50`) next step bar: the earliest finalized bar of the run's timeframe whose
+    /// close lies in `(visible_until, train_end_at]`. Only metadata is scanned; full rows are
+    /// materialized for that single `open_at` (same sentinel invariant as the daily path).
+    fn query_next_intraday_training_step_bar(
+        &self,
+        session: &TrainingSessionRecord,
+        dataset_version: i64,
+        vis_str: &str,
+        train_start_str: &str,
+        train_end_str: &str,
+    ) -> Result<Option<BarRecord>, StorageError> {
+        let next_open: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT open_at FROM bar
+             WHERE instrument_id = ?1 AND timeframe = ?2 AND adjustment = 'raw' AND is_final = 1
+               AND valid_from_version <= ?3 AND (valid_to_version IS NULL OR ?3 < valid_to_version)
+               AND strftime('%Y-%m-%dT%H:%M:%fZ', open_at) >= strftime('%Y-%m-%dT%H:%M:%fZ', ?4)
+               AND strftime('%Y-%m-%dT%H:%M:%fZ', close_at) > strftime('%Y-%m-%dT%H:%M:%fZ', ?5)
+               AND strftime('%Y-%m-%dT%H:%M:%fZ', close_at) <= strftime('%Y-%m-%dT%H:%M:%fZ', ?6)
+               -- Index-friendly superset bounds (see `query_training_visible_final_bars`):
+               -- open_at <= close_at, and the next bar opens at most one period (<= 1 day) before
+               -- `visible_until`.
+               AND open_at >= date(?4, '-2 days')
+               AND open_at >= date(?5, '-2 days')
+               AND open_at <= date(?6, '+3 days')
+             ORDER BY strftime('%Y-%m-%dT%H:%M:%fZ', open_at) ASC LIMIT 1",
+                params![
+                    session.real_instrument_id,
+                    session.timeframe,
+                    dataset_version,
+                    train_start_str,
+                    vis_str,
+                    train_end_str
+                ],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(open_at) = next_open else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn().prepare_cached(
+            "SELECT id, instrument_id, timeframe, session, session_date, open_at, close_at,
+                    open, high, low, close, volume, source, adjustment, is_final,
+                    valid_from_version, valid_to_version, raw_payload_hash
+             FROM bar
+             WHERE instrument_id = ?1 AND timeframe = ?2 AND adjustment = 'raw' AND is_final = 1
+               AND valid_from_version <= ?3 AND (valid_to_version IS NULL OR ?3 < valid_to_version)
+               AND open_at = ?4
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                session.real_instrument_id,
+                session.timeframe,
+                dataset_version,
+                open_at
+            ],
+            |r| Ok(map_bar_row(r)),
+        )?;
+        let mut raw = Vec::new();
+        for row in rows {
+            raw.push(row??);
+        }
+        Ok(dedupe_bars_by_session_date(raw).pop())
     }
 
     /// Resolve the immediate next deduplicated finalized `1d` raw bar strictly inside
@@ -2287,6 +2456,16 @@ impl SqliteStore {
         let vis_str = session.visible_until.to_rfc3339();
         let train_start_str = session.train_start_at.to_rfc3339();
         let train_end_str = session.train_end_at.to_rfc3339();
+
+        if session.timeframe != "1d" {
+            return self.query_next_intraday_training_step_bar(
+                &session,
+                run.dataset_version,
+                &vis_str,
+                &train_start_str,
+                &train_end_str,
+            );
+        }
 
         let mut cur_date_opt: Option<String> = self.conn().query_row(
             "SELECT MAX(session_date)
@@ -2522,6 +2701,18 @@ impl SqliteStore {
                 query.market_category
             )));
         }
+        let timeframe = Timeframe::parse(&query.timeframe).ok_or_else(|| {
+            StorageError::IntegrityFailed(format!(
+                "unsupported timeframe '{}' (expected '1d', '4h' or '1h')",
+                query.timeframe
+            ))
+        })?;
+        if timeframe.is_intraday() && norm_cat == "us_equity" {
+            return Err(StorageError::IntegrityFailed(format!(
+                "US equity/ETF training supports only 1d bars, not {timeframe}"
+            )));
+        }
+        let price_only = query.quality_filter == CandidateQualityFilter::PriceAffectingOnly;
 
         let registry = self.load_instrument_registry()?;
         let mut instruments: Vec<_> = registry.instruments.values().cloned().collect();
@@ -2542,6 +2733,9 @@ impl SqliteStore {
             if norm_cat != "all" && inst_cat != norm_cat {
                 continue;
             }
+            if timeframe.is_intraday() && inst_cat != "crypto_spot" {
+                continue;
+            }
 
             // Load finalized raw bars at frozen dataset_version.
             let mut bar_stmt = self.conn().prepare_cached(
@@ -2550,16 +2744,17 @@ impl SqliteStore {
                         valid_from_version, valid_to_version, raw_payload_hash
                  FROM bar
                  WHERE instrument_id = ?1
-                   AND timeframe = '1d'
+                   AND timeframe = ?3
                    AND adjustment = 'raw'
                    AND is_final = 1
                    AND valid_from_version <= ?2
                    AND (valid_to_version IS NULL OR ?2 < valid_to_version)
                  ORDER BY session_date ASC, open_at ASC, id ASC",
             )?;
-            let bar_rows = bar_stmt.query_map(params![inst.id, query.dataset_version], |r| {
-                Ok(map_bar_row(r))
-            })?;
+            let bar_rows = bar_stmt.query_map(
+                params![inst.id, query.dataset_version, timeframe.as_str()],
+                |r| Ok(map_bar_row(r)),
+            )?;
             let mut raw_bars = Vec::new();
             let mut corrupt_bar_found = false;
             for r in bar_rows {
@@ -2624,6 +2819,9 @@ impl SqliteStore {
             })? {
                 let (ver, d_str, kind) = row?;
                 let kind_lc = kind.to_ascii_lowercase();
+                if price_only && quality_kind_impact(&kind_lc) != QualityImpact::AffectsPrice {
+                    continue;
+                }
                 // Ignore historical `data_revision` audit notices from strictly older versions;
                 // exclude all warnings, partial, missing_corporate_action, price_mismatch, etc.
                 if kind_lc == "data_revision" && ver < query.dataset_version {
@@ -2751,6 +2949,12 @@ impl SqliteStore {
             // quality issues, or incomplete CAs strictly between `bars[i]` and `bars[i + 1]`.
             let mut adjacent_clean = vec![false; bars.len().saturating_sub(1)];
             for i in 0..adjacent_clean.len() {
+                if timeframe.is_intraday() {
+                    // Intraday crypto trades 24/7: the next bar must open exactly at this close.
+                    adjacent_clean[i] = bars[i + 1].open_at == bars[i].close_at
+                        && bars[i].close_at == bars[i].open_at + timeframe.duration();
+                    continue;
+                }
                 let d_prev = bars[i].session_date;
                 let d_next = bars[i + 1].session_date;
                 if d_next <= d_prev {
@@ -2783,22 +2987,45 @@ impl SqliteStore {
                 adjacent_clean[i] = ok;
             }
 
+            // Every per-window check below depends only on single bars or adjacent pairs, so it
+            // is computed once and windows are tested with prefix counts (`M5-K01`: a full-history
+            // 1h pool has ~80k windows of 630 bars; re-scanning each window took minutes). The
+            // accepted windows are exactly the same as a per-window scan.
+            let prefix = |flags: &mut dyn Iterator<Item = bool>| -> Vec<usize> {
+                let mut out = vec![0usize];
+                let mut acc = 0usize;
+                for bad in flags {
+                    acc += usize::from(bad);
+                    out.push(acc);
+                }
+                out
+            };
+            let invalid_bars = prefix(&mut bar_valid.iter().map(|ok| !ok));
+            let unclean_pairs = prefix(&mut adjacent_clean.iter().map(|ok| !ok));
+            let jump_pairs = prefix(
+                &mut bars
+                    .windows(2)
+                    .map(|pair| has_unexplained_split_jump(pair, &split_date_set)),
+            );
             let max_start = bars.len() - required_len;
             for start_idx in 0..=max_start {
                 let end_idx = start_idx + required_len - 1;
-                if !(start_idx..=end_idx).all(|idx| bar_valid[idx]) {
+                if invalid_bars[end_idx + 1] != invalid_bars[start_idx] {
                     continue;
                 }
-                if !(start_idx..end_idx).all(|idx| adjacent_clean[idx]) {
+                if unclean_pairs[end_idx] != unclean_pairs[start_idx] {
                     continue;
                 }
 
                 let seg_start_date = bars[start_idx].session_date;
                 let seg_end_date = bars[end_idx].session_date;
 
-                if stored_gaps
-                    .iter()
-                    .any(|(gs, ge)| *gs <= seg_end_date && *ge >= seg_start_date)
+                // Stored gaps are daily-session gaps; intraday windows rely on the exact
+                // open/close continuity check above.
+                if !timeframe.is_intraday()
+                    && stored_gaps
+                        .iter()
+                        .any(|(gs, ge)| *gs <= seg_end_date && *ge >= seg_start_date)
                 {
                     continue;
                 }
@@ -2826,9 +3053,10 @@ impl SqliteStore {
                         break;
                     }
                     let prev_date = bars[prev_idx].session_date;
-                    if stored_gaps
-                        .iter()
-                        .any(|(gs, ge)| *gs <= prev_date && *ge >= prev_date)
+                    if !timeframe.is_intraday()
+                        && stored_gaps
+                            .iter()
+                            .any(|(gs, ge)| *gs <= prev_date && *ge >= prev_date)
                     {
                         break;
                     }
@@ -2837,7 +3065,8 @@ impl SqliteStore {
                 }
 
                 // Check for unexplained split-like jumps across `[warmup_idx..=end_idx]`.
-                if has_unexplained_split_jump(&bars[warmup_idx..=end_idx], &split_date_set) {
+                // Pairs `warmup_idx..end_idx` cover `bars[warmup_idx..=end_idx]`.
+                if jump_pairs[end_idx] != jump_pairs[warmup_idx] {
                     continue;
                 }
 
@@ -2892,6 +3121,13 @@ impl SqliteStore {
             )
             .as_bytes(),
         );
+        // M5 pools (non-daily timeframe or price-only quality rule) carry an extra header line;
+        // M4 pools hash byte-for-byte as before so stored `candidate_pool_hash` values still match.
+        if timeframe.is_intraday() || price_only {
+            hasher.update(
+                format!("m5-pool|tf={timeframe}|quality=price_only={price_only}\n").as_bytes(),
+            );
+        }
         for c in &candidates {
             hasher.update(
                 format!(
@@ -2929,9 +3165,9 @@ impl SqliteStore {
         run_id: &str,
     ) -> Result<PostFinishRevealData, StorageError> {
         let run = self.get_simulation_run(run_id)?;
-        if run.status != SimRunStatus::Finished {
+        if !run.status.is_ended() {
             return Err(StorageError::IntegrityFailed(format!(
-                "post-finish reveal refused: simulation_run '{run_id}' status is '{}' (must be 'finished')",
+                "post-finish reveal refused: simulation_run '{run_id}' status is '{}' (must be finished or abandoned)",
                 run.status.as_str()
             )));
         }
@@ -3016,7 +3252,7 @@ impl SqliteStore {
         run_id: &str,
     ) -> Result<TrainingSessionRecord, StorageError> {
         let run = self.get_simulation_run(run_id)?;
-        if run.status != SimRunStatus::Finished {
+        if !run.status.is_ended() {
             return Err(StorageError::IntegrityFailed(format!(
                 "cannot mark training_session '{run_id}' revealed while status is '{}'",
                 run.status.as_str()
@@ -3071,7 +3307,10 @@ impl SqliteStore {
                 StorageError::IntegrityFailed(format!("simulation_run '{}' not found", step.run_id))
             })?;
         let cur_status = SimRunStatus::parse(&cur_status_str)?;
-        if matches!(cur_status, SimRunStatus::Finished | SimRunStatus::Damaged) {
+        if matches!(
+            cur_status,
+            SimRunStatus::Finished | SimRunStatus::Damaged | SimRunStatus::Abandoned
+        ) {
             return Err(StorageError::IntegrityFailed(format!(
                 "cannot commit step to simulation_run '{}' in terminal status '{}'",
                 step.run_id,
@@ -3213,7 +3452,7 @@ impl SqliteStore {
             upsert_training_note_on_conn(&tx, note)?;
         }
 
-        let finished_at_opt = if step.new_status == SimRunStatus::Finished {
+        let finished_at_opt = if step.new_status.is_ended() {
             Some(committed_str.clone())
         } else {
             None
@@ -3551,7 +3790,7 @@ impl SqliteStore {
         journal_note_id: &str,
     ) -> Result<TrainingNoteRecord, StorageError> {
         let run = self.get_simulation_run(run_id)?;
-        if run.status != SimRunStatus::Finished {
+        if !run.status.is_ended() {
             return Err(StorageError::IntegrityFailed(
                 "training notes can only be archived after simulation_run is finished".into(),
             ));
@@ -3580,7 +3819,7 @@ impl SqliteStore {
         title: &str,
     ) -> Result<NoteDto, StorageError> {
         let run = self.get_simulation_run(run_id)?;
-        if run.status != SimRunStatus::Finished {
+        if !run.status.is_ended() {
             return Err(StorageError::IntegrityFailed(
                 "training notes can only be archived after simulation_run is finished".into(),
             ));
@@ -3650,7 +3889,8 @@ impl SqliteStore {
                 "SELECT run_id, hidden_mode, market_category, display_symbol, real_instrument_id,
                         candidate_pool_hash, redraw_count, redraw_history_json,
                         warmup_start_at, history_start_at, train_start_at, train_end_at, reveal_end_at,
-                        visible_until, current_step_index, total_steps, revealed
+                        visible_until, current_step_index, total_steps, revealed,
+                        timeframe, practice_account_id, fill_rule_version
                  FROM training_session WHERE run_id = ?1",
                 params![run_id],
                 |r| Ok(map_training_session_row(r)),
@@ -3832,6 +4072,11 @@ impl SqliteStore {
     ) -> Result<DeleteTrainingRunPreview, StorageError> {
         let tx = self.conn_mut().savepoint()?;
         let preview = preview_delete_on_conn(&tx, run_id)?;
+        crate::m5_schema::append_delete_reversal_in(&tx, run_id, chrono::Utc::now())?;
+        tx.execute(
+            "DELETE FROM training_drawing WHERE run_id = ?1",
+            params![run_id],
+        )?;
         tx.execute(
             "DELETE FROM training_note WHERE run_id = ?1",
             params![run_id],
@@ -3872,6 +4117,7 @@ impl SqliteStore {
         let mut simulation_events = Vec::new();
         let mut sim_checkpoints = Vec::new();
         let mut training_notes = Vec::new();
+        let mut training_drawings = Vec::new();
 
         for run in &simulation_runs {
             if let Ok(sess) = self.get_training_session(&run.run_id) {
@@ -3882,6 +4128,12 @@ impl SqliteStore {
             simulation_events.extend(self.list_simulation_events(&run.run_id, None)?);
             sim_checkpoints.extend(self.list_sim_checkpoints(&run.run_id)?);
             training_notes.extend(self.list_training_notes(&run.run_id)?);
+            training_drawings.extend(self.list_training_drawings(&run.run_id, true)?);
+        }
+        let practice_accounts = self.list_practice_accounts()?;
+        let mut practice_account_entries = Vec::new();
+        for acc in &practice_accounts {
+            practice_account_entries.extend(self.list_practice_entries(&acc.id)?);
         }
 
         Ok(SimulationExportBundle {
@@ -3893,6 +4145,9 @@ impl SqliteStore {
             simulation_events,
             sim_checkpoints,
             training_notes,
+            practice_accounts,
+            practice_account_entries,
+            training_drawings,
         })
     }
 }
@@ -4013,6 +4268,9 @@ fn preview_delete_on_conn(
         archived_journal_note_count: usize::try_from(archived_cnt).unwrap_or(0),
         checkpoint_count: count_for("sim_checkpoint")?,
         event_count: count_for("simulation_event")?,
+        drawing_count: count_for("training_drawing")?,
+        practice_entry_count: count_for("practice_account_entry")?,
+        practice_reversal: crate::m5_schema::practice_reversal_for_run(conn, run_id)?,
     })
 }
 
@@ -4376,6 +4634,9 @@ mod tests {
             current_step_index: 0,
             total_steps: 4,
             revealed: false,
+            timeframe: "1d".to_string(),
+            practice_account_id: None,
+            fill_rule_version: None,
         };
         store.create_training_run(&run, &session, None).unwrap();
 
@@ -4652,6 +4913,8 @@ mod tests {
             history_len: 3,
             train_len: 4,
             reveal_len: 2,
+            timeframe: "1d".to_string(),
+            quality_filter: Default::default(),
         };
         let pool_1 = store.query_training_candidate_pool(&query_all).unwrap();
         let pool_2 = store.query_training_candidate_pool(&query_all).unwrap();
@@ -4730,6 +4993,9 @@ mod tests {
                     current_step_index: 0,
                     total_steps: seg0.train_len as i64,
                     revealed: false,
+                    timeframe: "1d".to_string(),
+                    practice_account_id: None,
+                    fill_rule_version: None,
                 },
                 None,
             )
@@ -4912,6 +5178,9 @@ mod tests {
                     current_step_index: 0,
                     total_steps: 2,
                     revealed: false,
+                    timeframe: "1d".to_string(),
+                    practice_account_id: None,
+                    fill_rule_version: None,
                 },
             )
         };
@@ -5037,6 +5306,9 @@ mod tests {
                     current_step_index: 0,
                     total_steps: 25,
                     revealed: false,
+                    timeframe: "1d".to_string(),
+                    practice_account_id: None,
+                    fill_rule_version: None,
                 },
                 Some(&init_cp),
             )
@@ -5442,10 +5714,10 @@ mod tests {
 
         // 3. Upgrade cleanly to Schema 5 and verify preservation of real ledger, M2 notes, and AI sessions.
         let mut store = SqliteStore::open_or_init(&lib_dir, "USD", "USD", "UTC")
-            .expect("upgrade Schema 4 -> Schema 5");
+            .expect("upgrade Schema 4 -> current schema");
         assert_eq!(
             SqliteStore::verify_schema_version_on_disk(&lib_dir).unwrap(),
-            5
+            CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             SqliteStore::list_schema_5_tables_on_disk(&lib_dir)
@@ -5467,12 +5739,15 @@ mod tests {
         {
             let mut s6 = SqliteStore::open_or_init(&future_v6_dir, "USD", "USD", "UTC").unwrap();
             s6.conn_mut()
-                .execute("UPDATE library SET schema_version = 6", [])
+                .execute(
+                    "UPDATE library SET schema_version = ?1",
+                    [CURRENT_SCHEMA_VERSION + 1],
+                )
                 .unwrap();
         }
         let v6_err = SqliteStore::open_or_init(&future_v6_dir, "USD", "USD", "UTC")
             .err()
-            .expect("opening schema 6 must fail clearly");
+            .expect("opening a newer schema must fail clearly");
         assert!(v6_err
             .to_string()
             .contains("database schema is newer than this build"));
@@ -5539,6 +5814,9 @@ mod tests {
                         current_step_index: 0,
                         total_steps: 3,
                         revealed: false,
+                        timeframe: "1d".to_string(),
+                        practice_account_id: None,
+                        fill_rule_version: None,
                     },
                     Some(&cp0),
                 )
@@ -5716,5 +5994,99 @@ mod tests {
         );
         assert_eq!(store.get_note("NOTE-REAL-1").unwrap().title, "实盘复盘笔记");
         assert_eq!(store.query_ledger_revision().unwrap(), 7);
+    }
+
+    /// `M5-K01`: a full-history-sized 1h pool is built from per-bar / per-pair flags. A missing
+    /// hour and a split-like jump exclude exactly the windows that contain them, and the build
+    /// stays well inside the 2 s budget (debug builds get a looser bound).
+    #[test]
+    fn test_m5_k01_large_1h_pool_excludes_gap_and_jump_windows_quickly() {
+        let tmp = TestTempDir::new("m5_k01_pool");
+        let mut store = SqliteStore::open_or_init(tmp.path(), "USD", "USD", "UTC").unwrap();
+        let inst = store
+            .register_market_instrument("BINANCE", "BTC/USDT", false)
+            .unwrap();
+        let dsv = store
+            .create_dataset_version("binance", "public_open", "{}", "exact", "exact")
+            .unwrap()
+            .version_num;
+        const N: usize = 30_000;
+        const GAP_AFTER: usize = 10_000; // hour index 10_001 is missing
+        const JUMP_AT: usize = 20_000; // close halves between bars 19_999 and 20_000
+        let t0 = chrono::TimeZone::with_ymd_and_hms(&Utc, 2019, 1, 1, 0, 0, 0).unwrap();
+        let mut bars = Vec::with_capacity(N);
+        for h in 0..=N {
+            if h == GAP_AFTER + 1 {
+                continue;
+            }
+            let open_at = t0 + chrono::Duration::hours(h as i64);
+            let close = if h >= JUMP_AT {
+                Decimal::from(50)
+            } else {
+                Decimal::from(100)
+            };
+            bars.push(BarRecord {
+                id: format!(
+                    "BAR:{inst}:1h:raw:binance:{}:{dsv}",
+                    open_at.format("%Y-%m-%dT%H:%MZ")
+                ),
+                instrument_id: inst.clone(),
+                timeframe: "1h".into(),
+                session: "utc_24_7".into(),
+                session_date: open_at.date_naive(),
+                open_at,
+                close_at: open_at + chrono::Duration::hours(1),
+                open: close,
+                high: close + Decimal::ONE,
+                low: close - Decimal::ONE,
+                close,
+                volume: Decimal::from(10),
+                source: "binance".into(),
+                adjustment: AdjustmentKind::Raw,
+                is_final: true,
+                valid_from_version: dsv,
+                valid_to_version: None,
+                raw_payload_hash: None,
+            });
+        }
+        store.commit_bars_and_checkpoint(&bars, dsv, None).unwrap();
+        store.publish_dataset_version(dsv).unwrap();
+        let query = CandidatePoolQuery {
+            dataset_version: dsv,
+            market_category: "crypto_spot".into(),
+            instrument_id: Some(inst.clone()),
+            start_date: None,
+            end_date: None,
+            warmup_bars: 0,
+            history_len: 120,
+            train_len: 250,
+            reveal_len: 60,
+            timeframe: "1h".into(),
+            quality_filter: CandidateQualityFilter::PriceAffectingOnly,
+        };
+        let started = std::time::Instant::now();
+        let pool = store.query_training_candidate_pool(&query).unwrap();
+        let elapsed = started.elapsed();
+        // `bars` has N bars; the gap breaks pair (GAP_AFTER, GAP_AFTER + 1) and the jump breaks
+        // pair (JUMP_AT - 2, JUMP_AT - 1) in index space (one hour is missing before it).
+        let len = 430usize;
+        let total = bars.len() - len + 1;
+        let excluded_by_pair = |pair: usize| (pair + 1).saturating_sub(len - 1)..=pair;
+        let gap = excluded_by_pair(GAP_AFTER);
+        let jump = excluded_by_pair(JUMP_AT - 2);
+        assert!(gap.end() < jump.start());
+        let expected = total - gap.clone().count() - jump.clone().count();
+        assert_eq!(pool.candidates.len(), expected);
+        let gap_hour = t0 + chrono::Duration::hours(GAP_AFTER as i64 + 1);
+        let jump_hour = t0 + chrono::Duration::hours(JUMP_AT as i64);
+        assert!(pool.candidates.iter().all(|c| {
+            !(c.history_start_at <= gap_hour && c.reveal_end_at > gap_hour)
+                && !(c.history_start_at < jump_hour && c.reveal_end_at > jump_hour)
+        }));
+        let budget = if cfg!(debug_assertions) { 20.0 } else { 2.0 };
+        assert!(
+            elapsed.as_secs_f64() < budget,
+            "1h pool over {N} bars took {elapsed:?} (budget {budget} s)"
+        );
     }
 }

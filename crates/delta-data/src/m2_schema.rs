@@ -663,6 +663,9 @@ impl SqliteStore {
                 DROP TRIGGER IF EXISTS trg_fee_profile_version_immutable_update;
                 "#,
             )?;
+            for table in crate::m5_schema::SCHEMA_6_TABLES.iter().rev() {
+                tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
+            }
             for table in crate::m4_schema::SCHEMA_5_TABLES.iter().rev() {
                 tx.execute_batch(&format!("DROP TABLE IF EXISTS {table};"))?;
             }

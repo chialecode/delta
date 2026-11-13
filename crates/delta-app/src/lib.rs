@@ -4,28 +4,33 @@ pub mod host;
 pub mod identity;
 pub mod instance;
 pub mod kline;
+pub mod market_fixture;
 pub mod paths;
 pub mod process;
 pub mod service;
 pub mod training;
+pub mod training_m5;
 pub mod update;
 pub mod version;
 
 pub use ai::*;
 pub use credentials::*;
 pub use delta_core::{
-    parse_decimal_lossless, to_canonical_text, AdjustmentKind, AttachedBracket, BarPathStage,
-    BarRecord, BenchmarkStatus, BuyAndHoldBenchmark, ClosedTradeGroup, CorporateActionRecord,
+    parse_decimal_lossless, to_canonical_text, AccountBreakdown, AccountEquityPoint,
+    AccountGroupMetrics, AccountReport, AdjustmentKind, AttachedBracket, BarPathStage, BarRecord,
+    BenchmarkStatus, BuyAndHoldBenchmark, ClosedTradeGroup, CorporateActionRecord,
     CorporateActionType, CostLot, DataQualityIssue, EconomicEventType, EquityCurvePoint,
     ExpectancySummary, FeeChargingTier, FeeCurrencyMode, FeeMarketCategory, FeeProfileVersion,
-    FeeRoundingMode, HoldingProjection, IndicatorPoint, MacdPoint, ManualValuation,
+    FeeRoundingMode, FillRule, HoldingProjection, IndicatorPoint, MacdPoint, ManualValuation,
     OpenTradeGroupSummary, OrderCostPreview, OrderGroupRole, OrderRejection, OrderSide,
     OrderStatus, OrderSubmitKind, OrderSubmitRequest, PeriodBreakdownReport, PlanCompliance,
-    PlanExecutionStatus, PlanExecutionSummary, QualityStatus, RatioMetric, SampleLimitationItem,
-    SampleLimitations, SimBarSnapshot, SimCommand, SimError, SimEvent, SimFill, SimInstrumentSpec,
-    SimOrder, SimOrderType, SimRejectCode, SimState, SimStepBar, SlippageSpec, TimeInForce,
-    TrainingNoteRef, TrainingReport, TrainingReportInput, ValuationReport, WinRateStatus,
-    WinRateSummary, SIM_ENGINE_VERSION, SIM_REPORT_VERSION,
+    PlanExecutionStatus, PlanExecutionSummary, QualityImpact, QualityStatus, RatioMetric,
+    SampleLimitationItem, SampleLimitations, SimBarSnapshot, SimCommand, SimError, SimEvent,
+    SimFill, SimInstrumentSpec, SimOrder, SimOrderType, SimRejectCode, SimReplayer, SimState,
+    SimStepBar, SlippageSpec, TimeInForce, Timeframe, TrainingNoteRef, TrainingReport,
+    TrainingReportInput, ValuationReport, WinRateStatus, WinRateSummary, ACCOUNT_REPORT_MIN_GROUPS,
+    ACCOUNT_REPORT_VERSION, FILL_RULE_VERSION_M5, SIM_ENGINE_VERSION, SIM_ENGINE_VERSION_M5,
+    SIM_REPORT_VERSION,
 };
 pub use delta_data::{
     set_ai_compaction_fault_injection_for_test, set_migration_fault_injection_for_test,
@@ -56,6 +61,7 @@ pub use paths::*;
 pub use process::*;
 pub use service::*;
 pub use training::*;
+pub use training_m5::*;
 pub use version::*;
 
 #[cfg(test)]

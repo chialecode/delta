@@ -5,6 +5,7 @@ mod verify;
 mod verify_m2;
 mod verify_m3;
 mod verify_m4;
+mod verify_m5;
 use chrono::{NaiveDate, Utc};
 use delta_app::{
     apply_process_quiet_guards, resolve_app_paths, sanitize_terminal_output, AppService,
@@ -23,6 +24,7 @@ use verify::run_verify_stage_m1;
 use verify_m2::{install_per_user_channel, run_verify_stage_m2, uninstall_per_user_channel};
 use verify_m3::run_verify_stage_m3;
 use verify_m4::run_verify_stage_m4;
+use verify_m5::run_verify_stage_m5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PocResultRecord {
@@ -121,6 +123,7 @@ fn print_usage() {
          - verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]\n\
          - verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]\n\
          - verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]\n\
+         - verify-stage --stage M5 --plan-version 1.0 [--ui-smoke] [--ui-bench] [--live-data]\n\
          Test and migration diagnostics only: package-portable-build, package-install, package-uninstall"
     );
 }
@@ -628,11 +631,17 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, delta_app::ErrorEnvelope> {
                 run_verify_stage_m3(has_flag(args, "--installer"), has_flag(args, "--ui-smoke"))
             } else if stage.eq_ignore_ascii_case("M4") && plan_ver == "1.0" {
                 run_verify_stage_m4(has_flag(args, "--ui-smoke"), has_flag(args, "--ui-bench"))
+            } else if stage.eq_ignore_ascii_case("M5") && plan_ver == "1.0" {
+                run_verify_stage_m5(
+                    has_flag(args, "--ui-smoke"),
+                    has_flag(args, "--ui-bench"),
+                    has_flag(args, "--live-data"),
+                )
             } else {
                 Err(delta_app::ErrorEnvelope::new(
                     "invalid_verify_args",
                     format!(
-                        "expected '--stage M1 --plan-version 2.6', '--stage M2 --plan-version 1.0', '--stage M3 --plan-version 1.0' or '--stage M4 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
+                        "expected '--stage M1 --plan-version 2.6', '--stage M2 --plan-version 1.0', '--stage M3 --plan-version 1.0', '--stage M4 --plan-version 1.0' or '--stage M5 --plan-version 1.0', got stage='{stage}' plan_version='{plan_ver}'"
                     ),
                     false,
                 ))

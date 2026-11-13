@@ -74,9 +74,9 @@ ModelClient 负责类型化请求与协议事件，AgentRuntime 负责工具循�
 
 ## 6. 必需契约验证
 
-相同 scope/版本的 UI 查询与 AI 工具数值、质量和证据一致；未知工具、伪造范围、陈旧 generation 和失效引用均被拒绝。覆盖重复请求、并发更正、取消晚到响应、断开恢复、错误映射、金额跨语言无损和协议版本不匹配。首轮场景见路线中的 AC 与各阶段（M1–M5）验收用例。
+相同 scope/版本的 UI 查询与 AI 工具数值、质量和证据一致；未知工具、伪造范围、陈旧 generation 和失效引用均被拒绝。覆盖重复请求、并发更正、取消晚到响应、断开恢复、错误映射、金额跨语言无损和协议版本不匹配。首轮场景见路线中的 AC 与各阶段（M1–M7）验收用例。
 
-## 7. M1–M4 实际接口实现
+## 7. M1–M5 实际接口实现
 
 M1–M4 的消费者包括 CLI、GPUI 桌面工作台（`delta-desktop`）与只读 AI 复盘工具网关（`AnalysisToolGateway`）。`AppHost` 在单写者宿主线程上持有 `AppService`（对外零 `pub async fn`），提供带范围的查询契约（`AnalysisScope` → `ResultEnvelope<T>` + `EvidenceRef` + `m2-ledger-1`）与统一能力目录（`CapabilityCatalog`）。真实账本范围下 AI 只读工具严格投影自能力目录的 7 项只读子集（`scope.describe`、`report.period_breakdown`、`ledger.list_transactions`、`ledger.holdings_lots`、`reconcile.list_issues`、`data.quality_summary`、`journal.search_notes`），同一范围与版本下桌面 UI 查询与 AI 工具调用执行同一函数并产生逐字段一致的 `ResultEnvelope`（`M2-A-01`）。
 
@@ -93,3 +93,5 @@ AI 每个 run 从 SQLite Backup API 取得一致的私有内存副本，全部�
 `FixtureAccountProvider::from_recorded_response` 只解析声明的合成 OKX/Binance 原生 data 数组，不发网络请求；`ModelClient` 在 `delta-model` 中实现 `openai-responses` 与 `openai-chat-completions` 双协议 SSE 适配，经本地回环服务完成全套协议与流式边界验证（`M2-K03` / `M2-A-13`），真实在线模型服务由用户按 `ACT-01` 配置后启用。
 
 M4 训练工作流在 `AppService` 与 `AppHost` 上新增完整同步训练接口（费用模板版本管理、运行创建/重抽/启停/推进/结束/揭示/重试/重放/删除预览、委托预览与提交/撤单、训练笔记与归档、自主评分、`get_training_workspace_snapshot`、`get_training_report` 与 `open_training_evidence`），`delta-desktop` 与 `delta-cli training` 直接消费同一批 DTO 并输出一致的数据/引擎/费用版本（`M4-A-15`）。所有训练行情与公司行动读取均由 `delta-data::m4_schema` SQL 截断端口提供（`delta-app` 生产代码对 `bar` 表零裸查询，`M4-K01`）；未达到 `finished` 显式揭示前，隐藏运行在全部出站 DTO 与工具回执中脱敏真实标的与日期。`ScopeTarget::TrainingRun(run_id)` 仅对 `finished` 运行放行（否则返回 `SIM_AI_REVIEW_REQUIRES_FINISHED` / `SCOPE_DENIED`），清空 `resolved_accounts` 阻断真实账本工具，只开放 `training.run_summary`、`training.orders_and_fills`、`training.report`、`training.notes`、`training.revealed_bars` 五项只读工具，并将范围修订绑定至 `latest_state_hash + revealed`（`M4-A-14`）。开放导出同步生成 `simulation/simulation_bundle.json` 与 8 张 `simulation/*.csv`（`M4-A-11`）。
+
+M5 训练工作台在 `AppService` 与 `AppHost` 上新增同步接口：默认数据准备（`prepare_training_data`，桌面经 `start_prepare_training_data` 后台作业，`training_data_status` 报告各级别根数、是否落后与能否开局）、练习账户（`show_practice_account`、`list_practice_accounts`、`practice_account_history`、`transfer_practice_funds`、`practice_account_analysis` → `AccountReport`）、运行级操作（`modify_training_order`、`undo_training_last`、`abandon_training_run`、`restart_training_run`、`training_history`）、画线（`save_training_drawing`、`list_training_drawings`、`delete_training_drawing`、`clear_training_drawings`）与高一级别视图（`get_training_aggregated_view`，只由已截断基础 K 线聚合）。创建请求增加 `timeframe` 与资金来源（练习账户金额或 M4 式独立资金），委托请求增加 `fill_rule = visible_close`。CLI 对应 `delta-cli training prepare-data|account|history|modify|undo|abandon|restart|view|drawing`，输出与宿主 DTO 逐字段一致（`M5-A-14`，门禁跨进程探针复核）。结束后 AI 的 `training.run_summary` 增加级别、资金来源与有效操作次数（快捷成交、改单、撤销），其余只读边界不变。

@@ -297,6 +297,46 @@ pub struct DataQualityIssue {
     pub detail: String,
 }
 
+/// Whether a quality kind undermines the bar prices themselves or only valuation (`S-49` ③).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityImpact {
+    /// Gaps, cross-source price deviation, unfinished bars, missing corporate actions, revisions
+    /// and every kind not explicitly listed: training candidate pools exclude these dates.
+    AffectsPrice,
+    /// Fee-asset or stablecoin FX: ledger valuation shows "unavailable"; bar prices are intact.
+    ValuationOnly,
+    /// Provenance note (e.g. the Binance archive was unavailable and the same bars came from the
+    /// official REST API): prices are intact and verified by the usual checks.
+    SourceNote,
+}
+
+/// Provenance-only kinds.
+pub const SOURCE_NOTE_QUALITY_KINDS: &[&str] = &["archive_unavailable_rest_fallback"];
+
+/// Kinds registered as valuation-only; any other kind is treated conservatively as price-affecting.
+pub const VALUATION_ONLY_QUALITY_KINDS: &[&str] = &[
+    "missing_fee_asset_fx",
+    "missing_fee_market",
+    "missing_stablecoin_fx",
+    "missing_fx",
+    "fx_price_mismatch",
+    "fx_crosscheck_unavailable",
+    "fx_crosscheck_outside_coverage",
+    "fx_primary_unavailable",
+];
+
+pub fn quality_kind_impact(kind: &str) -> QualityImpact {
+    let lower = kind.trim().to_ascii_lowercase();
+    if VALUATION_ONLY_QUALITY_KINDS.contains(&lower.as_str()) {
+        QualityImpact::ValuationOnly
+    } else if SOURCE_NOTE_QUALITY_KINDS.contains(&lower.as_str()) {
+        QualityImpact::SourceNote
+    } else {
+        QualityImpact::AffectsPrice
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageGap {
     pub id: String,

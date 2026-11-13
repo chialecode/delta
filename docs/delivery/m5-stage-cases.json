@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 1,
+  "stage": "M5",
+  "planVersion": "1.0",
+  "cases": [
+    {
+      "id": "M5-A-01",
+      "title": "Default BTC training data preparation from an empty library",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W01"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-DATA-03"
+      ],
+      "acceptance": [
+        "AC-16",
+        "AC-17",
+        "AC-32"
+      ],
+      "precondition": "Empty temporary library; recorded Binance monthly archives with CHECKSUM, Binance mirror REST pages and OKX history-candles pages for BTC/USDT 1d/4h/1h from 2017-08-17.",
+      "steps": [
+        "Open the training service with no BTC data and observe the automatic preparation job and its progress.",
+        "Inject a network failure and a checksum mismatch in the middle batch, then retry.",
+        "Run an incremental re-sync after the fixtures advance by one period."
+      ],
+      "expected": "Each (instrument, timeframe) batch publishes atomically as its own dataset_version; the failed batch leaves no rows; the retry resumes from the watermark without duplicates; a default BTC/USDT run can be created after the 1d batch; the incremental sync adds only the new final bars.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-01"
+    },
+    {
+      "id": "M5-A-02",
+      "title": "Stablecoin FX gaps no longer block crypto bar publication",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W01"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-DATA-03"
+      ],
+      "acceptance": [
+        "AC-16",
+        "AC-32"
+      ],
+      "precondition": "Recorded fixtures where USDT/USD is unavailable before 2021-06 (one provider errors, the other returns empty).",
+      "steps": [
+        "Sync BINANCE:BTC/USDT from 2017-08-17.",
+        "Value a ledger position that needs USDT/USD inside the gap."
+      ],
+      "expected": "Crypto bars for the whole range are published; the FX gap is recorded as a valuation-only coverage gap; ledger valuation inside the gap stays unavailable with its reason; the sync is not reported as failed.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-02"
+    },
+    {
+      "id": "M5-A-03",
+      "title": "missing_fee_asset_fx false positive and price-only candidate pool filtering",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W01"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-TRN-01"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-32"
+      ],
+      "precondition": "Recorded fixtures with complete USDT/USD coverage for BINANCE:BTC/USDT and OKX:BTC/USDT in one sync, plus synthetic price-affecting issues on selected days.",
+      "steps": [
+        "Sync both instruments in one job and inspect derived BTC/USD rates and quality issues.",
+        "Build the training candidate pool for each instrument."
+      ],
+      "expected": "Derived BTC/USD rates exist for every covered day and no missing_fee_asset_fx issue is recorded; every quality kind is classified affects_price or valuation_only; the pool excludes only segments with affects_price issues and BINANCE:BTC/USDT is eligible.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-03"
+    },
+    {
+      "id": "M5-A-04",
+      "title": "Crypto 4h and 1h bars, UTC alignment and per-timeframe runs",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W02"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-TRN-01"
+      ],
+      "acceptance": [
+        "AC-21",
+        "AC-32"
+      ],
+      "precondition": "Prepared fixture library with BTC/USDT 1d/4h/1h and a US equity with daily bars only.",
+      "steps": [
+        "Create 4h and 1h runs and advance across a UTC day boundary.",
+        "Request a 1h run for the US equity.",
+        "Replay both crypto runs."
+      ],
+      "expected": "Bars align to UTC hour and 4-hour boundaries; only final bars are visible; the run freezes its timeframe through pool, port, report and replay; the US equity intraday request is rejected with a clear reason.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-04"
+    },
+    {
+      "id": "M5-A-05",
+      "title": "Higher-timeframe view aggregated only from truncated base bars",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W02"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-TRN-01"
+      ],
+      "acceptance": [
+        "AC-11"
+      ],
+      "precondition": "1h training run at a fixed seed; every bar after the clock overwritten with extreme sentinel values.",
+      "steps": [
+        "Request 4h and 1d aggregated views at several clock positions, including mid-period.",
+        "Compare aggregates with hand calculation."
+      ],
+      "expected": "Aggregates match hand calculation from visible 1h bars only; the in-progress aggregate is flagged incomplete; no output contains a sentinel value.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-05"
+    },
+    {
+      "id": "M5-A-06",
+      "title": "Quick orders fill at the visible close (m5-sim-2)",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W04"
+      ],
+      "requirements": [
+        "FR-TRN-08",
+        "FR-TRN-02",
+        "FR-TRN-03"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-33"
+      ],
+      "precondition": "m5-sim-2 run with a fee profile including notional rate, per-order minimum, slippage and spread; default buy ratio 1/10 and sell ratio 100%.",
+      "steps": [
+        "Submit quick buy and quick sell at several bars, including a zero-volume bar.",
+        "Submit a quick buy that exceeds available cash."
+      ],
+      "expected": "Fill price equals the visible close with unfavourable spread and slippage and tick rounding; quantity follows the ratio floored to lot_size; fees and cash match hand calculation; zero-volume and insufficient-funds cases are rejected without partial fills; the run records the fill rule version.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-06"
+    },
+    {
+      "id": "M5-A-07",
+      "title": "Modify order by price and quantity, including drag-to-modify",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W04",
+        "M5-W05"
+      ],
+      "requirements": [
+        "FR-TRN-08",
+        "FR-TRN-02"
+      ],
+      "acceptance": [
+        "AC-12",
+        "AC-33"
+      ],
+      "precondition": "Run with an open limit order, a stop order and an OCO bracket attached to an entry.",
+      "steps": [
+        "Modify price and quantity through the service and by dragging the pending line in the headless UI.",
+        "Try to modify a locked order and a filled order."
+      ],
+      "expected": "Modification is an atomic cancel/replace effective from the next bar open; OCO and attached relations are kept; reservations are recomputed; the locked order does not move; modifying a filled order is rejected.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-07"
+    },
+    {
+      "id": "M5-A-08",
+      "title": "Single undo, determinism and m4-sim-1 replay compatibility",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W04"
+      ],
+      "requirements": [
+        "FR-TRN-08",
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-15",
+        "AC-33"
+      ],
+      "precondition": "Command sequence with quick fills, submissions, cancels, modifications and undos; M4 gate fixture runs recorded with m4-sim-1.",
+      "steps": [
+        "Undo after each undoable command; attempt an undo after advancing.",
+        "Replay the sequence in two processes, from a checkpoint and from scratch.",
+        "Replay the M4 fixture runs with the new code."
+      ],
+      "expected": "Undo restores cash, position, reservations and fees exactly and only back to the last advance; undo after advancing is rejected; all three replays have identical per-step hashes; M4 runs replay with their recorded hashes.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-08"
+    },
+    {
+      "id": "M5-A-09",
+      "title": "Intraday DAY expiry and path rules on 4h/1h bars",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W04",
+        "M5-W02"
+      ],
+      "requirements": [
+        "FR-TRN-02",
+        "FR-TRN-09"
+      ],
+      "acceptance": [
+        "AC-12"
+      ],
+      "precondition": "1h and 4h runs with DAY and GTC orders submitted late in a UTC day; bars with gaps and same-bar double touches.",
+      "steps": [
+        "Advance across the UTC day boundary.",
+        "Check fills against the O-L-H-C path rules."
+      ],
+      "expected": "DAY orders expire at the end of the UTC day of their eligible bar; GTC orders remain; gap and ambiguity handling match the daily rules and hand calculation.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-09"
+    },
+    {
+      "id": "M5-A-10",
+      "title": "Practice account conservation, single active run and settlement",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W03"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-TRN-04"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-31"
+      ],
+      "precondition": "Fresh library with automatic USD and USDT practice accounts; one M4 legacy run with independent cash.",
+      "steps": [
+        "Deposit, withdraw, create, finish, abandon (restart) and delete runs in both currencies.",
+        "Try a second unfinished run on the same account and a withdrawal above available."
+      ],
+      "expected": "Each balance equals the sum of its entries and matches hand calculation; settlement uses equity at the last visible close; abandoned runs settle and cannot resume; deletion appends reversals only; the second run and the over-withdrawal are rejected (PRACTICE_ACCOUNT_BUSY / insufficient funds); the legacy run stays outside the balance; ledger_revision is unchanged.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-10"
+    },
+    {
+      "id": "M5-A-11",
+      "title": "Training history and account analysis against hand calculation",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W03"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-TRN-05"
+      ],
+      "acceptance": [
+        "AC-18",
+        "AC-31"
+      ],
+      "precondition": "At least four settled runs including one abandoned, one zero-trade and one with zero losing trade groups, across 1d and 1h.",
+      "steps": [
+        "Compute the account analysis and the history list.",
+        "Filter by market category and timeframe."
+      ],
+      "expected": "Equity curve, cumulative P/L, run and trade-group win rates, average win/loss ratio, profit factor, extreme ratio, expectation, fees, holding bars, plan execution rate and undo count match hand calculation; special states replace ordinary numbers; fewer than 20 trade groups shows the small-sample notice; hidden ranges stay hidden until reveal.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-11"
+    },
+    {
+      "id": "M5-A-12",
+      "title": "Schema 6 migration, backup, export and delete",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W06"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-OPS-01",
+        "FR-OPS-02"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-20"
+      ],
+      "precondition": "v0.1.1 (schema 4) and M4 (schema 5) libraries with ledger data, notes and training runs.",
+      "steps": [
+        "Open with the new build; force a migration failure once.",
+        "Export, back up, restore and preview deletion of a training run and of the library."
+      ],
+      "expected": "A consistent backup exists before migration; the forced failure rolls back and keeps the backup; all prior data survives; new tables are included in export, backup and delete previews; an older build refuses the schema 6 library.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-12"
+    },
+    {
+      "id": "M5-A-13",
+      "title": "Headless training workbench workflow and misclick safety",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W05"
+      ],
+      "requirements": [
+        "FR-TRN-08",
+        "FR-TRN-09",
+        "FR-TRN-01",
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-33"
+      ],
+      "precondition": "Headless GPUI test with a prepared fixture library and hidden mode on.",
+      "steps": [
+        "Open training: the default BTC/USDT run starts; play continuously until a fill auto-pauses.",
+        "Quick buy/sell, drag a pending line, place a line order and confirm, draw Q/W/E lines, undo, clear drawings, finish, report, reveal.",
+        "Click and drag on the chart, press N/Space/Q/W/E with focus in an input."
+      ],
+      "expected": "The workflow completes with the expected service commands; no click, drag, playback or drawing key ever submits or fills an order; shortcuts are inert while an input has focus; markers, drawings, measurements and labels contain no real dates or names before reveal.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-13"
+    },
+    {
+      "id": "M5-A-14",
+      "title": "CLI, UI and AI parity for runs and accounts",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W06"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-TRN-08",
+        "FR-TRN-06",
+        "NFR-02"
+      ],
+      "acceptance": [
+        "AC-23",
+        "AC-19"
+      ],
+      "precondition": "One finished 1h run with quick fills, modifications and undos; practice account with transfers.",
+      "steps": [
+        "Read the run, report and account through CLI JSON, UI DTOs and AI tools.",
+        "Call AI tools on an unfinished run."
+      ],
+      "expected": "Numbers, timeframe, fill rule and undo counts are identical across consumers; AI tools on the unfinished run are rejected; evidence references open the simulated orders and fills.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-14"
+    },
+    {
+      "id": "M5-A-15",
+      "title": "Continuous playback and next-bar latency",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W05",
+        "M5-W07"
+      ],
+      "requirements": [
+        "FR-TRN-08",
+        "NFR-03"
+      ],
+      "acceptance": [
+        "AC-26"
+      ],
+      "precondition": "Release build; 1h run with 1,000 visible bars, default indicators, 20 drawings, 5 pending lines and trade markers.",
+      "steps": [
+        "Play continuously at 150 ms per bar for 300 steps in a hidden window.",
+        "Record per-step durations and actual intervals."
+      ],
+      "expected": "Per-step p95 <= 100 ms and actual interval p95 <= 200 ms with hardware, sample count and p50/p95/p99 recorded; zero visible windows and unchanged foreground focus.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-15"
+    },
+    {
+      "id": "M5-A-16",
+      "title": "Stage gate, quiet execution and regressions",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W07"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-TRN-08",
+        "FR-TRN-09",
+        "NFR-01"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-15"
+      ],
+      "precondition": "Final source fingerprint.",
+      "steps": [
+        "Run verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench.",
+        "Run M1 v2.6, M2 v1.0, M3 v1.0 and M4 v1.0 regressions at the same fingerprint."
+      ],
+      "expected": "All required checks pass; the developer delta and delta-dev data and installs are untouched; no visible window or focus change.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-16"
+    },
+    {
+      "id": "M5-A-17",
+      "title": "Dependency audit clean and vulnerable archive/XML crates upgraded",
+      "mode": "automated",
+      "work_packages": [
+        "M5-W08"
+      ],
+      "requirements": [
+        "NFR-08",
+        "FR-OPS-01",
+        "FR-OPS-02",
+        "NFR-11"
+      ],
+      "acceptance": [
+        "AC-09",
+        "AC-20",
+        "AC-27"
+      ],
+      "precondition": "Network access to the crates.io index and OSV; zip and quick-xml upgraded to fixed releases at least 7 days old.",
+      "steps": [
+        "Run python scripts/deps.py --audit and python scripts/deps.py before handoff.",
+        "Extract crafted archives whose entry path escapes the target directory and whose symlink points outside it.",
+        "Run the import, export, backup/restore, bundle, installer and packaging tests, and verify the published v0.1.1 signature and update manifest with the built-in public key after the signing crates change."
+      ],
+      "expected": "The audit reports status passed (informational unmaintained advisories are only listed); both crafted archives are rejected without writing outside the target; all listed tests pass; v0.1.1 still verifies. A reverted upgrade is recorded in the stage report with the attempted version, failing command and review condition.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-A-17"
+    },
+    {
+      "id": "M5-L-01",
+      "title": "Live public BTC data preparation",
+      "mode": "live",
+      "work_packages": [
+        "M5-W01"
+      ],
+      "requirements": [
+        "FR-TRN-09",
+        "FR-DATA-03"
+      ],
+      "acceptance": [
+        "AC-32"
+      ],
+      "precondition": "Network access to data.binance.vision, data-api.binance.vision and www.okx.com; temporary library only.",
+      "steps": [
+        "Run verify-stage --stage M5 --plan-version 1.0 --live-data.",
+        "Record earliest dates, row counts, duration, database growth and cross-source divergence per timeframe."
+      ],
+      "expected": "Real public sources produce eligible BTC/USDT 1d/4h/1h training data within the M5-K01 limits, or the failure is recorded with its cause; results are declared separately from recorded fixtures.",
+      "evidence": ".local/reports/m5/verify-stage-report.json#case_results/M5-L-01"
+    },
+    {
+      "id": "M5-M-01",
+      "title": "Training workbench hands-on experience",
+      "mode": "manual",
+      "work_packages": [
+        "M5-W05"
+      ],
+      "requirements": [
+        "FR-TRN-07",
+        "FR-TRN-08",
+        "FR-TRN-09",
+        "NFR-09"
+      ],
+      "acceptance": [
+        "AC-31",
+        "AC-33"
+      ],
+      "precondition": "Latest delta-dev build installed by B at handoff; USER-ACTIONS H-06 steps.",
+      "steps": [
+        "Start the default BTC game, play continuously, trade with quick buttons and line orders, drag-modify, undo, draw, finish and reveal.",
+        "Transfer funds, open training history and account analysis."
+      ],
+      "expected": "The person records whether any misclick filled an order, whether playback and markers are readable, and whether account numbers make sense, with the build source_fingerprint.",
+      "evidence": "USER-ACTIONS.md (H-06)"
+    }
+  ]
+}

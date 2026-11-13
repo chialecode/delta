@@ -39,7 +39,7 @@ use crate::{
     KlineChartView, MarketColorConvention,
 };
 
-fn hidden_options() -> WindowOptions {
+pub(crate) fn hidden_options() -> WindowOptions {
     WindowOptions {
         focus: false,
         show: false,
@@ -52,7 +52,7 @@ fn hidden_options() -> WindowOptions {
     }
 }
 
-fn quiet_window_check() -> Result<(), ErrorEnvelope> {
+pub(crate) fn quiet_window_check() -> Result<(), ErrorEnvelope> {
     if count_visible_windows_for_current_process() > 0 {
         return Err(ErrorEnvelope::new(
             "VISIBLE_VERIFICATION_WINDOW",
@@ -79,7 +79,7 @@ fn quiet_window_check() -> Result<(), ErrorEnvelope> {
 }
 
 #[cfg(windows)]
-fn native_window() -> Result<usize, ErrorEnvelope> {
+pub(crate) fn native_window() -> Result<usize, ErrorEnvelope> {
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, RECT},
         UI::WindowsAndMessaging::{EnumWindows, GetClientRect, GetWindowThreadProcessId},
@@ -117,7 +117,7 @@ fn native_window() -> Result<usize, ErrorEnvelope> {
 }
 
 #[cfg(not(windows))]
-fn native_window() -> Result<usize, ErrorEnvelope> {
+pub(crate) fn native_window() -> Result<usize, ErrorEnvelope> {
     Err(ErrorEnvelope::new(
         "WINDOWS_VERIFICATION_REQUIRED",
         "原生帧基准需要 Windows",
@@ -125,7 +125,7 @@ fn native_window() -> Result<usize, ErrorEnvelope> {
     ))
 }
 
-fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
+pub(crate) fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -156,7 +156,7 @@ fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     quiet_window_check()
 }
 
-fn initialize_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
+pub(crate) fn initialize_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -802,7 +802,7 @@ pub struct M4NextBarBenchReport {
     pub build_info: Value,
 }
 
-async fn wait_workbench_idle_and_paint(
+pub(crate) async fn wait_workbench_idle_and_paint(
     cx: &mut gpui_kit::AsyncApp,
     handle: gpui_kit::WindowHandle<Root>,
     wb: &Arc<Mutex<Option<Entity<DeltaWorkbench>>>>,
@@ -874,6 +874,9 @@ pub fn run_m4_ui_smoke(cli_data_dir: Option<&Path>) -> Result<M4UiSmokeReport, E
             fee_profile_version_id: BUILTIN_FEE_CRYPTO_RATE_ID.to_string(),
             hidden_mode: true,
             create_and_start: true,
+            timeframe: delta_app::Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         })?;
         let run_id = created.run_id.clone();
 
@@ -1192,6 +1195,9 @@ pub fn run_m4_k03_next_bar_bench(
             fee_profile_version_id: BUILTIN_FEE_CRYPTO_RATE_ID.to_string(),
             hidden_mode: true,
             create_and_start: true,
+            timeframe: delta_app::Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         })?;
         let run_id = created.run_id.clone();
 

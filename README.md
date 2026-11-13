@@ -4,16 +4,17 @@
 
 DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
-面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台与证据化 AI 属于 M2，安装与更新属于 M3，K 线训练属于 M4，策略评估属于后续阶段。
+面向美股、ETF 和加密现货，将多源行情与汇率同步、资产账本、交易笔记、历史训练与策略评估连接到同一套可追溯的数据快照上。按 [D-22](docs/decisions/confirmed-decisions.md)，产品代码采用 Rust，运行期不需要 Python；桌面工作台与证据化 AI 属于 M2，安装与更新属于 M3，K 线训练属于 M4，训练工作台属于 M5，策略评估属于后续阶段。
 
-## 当前阶段（2026-11-12 M4 K 线训练，计划 v1.0）
+## 当前阶段（2026-11-14 M5 训练工作台，计划 v1.0）
 
-项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md)、[M4 阶段计划](docs/delivery/stage-plan.md) 与 [M3 阶段报告](docs/evidence/2026-11-12-m3-stage-report.md)。
+项目已按 [D-20](docs/decisions/confirmed-decisions.md) 从文档治理基线重建，放弃此前“先构建 GPUI 桌面应用”的代码与产物，确立 **“优先解决金融数据来源与本地自动化数据底座（M1），再构建上层应用（M2+）”** 的演进路线。详见 [当前状态](docs/delivery/status.md)、[M5 阶段计划](docs/delivery/stage-plan.md) 与 [M4 阶段报告](docs/evidence/2026-11-14-m4-stage-report.md)。
 
 - **M1（已完成，PR #1 合并）**：已建立 `delta-core`、`delta-data`、`delta-app`、`delta-cli`。提供欧易 OKX / 币安公共现货日线与归档、Yahoo / 东方财富美股日线核验、Frankfurter 法币及 Coinbase / Bitstamp / Kraken 稳定币汇率、`XNYS` / `XNAS` / `CRYPTO_24_7` 日历；账本支持富途、OKX、币安、IBKR Flex 与通用模板、资金流水、FIFO、事件 FX 固定、不可变数据版本、报告、导出和备份恢复。实际验证与未完成边界见 [M1 阶段报告](docs/evidence/2026-11-08-m1-stage-report.md)。
 - **M2（已完成，PR #2 合并）**：按 [D-21](docs/decisions/confirmed-decisions.md) 与 [ADR-0003](docs/decisions/0003-first-round-stack.md)，在 M1 数据底座之上新增 `delta-model` 与 `delta-desktop`（二进制 `delta`），采用最新 **GPUI Kit（`=0.9.0`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` 面板体系**及自建 `MetricCard`、`KlineViewport` / `KlineChartView`、`StatusBanner` 构建六页工作台，包含实际输入/后台操作、范围与期间隔离、`schema 4` 笔记/附件/FTS5 搜索、期间损益分解与现金换汇（`m2-ledger-1`）、双协议只读 AI 复盘和真实两通道静态 CRT 包。M2 全门禁与 M1 回归通过；实际证据和未测范围见阶段报告，产品验收未完成。
 - **M3（已完成，PR #3 合并；首个正式版 v0.1.1 已发布）**：按 [D-31](docs/decisions/confirmed-decisions.md) 补齐 Windows 安装体验：正式版 `delta` 与开发版 `delta-dev` 的 Inno Setup 7.1.x 按用户安装程序（无需管理员、开始菜单、“应用和功能”卸载、可并存、升级与卸载保留数据）、应用图标与版本资源、单实例与本通道控制管道、开发版 `install-dev` 本机更新，以及正式版基于 GitHub Releases 与 Ed25519 签名的自动更新（检查、断点续传、验签、拒绝降级、更新前一致性备份、静默安装后重启）。门禁只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；首个正式版 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 已于 2026-11-12 发布，发布资产用内置公钥验证通过。安装包未做 Authenticode 代码签名，见下文“安装”。
-- **M4（当前，计划 v1.0，待 B 实现）**：K 线训练——随机历史片段与隐藏名称/日期、只经回放时钟取数、现货模拟委托（市价/限价/止损/OCO）与可配置费用、每步原子保存与确定性重放、训练报告（含 MAE/MFE 与计划执行率）以及结束后的 AI 复盘；模拟数据不进入真实账本。
+- **M4（已完成，PR #6 合并）**：K 线训练——随机历史片段与隐藏名称/日期、只经回放时钟取数、现货模拟委托（市价/限价/止损/OCO）与可配置费用、每步原子保存与确定性重放、训练报告（含 MAE/MFE 与计划执行率）以及结束后的 AI 复盘；模拟数据不进入真实账本。
+- **M5（当前，计划 v1.0，待 B 实现）**：训练工作台——默认比特币训练数据（自动准备 BTC/USDT 全历史日线、4H、1H）、跨局练习账户与账户分析、连续播放、图上成交标记与挂单线拖动改价、画线下单与绘图、快捷买卖与单次撤销；美股/ETF 与加密现货共用一套，不做期货。
 
 ## 本地运行
 

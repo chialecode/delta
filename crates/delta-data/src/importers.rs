@@ -1579,16 +1579,14 @@ fn parse_ibkr_flex_xml(
                     preset: "ibkr_flex_xml".into(),
                     detail,
                 };
-                let tag = std::str::from_utf8(name_bytes.as_ref())
-                    .map_err(|e| xml_error(e.to_string()))?;
+                let tag: &str = name_bytes.as_ref();
                 let mut attrs = BTreeMap::new();
                 for attr in e.attributes() {
                     let attr = attr.map_err(|e| xml_error(e.to_string()))?;
-                    let k = std::str::from_utf8(attr.key.as_ref())
-                        .map_err(|e| xml_error(e.to_string()))?
-                        .to_string();
+                    let k = AsRef::<str>::as_ref(&attr.key).to_string();
+                    // XML 1.0 attribute-value normalization (entities resolved; tab/CR/LF -> space).
                     let v = attr
-                        .unescape_value()
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                         .map_err(|e| xml_error(e.to_string()))?
                         .to_string();
                     attrs.insert(k, v);

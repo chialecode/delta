@@ -1,0 +1,4 @@
+{
+  "description": "Known advisories accepted for now. Each entry: advisory (RUSTSEC- or GHSA- id), package, reason (why it cannot be fixed or does not apply), reviewBy (YYYY-MM-DD; past that date the audit fails again). Entries are added only with the reason written in the stage report.",
+  "exceptions": []
+}
