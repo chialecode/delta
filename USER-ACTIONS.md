@@ -1,10 +1,10 @@
 # 用户待办
 
-核对日期：2026-11-13。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
+核对日期：2026-11-14。这里是需要你处理的事项的唯一入口，可以分次回复，也可以以后再做。开发继续使用已说明的可逆默认；未回复不等于授权，未测保持 not-run。Agent 的代码缺口和开源适配任务在 [工程事项](docs/decisions/open-questions.md)，不交给你补实现。
 
 2026-11-09 M2 已按 `ACT-09` 授权推送、经 PR #2 squash 合并为 `main` `5f30f6e`，阶段分支已清理；按你的指示当前进入 **M3（Windows 安装包、版本与自动更新）**，唯一计划见 [M3 计划](docs/delivery/stage-plan.md) v1.0，阶段编号顺延见 [D-31](docs/decisions/confirmed-decisions.md)。2026-11-12 你授权完成剩余远端操作直到正式版发布成功：M3 已按 ACT-12 经 PR #3 squash 合并为 `main` `6f0aff3`；ACT-10 的签名密钥已由 Agent 生成，公钥已内置，**私钥文件请你备份**；ACT-11（v0.1.1 发布）按同一授权执行。Q-04、Q-05 有默认值，不回复也不阻塞；H-03、H-04 可独立推进。
 
-2026-11-12 按你的指示开启 **M4（K 线训练）**，唯一计划见 [M4 计划](docs/delivery/stage-plan.md) v1.0，B 实现与 A 集中技术审核均已完成（见 [M4 阶段报告](docs/delivery/stage-report.md)），**ACT-13 已于 2026-11-14 授权（推送、PR、检查通过后 squash 合并并清理分支）**。真实模型复盘沿用可选的 ACT-01，人工检查 H-05 可顺延，都不是 ACT-13 的前提。
+2026-11-12 按你的指示开启 **M4（K 线训练）**，唯一计划见 [M4 计划](docs/delivery/stage-plan.md) v1.0，B 实现与 A 集中技术审核均已完成（见 [M4 阶段报告](docs/delivery/stage-report.md)）。**2026-11-14 M4 已按 ACT-13 经 PR #6 squash 合并为 `main` `0ba6010`，阶段分支已清理；可以开始下一阶段（路线上是 M5 策略研究），等你开启。** 真实模型复盘沿用可选的 ACT-01，人工检查 H-05 可顺延。
 
 ## 决定与真实条件
 
@@ -56,7 +56,13 @@
 - **不包含**：合并、创建标签或 GitHub Release、改远端设置；这些需你另行授权。授权后 A 核对 CI（`docs`、DCO）与审查反馈。回复“ACT-12 授权推送并创建 PR”即可（若希望 CI 通过后直接 squash 合并，请一并写明）。
 - 人工检查 H-03、H-04 不是本动作前提，可顺延；合并也不代表产品已验收。
 
-### ACT-13 / 已授权（M4，2026-11-14）：推送阶段分支、创建 PR 并合并
+### ACT-14 / done（两级门禁的推送与合并，2026-11-14 你授权）
+
+- 你回复“授权 delta gate-tiers 推送并合并”：A 推送 `chore/gate-tiers`，创建到 `main` 的 PR，检查通过后 squash 合并并清理分支。内容是[两级门禁](docs/dev-rules/quality-gates.md#gate-tiers)与 `scripts/quick_gate.py`，以及 M4 合并后的状态记录。
+
+### ACT-13 / done（M4 推送、PR 与合并，2026-11-14 已执行）
+
+- **结果**：[PR #6](https://github.com/chialecode/delta/pull/6) 的 `docs` 与 DCO 一次通过，squash 合并为 `main` `0ba6010`，远端与本地阶段分支已删除。以下为当时的记录。
 
 - **A 技术审核已收敛（2026-11-13）**：结论与证据见 [M4 阶段报告](docs/delivery/stage-report.md#a-集中技术审核2026-11-13)。本地分支 `codex/m4-kline-training` 仅含一个阶段提交（父提交 `45ac8c527ab5b51217d5f712deebd704e9d539ef`，带 DCO 签名），A 审核时指纹 `96254d7d…`；阶段内追加（快捷方式、图标、开发版安装时机）后最终被测源码指纹 `02d0f1bdb3084b9e5d43d5f5e7ae1e05eab94a88049fc23ee9b28c13c69c727e`；完整 SHA 以 `git rev-parse HEAD` 为准。同一指纹下 M1～M4 四阶段门禁全部 passed。
 - **请求授权的具体动作**：① `git push -u origin codex/m4-kline-training`；② 创建 PR：来源 `codex/m4-kline-training` → 目标 `main`，标题 `feat(m4): K-line training replay, simulated orders, report and AI review (M4 v1.0)`，正文列明 M4-W01～W07 实际行为（SQL 层未来数据截断与哨兵、`m4-sim-1` 撮合与费用、`schema 5` 迁移前备份与账本隔离、原子提交与三路确定性重放、`m4-report-1` 训练报告、结束后只读 AI 复盘、训练工作区与 `delta-cli training`、`Packager.toml` 退役与 TEST-02 修复）、A 审核修正 F-01（恢复重放读取失败不再误标损坏）、实际检查与 not-run 边界（H-05、ACT-01 真实模型）。
