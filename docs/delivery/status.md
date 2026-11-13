@@ -1,14 +1,14 @@
 # 当前执行状态
 
-更新：2026-11-14；维护：Agent A / Agent B。当前阶段：**M4 K 线训练，计划 v1.0：A 技术审核通过（工程阻断 0），用户已于 2026-11-14 授权 `ACT-13`（推送、PR、squash 合并与清理分支）**。唯一计划见 [M4 阶段计划](stage-plan.md)，验证与交付报告见 [M4 阶段报告](stage-report.md)，用例见 [m4-stage-cases.json](m4-stage-cases.json)。
+更新：2026-11-14；维护：Agent A / Agent B。当前阶段：**M4 K 线训练已于 2026-11-14 经 [PR #6](https://github.com/chialecode/delta/pull/6) squash 合并为 `main` `0ba6010`；下一阶段（路线上是 M5 策略研究）待用户开启**。M4 计划见 [M4 阶段计划](stage-plan.md)，验证与交付报告见 [M4 阶段报告](stage-report.md)，用例见 [m4-stage-cases.json](m4-stage-cases.json)。
 
 ## 基线与判断
 
 - M1 v2.6 经 [PR #1](https://github.com/chialecode/delta/pull/1) 合并为 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`；证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)。
 - M2 v1.0 经 [PR #2](https://github.com/chialecode/delta/pull/2) 合并为 `5f30f6e1ddf6383f25317d5c87acd21934e75ed9`；证据见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)。产品验收未完成：真实模型（ACT-01）、真实个人账单（ACT-03）与 H-01、H-02 保持 not-run。
 - M3 v1.0 经 [PR #3](https://github.com/chialecode/delta/pull/3) 合并为 `6f0aff39046504e218da9546063d3b93fabd49e7`；证据见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)。首个正式版 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 从 `main` `3bb97e6` 构建发布，发布资产用内置公钥验证通过。H-03、H-04 与签名私钥备份（ACT-10）保持待办。
-- M4 分支 `codex/m4-kline-training`，固定阶段父提交 `45ac8c527ab5b51217d5f712deebd704e9d539ef`；B 实现、A 审核修正按 [D-09](../decisions/confirmed-decisions.md) 合并入同一阶段提交，**最终被测源码指纹 `96254d7db4d8ae6a1dfda724d156ba815142d00e4816a9392ce02f943f90714a`**（B 自检指纹 `b104c94a…`），完整 SHA 以 `git rev-parse HEAD` 为准。
-- 既有未跟踪 `workers/` 保持原样，未读取、构建、修改或暂存。未执行 push、PR 或发布。
+- M4 v1.0 经 [PR #6](https://github.com/chialecode/delta/pull/6) 合并为 `0ba60104413135fe1da3dc034aea7b0dc8879a50`；最终被测源码指纹 `02d0f1bdb3084b9e5d43d5f5e7ae1e05eab94a88049fc23ee9b28c13c69c727e` 下 M1～M4 门禁全部 passed，证据见 [M4 阶段报告](stage-report.md)。产品验收未完成：H-05 与可选 ACT-01 保持 not-run。
+- 既有未跟踪 `workers/` 保持原样，未读取、构建、修改或暂存。未创建 GitHub Release。
 
 ## 本轮（A 集中技术审核，2026-11-13）
 
@@ -24,6 +24,6 @@
 
 ## 接续
 
-下一步：按已授权的 [ACT-13](../../USER-ACTIONS.md) 推送 `codex/m4-kline-training`、创建到 `main` 的 PR，检查通过后 squash 合并。
+下一步：用户开启下一阶段（路线上是 [M5 策略研究](../engineering/delivery-plan.md)）后，A 按[阶段清理规则](../governance/documentation-policy.md#stage-cleanup)整理 M4 文档并制定完整计划；验证按[两级门禁](../dev-rules/quality-gates.md#gate-tiers)执行。
 
 用户事项独立推进、不阻塞：ACT-10 私钥离线备份，H-01～H-05 实机检查，可选 ACT-01 真实模型连接与 ACT-03 个人样本/Token，以及 Q-04、Q-05 默认值。

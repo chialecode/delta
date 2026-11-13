@@ -26,7 +26,7 @@
 | `crates/delta-cli` | **M1–M4 已建立**：二进制 `delta-cli`，纯 Rust 命令行与验证入口（`init`、`import`、`sync`、`reconcile`、`explain`、`quality`、`backup`、`restore`、`export`、`library delete`、`credential`、`package-build`（Inno `setup.exe`）、`install-dev`、`release-build`、`release-keygen`、`control`、`training`（`training_cmd.rs`）、`verify-stage --stage M1\|M2\|M3\|M4`；测试与迁移诊断用 `package-portable-build`、`package-install`、`package-uninstall`）；`installer/delta.iss` 为 Inno Setup 7.1.x 模板 |
 | `THIRD-PARTY-NOTICES.txt` | **M2 已建立**：包含 `MPL-2.0` 源码链接说明的第三方开源通知清单（M2 遗留的 cargo-packager 配置已在 M4-W07 退役删除） |
 | `tests/fixtures` | **M1 已建立**：美股/ETF 与加密现货录制报文、10 类标准与券商 CSV/Flex 样本、`1990`～`2027` 交易日历对照表与来源说明（`PROVENANCE.md`） |
-| `scripts/` | 标准库 Python 工具：`check_docs.py`（文档门禁）、`collect_third_party_licenses.py`（许可收集）、`generate_icon.py`（图标生成）、`clean_artifacts.py`（构建产物清理，见 [构建产物](local-files-and-references.md#build-artifacts)） |
+| `scripts/` | 标准库 Python 工具：`check_docs.py`（文档门禁）、`collect_third_party_licenses.py`（许可收集）、`generate_icon.py`（图标生成）、`clean_artifacts.py`（构建产物清理，见 [构建产物](local-files-and-references.md#build-artifacts)）、`quick_gate.py`（日常的快速门禁，见[两级门禁](quality-gates.md#gate-tiers)） |
 | `.local`、`target`、`dist` | 忽略的隔离测试数据、历史备份 bundle 与构建产物；`dist/` 只放每个身份最新的安装包 |
 
 B 在实施阶段只创建当前阶段有实际消费者的 crate 与模块。`workers/agent/` 为工作区既有未跟踪目录，保持原状不纳入构建与提交。

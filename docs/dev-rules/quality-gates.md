@@ -7,6 +7,7 @@
 在仓库根执行：
 
 - `python scripts/check_docs.py`
+- `python scripts/quick_gate.py [--all]`：日常的快速门禁，见下方[两级门禁](#gate-tiers)
 - `git diff --check`
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
@@ -15,6 +16,15 @@
 - `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`
 - `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（**已建立**，结果见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M3-G-01～05）、`.iss` 与身份契约（M3-G-06）和命名单元测试映射（M3-A-01/02/07）；`--installer` 需要 Inno Setup 7.1.x，构建四个测试身份安装包与一个测试签名发布，只真实静默安装/升级/卸载 `delta-test` / `delta-dev-test`（数据根在本次临时目录），全程采样可见与前台窗口，比对开发者 `delta` / `delta-dev` 安装文件哈希、HKCU 卸载键、开始菜单快捷方式与数据根目录树，并要求同一源码指纹下 M1 v2.6、M2 v1.0 报告已通过。缺 `--installer` 时安装/更新用例与 overall 保持 not-run；`DELTA_GATE_SKIP_MECHANICAL=1` 只用于调试安装用例，跳过的必需项使 overall 不可能为 passed
 - `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（`H-05`）与真实模型 `M4-L-01`（`ACT-01`）保持 not-run
+
+<a id="gate-tiers"></a>**两级门禁（2026-11-14 用户决定）。** M1～M4 的 `verify-stage` 合起来约 20 分钟，所以不再在每次修改后跑：
+
+- **整套 `verify-stage`**：只在 B 把整个阶段交给 A 审查时，在同一源码指纹下跑一次。
+- **快速门禁 `python scripts/quick_gate.py`**：其余时候都用它，包括阶段内的修改、A 审查的修复、返工、按用户反馈的修复与阶段内追加。目标 5 分钟内，静默、低优先级执行，依次跑：
+  - 文档检查、`git diff --check`、`cargo fmt --check`；
+  - 对自上次提交以来改动过的 crate 跑 `clippy -D warnings` 与 `cargo test`。改了 `Cargo.toml`、`Cargo.lock`、工具链或夹具时，以及加 `--all` 时，覆盖整个工作区。
+- 快速门禁超过 300 秒会提示；它不写证据，不能代替整套 `verify-stage`。
+- 交付报告写清楚：整套门禁对应哪个源码指纹，之后的修改用快速门禁验证了什么。
 
 要求 Python 3.12+ 标准库，无第三方包依赖。`check_docs.py` 校验：
 
