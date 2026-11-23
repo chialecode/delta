@@ -21,6 +21,13 @@ use crate::workbench::{load_or_default_layout, save_layout_config, WorkbenchShar
 
 pub struct WorkbenchUpdated;
 
+/// Identifies which surface owns the currently running AI generation (`UI-B09`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiRunTarget {
+    Portfolio,
+    Training,
+}
+
 #[derive(Clone)]
 pub enum UiAction {
     Initialize,
@@ -135,8 +142,10 @@ pub struct WorkbenchController {
     task: Option<Task<()>>,
     pub busy: bool,
     pub ai_running: bool,
+    pub ai_target: Option<AiRunTarget>,
     cancel: Arc<AtomicBool>,
     pub stream_text: Arc<Mutex<String>>,
+    last_stream_len: usize,
     scope_revision: u64,
     navigation_revision: u64,
     pending_scope: Option<AnalysisScope>,
@@ -154,8 +163,10 @@ impl WorkbenchController {
             task: None,
             busy: false,
             ai_running: false,
+            ai_target: None,
             cancel: Arc::new(AtomicBool::new(false)),
             stream_text: Arc::new(Mutex::new(String::new())),
+            last_stream_len: 0,
             scope_revision: 0,
             navigation_revision: 0,
             pending_scope: None,
@@ -164,15 +175,27 @@ impl WorkbenchController {
         }
     }
 
+    /// Emits `WorkbenchUpdated` only when streaming AI output actually changed (`UI-Q01`).
+    pub fn poll_ai_stream(&mut self, cx: &mut Context<Self>) {
+        if !self.ai_running {
+            return;
+        }
+        let len = crate::lock_or_recover(&self.stream_text).len();
+        if len != self.last_stream_len {
+            self.last_stream_len = len;
+            cx.emit(WorkbenchUpdated);
+        }
+    }
+
     pub fn dispatch(&mut self, action: UiAction, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(action, UiAction::ConfigureModel { .. }) {
             self.cancel.store(true, Ordering::SeqCst);
             self.ai_scope_revision += 1;
-            let mut state = self.state.lock().unwrap();
+            let mut state = crate::lock_or_recover(&self.state);
             state.last_ai_report = None;
             state.opened_ai_evidence = None;
             state.pre_send_scope = None;
-            self.stream_text.lock().unwrap().clear();
+            crate::lock_or_recover(&self.stream_text).clear();
         }
         if matches!(action, UiAction::DeleteLibrary { .. }) {
             self.cancel.store(true, Ordering::SeqCst);
@@ -184,7 +207,7 @@ impl WorkbenchController {
                 .retain(|pending| !matches!(pending, UiAction::ChartViewport(_)));
         }
         if let UiAction::AiScope { include_notes, .. } = &action {
-            let mut state = self.state.lock().unwrap();
+            let mut state = crate::lock_or_recover(&self.state);
             if state.scope.include_notes != *include_notes {
                 self.cancel.store(true, Ordering::SeqCst);
                 self.ai_scope_revision += 1;
@@ -192,13 +215,14 @@ impl WorkbenchController {
                 state.opened_ai_evidence = None;
                 state.saved_ai_reports.clear();
                 state.pre_send_scope = None;
-                self.stream_text.lock().unwrap().clear();
+                crate::lock_or_recover(&self.stream_text).clear();
             }
         }
         if let UiAction::SaveNote(editor) = &action {
             self.queue.retain(|pending| !matches!(pending, UiAction::SaveNote(old) if old.note_id == editor.note_id));
-            if self.state.lock().unwrap().note_editor.note_id == editor.note_id {
-                self.state.lock().unwrap().note_editor.status = delta_app::AutosaveStatus::Saving;
+            let mut state = crate::lock_or_recover(&self.state);
+            if state.note_editor.note_id == editor.note_id {
+                state.note_editor.status = delta_app::AutosaveStatus::Saving;
             }
         }
         self.queue.push_back(action);
@@ -215,7 +239,7 @@ impl WorkbenchController {
             return;
         }
         self.navigation_revision += 1;
-        self.state.lock().unwrap().layout.active_nav = nav.to_string();
+        crate::lock_or_recover(&self.state).layout.active_nav = nav.to_string();
         cx.emit(WorkbenchUpdated);
         self.dispatch(UiAction::SaveLayout, window, cx);
     }
@@ -229,7 +253,7 @@ impl WorkbenchController {
         self.cancel.store(true, Ordering::SeqCst);
         self.pending_scope = Some(scope);
         self.queue.clear();
-        self.state.lock().unwrap().ui_notice = "正在保存编辑内容并切换范围…".into();
+        crate::lock_or_recover(&self.state).ui_notice = "正在保存编辑内容并切换范围…".into();
         cx.emit(WorkbenchUpdated);
         self.pump(window, cx);
     }
@@ -240,7 +264,7 @@ impl WorkbenchController {
         scope.dataset_version = 0;
         scope.ledger_revision = 0;
         scope.journal_revision.clear();
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::lock_or_recover(&self.state);
         state.host.advance_generation();
         state.scope = scope;
         state.overview = None;
@@ -264,7 +288,7 @@ impl WorkbenchController {
         state.saved_ai_reports.clear();
         state.pre_send_scope = None;
         state.runtime.set_pinned_scope(None);
-        self.stream_text.lock().unwrap().clear();
+        crate::lock_or_recover(&self.stream_text).clear();
         state.ui_notice = "正在读取所选范围…".into();
         drop(state);
         cx.emit(WorkbenchUpdated);
@@ -273,12 +297,12 @@ impl WorkbenchController {
 
     pub fn cancel_ai(&mut self, cx: &mut Context<Self>) {
         self.cancel.store(true, Ordering::SeqCst);
-        self.state.lock().unwrap().ui_notice = "正在取消 AI 生成…".into();
+        crate::lock_or_recover(&self.state).ui_notice = "正在取消 AI 生成…".into();
         cx.emit(WorkbenchUpdated);
     }
 
     pub fn cancel_sync(&mut self, cx: &mut Context<Self>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::lock_or_recover(&self.state);
         if let Some(job) = state.active_sync_job {
             match state.host.cancel_job(job) {
                 Ok(snapshot) => {
@@ -288,11 +312,12 @@ impl WorkbenchController {
                 Err(error) => state.ui_error = Some(error),
             }
         }
+        drop(state);
         cx.emit(WorkbenchUpdated);
     }
 
     pub fn poll_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = crate::lock_or_recover(&self.state);
         if let Some(id) = state.active_sync_job {
             match state.host.poll_job_throttled(id) {
                 Ok(snapshot) => {
@@ -328,28 +353,30 @@ impl WorkbenchController {
             return;
         }
         if self.pending_scope.is_some() {
-            let editor = self.state.lock().unwrap().note_editor.clone();
+            let editor = crate::lock_or_recover(&self.state).note_editor.clone();
             if note_is_dirty(&editor) {
                 self.queue.clear();
                 self.queue.push_front(UiAction::SaveNote(editor));
-            } else {
-                let scope = self.pending_scope.take().unwrap();
+            } else if let Some(scope) = self.pending_scope.take() {
                 self.apply_pending_scope(scope, cx);
             }
         }
         let Some(mut action) = self.queue.pop_front() else {
             return;
         };
-        let mut working = self.state.lock().unwrap().clone();
+        let mut working = crate::lock_or_recover(&self.state).clone();
         if let UiAction::SaveNote(editor) = &mut action {
             if editor.note_id != working.note_editor.note_id {
                 self.pump(window, cx);
                 return;
             }
             *editor = working.note_editor.clone();
-            self.state.lock().unwrap().note_editor.status = delta_app::AutosaveStatus::Saving;
+            crate::lock_or_recover(&self.state).note_editor.status =
+                delta_app::AutosaveStatus::Saving;
         }
         let original = working.clone();
+        let is_sync_action = matches!(action, UiAction::Sync(_));
+        let is_save_note_action = matches!(action, UiAction::SaveNote(_));
         let note_switch = matches!(
             action,
             UiAction::NewNote(_) | UiAction::OpenNote(_) | UiAction::SelectMarker(_)
@@ -367,16 +394,25 @@ impl WorkbenchController {
                     crate::training_ui::TrainingUiAction::RequestAiReview { .. }
                 )
         );
+        let ai_target = if matches!(action, UiAction::AiReview { .. }) {
+            Some(AiRunTarget::Portfolio)
+        } else if is_training_ai {
+            Some(AiRunTarget::Training)
+        } else {
+            None
+        };
         self.busy = true;
-        self.ai_running = matches!(action, UiAction::AiReview { .. }) || is_training_ai;
+        self.ai_target = ai_target;
+        self.ai_running = ai_target.is_some();
+        self.last_stream_len = 0;
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&self.cancel);
         let stream = Arc::clone(&self.stream_text);
         if self.ai_running {
-            stream.lock().unwrap().clear();
+            crate::lock_or_recover(&stream).clear();
         }
         working.ui_error = None;
-        self.state.lock().unwrap().ui_notice = if self.ai_running {
+        crate::lock_or_recover(&self.state).ui_notice = if self.ai_running {
             "AI 正在生成，结果尚未校验…"
         } else {
             "正在处理…"
@@ -397,7 +433,7 @@ impl WorkbenchController {
         self.task = Some(cx.spawn_in(window, async move |view, cx| {
             let (mut completed, result, flushed_editor) = operation.await;
             let _ = view.update_in(cx, |controller, window, cx| {
-                let mut current = controller.state.lock().unwrap();
+                let mut current = crate::lock_or_recover(&controller.state);
                 if controller.scope_revision == scope_revision {
                     if controller.navigation_revision != navigation_revision {
                         completed.layout.active_nav = current.layout.active_nav.clone();
@@ -408,6 +444,10 @@ impl WorkbenchController {
                         &current.training,
                         &mut completed.training,
                     );
+                    if !is_sync_action || result.is_err() {
+                        completed.active_sync_job = current.active_sync_job;
+                        completed.last_job_snapshot = current.last_job_snapshot.clone();
+                    }
                     if controller.chart_revision != chart_revision {
                         completed.kline_viewport = current.kline_viewport.clone();
                         completed.kline_slice = current.kline_slice.clone();
@@ -464,6 +504,11 @@ impl WorkbenchController {
                         }
                         if controller.pending_scope.is_some()
                             && note_is_dirty(&completed.note_editor)
+                            && (is_save_note_action
+                                || matches!(
+                                    completed.note_editor.status,
+                                    delta_app::AutosaveStatus::SaveFailed { .. }
+                                ))
                         {
                             controller.pending_scope = None;
                         }
@@ -472,11 +517,14 @@ impl WorkbenchController {
                     }
                     *current = completed;
                 }
+                let deleted = current.library_deleted;
                 drop(current);
                 controller.busy = false;
                 controller.ai_running = false;
+                controller.ai_target = None;
+                controller.last_stream_len = 0;
                 cx.emit(WorkbenchUpdated);
-                if controller.state.lock().unwrap().library_deleted {
+                if deleted {
                     window.remove_window();
                     cx.quit();
                     return;
@@ -644,8 +692,10 @@ fn apply_action(
             state.search_hits = state.host.search_instruments(&query)?;
         }
         UiAction::SelectInstrument(id) => {
+            let indicators = state.kline_viewport.indicator_config.clone();
             state.active_instrument = id;
             state.kline_viewport = KlineViewport::new(0, 100);
+            state.kline_viewport.indicator_config = indicators;
             load_chart(state)?;
         }
         UiAction::ChartViewport(viewport) => {
@@ -703,12 +753,12 @@ fn apply_action(
         }
         UiAction::PageTransactions(filter) => {
             state.transaction_filter = filter.clone();
-            state.transactions = Some(state.host.query_transactions(
+            state.transactions = Some(Arc::new(state.host.query_transactions(
                 state.scope.clone(),
                 filter,
                 "ui-page",
                 state.host.current_generation(),
-            )?);
+            )?));
         }
         UiAction::NewNote(template) => {
             flush_dirty_note(state)?;
@@ -826,7 +876,7 @@ fn apply_action(
                 cancel,
                 move |event| {
                     if let ModelEventKind::TextDelta { delta } = event.kind {
-                        let mut text = stream.lock().unwrap();
+                        let mut text = crate::lock_or_recover(&stream);
                         if text.len() + delta.len() <= 256 * 1024 {
                             text.push_str(&delta);
                         }
@@ -947,7 +997,17 @@ fn apply_action(
                             ))
                         });
                     }
-                    let reopened = AppService::open(paths, "USD", "USD", "UTC", true)?;
+                    let currency = if state.layout.report_currency.trim().is_empty() {
+                        "USD"
+                    } else {
+                        state.layout.report_currency.as_str()
+                    };
+                    let tz = if state.layout.display_timezone.trim().is_empty() {
+                        "UTC"
+                    } else {
+                        state.layout.display_timezone.as_str()
+                    };
+                    let reopened = AppService::open(paths, currency, currency, tz, true)?;
                     state.host = delta_app::AppHost::from_service(reopened);
                     state.runtime = delta_app::AgentRuntime::new(state.host.clone())?;
                     result?;
@@ -993,7 +1053,7 @@ fn load_chart(state: &mut WorkbenchSharedState) -> Result<(), ErrorEnvelope> {
         }
     }
     state.kline_viewport.requested_window = None;
-    state.kline_slice = Some(slice);
+    state.kline_slice = Some(Arc::new(slice));
     Ok(())
 }
 
@@ -1049,7 +1109,8 @@ fn preserve_layout_edits(
         color_convention,
         locale,
         report_currency,
-        display_timezone
+        display_timezone,
+        close_action
     );
 }
 

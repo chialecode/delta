@@ -80,26 +80,15 @@ pub fn compute_sma(
     out
 }
 
-/// Exponential Moving Average (EMA), seeded with the SMA of the first `period` bars.
-pub fn compute_ema(
-    bars: &[BarRecord],
-    period: usize,
-    visible_until: Option<DateTime<Utc>>,
-) -> Vec<IndicatorPoint> {
-    let vis = filter_visible_final_bars(bars, visible_until);
-    let closes: Vec<f64> = vis
-        .iter()
-        .map(|b| b.close.to_f64().unwrap_or(0.0))
-        .collect();
-    let mut out = Vec::with_capacity(vis.len());
+fn compute_ema_values(closes: &[f64], period: usize) -> Vec<Option<f64>> {
+    let mut out = Vec::with_capacity(closes.len());
     if period == 0 {
         return out;
     }
-
     let k = 2.0 / ((period as f64) + 1.0);
     let mut prev_ema: Option<f64> = None;
 
-    for (i, bar) in vis.iter().enumerate() {
+    for (i, &close) in closes.iter().enumerate() {
         let value = if i + 1 < period {
             None
         } else if i + 1 == period {
@@ -107,18 +96,39 @@ pub fn compute_ema(
             prev_ema = Some(seed);
             Some(seed)
         } else {
-            let prev = prev_ema.unwrap_or(closes[i]);
-            let next = (closes[i] - prev) * k + prev;
+            let prev = prev_ema.unwrap_or(close);
+            let next = (close - prev) * k + prev;
             prev_ema = Some(next);
             Some(next)
         };
-        out.push(IndicatorPoint {
+        out.push(value);
+    }
+    out
+}
+
+/// Exponential Moving Average (EMA), seeded with the SMA of the first `period` bars.
+pub fn compute_ema(
+    bars: &[BarRecord],
+    period: usize,
+    visible_until: Option<DateTime<Utc>>,
+) -> Vec<IndicatorPoint> {
+    if period == 0 {
+        return Vec::new();
+    }
+    let vis = filter_visible_final_bars(bars, visible_until);
+    let closes: Vec<f64> = vis
+        .iter()
+        .map(|b| b.close.to_f64().unwrap_or(0.0))
+        .collect();
+    let values = compute_ema_values(&closes, period);
+    vis.into_iter()
+        .zip(values)
+        .map(|(bar, value)| IndicatorPoint {
             session_date: bar.session_date,
             close_at: bar.close_at,
             value,
-        });
-    }
-    out
+        })
+        .collect()
 }
 
 /// MACD (fast_period = 12, slow_period = 26, signal_period = 9 by default).
@@ -133,32 +143,34 @@ pub fn compute_macd(
         return Vec::new();
     }
     let vis = filter_visible_final_bars(bars, visible_until);
-    let fast = compute_ema(bars, fast_period, visible_until);
-    let slow = compute_ema(bars, slow_period, visible_until);
-
-    let mut macd_vals: Vec<Option<f64>> = Vec::with_capacity(vis.len());
-    for i in 0..vis.len() {
-        match (fast[i].value, slow[i].value) {
-            (Some(f), Some(s)) => macd_vals.push(Some(f - s)),
-            _ => macd_vals.push(None),
-        }
-    }
+    let closes: Vec<f64> = vis
+        .iter()
+        .map(|b| b.close.to_f64().unwrap_or(0.0))
+        .collect();
+    let fast = compute_ema_values(&closes, fast_period);
+    let slow = compute_ema_values(&closes, slow_period);
 
     let k_sig = 2.0 / ((signal_period as f64) + 1.0);
-    let mut valid_macd_window: Vec<f64> = Vec::new();
+    let mut valid_macd_count = 0_usize;
+    let mut seed_sum = 0.0_f64;
     let mut prev_sig: Option<f64> = None;
     let mut out = Vec::with_capacity(vis.len());
 
     for (i, bar) in vis.iter().enumerate() {
-        let m_opt = macd_vals[i];
+        let m_opt = match (fast[i], slow[i]) {
+            (Some(f), Some(s)) => Some(f - s),
+            _ => None,
+        };
         let (sig_opt, hist_opt) = match m_opt {
             None => (None, None),
             Some(m) => {
-                valid_macd_window.push(m);
-                if valid_macd_window.len() < signal_period || signal_period == 0 {
+                valid_macd_count += 1;
+                if valid_macd_count < signal_period {
+                    seed_sum += m;
                     (None, None)
-                } else if valid_macd_window.len() == signal_period {
-                    let seed = valid_macd_window.iter().sum::<f64>() / (signal_period as f64);
+                } else if valid_macd_count == signal_period {
+                    seed_sum += m;
+                    let seed = seed_sum / (signal_period as f64);
                     prev_sig = Some(seed);
                     (Some(seed), Some(m - seed))
                 } else {
@@ -180,21 +192,37 @@ pub fn compute_macd(
     out
 }
 
+fn rsi_from_avgs(avg_gain: f64, avg_loss: f64) -> f64 {
+    if avg_loss == 0.0 {
+        if avg_gain == 0.0 {
+            50.0
+        } else {
+            100.0
+        }
+    } else {
+        let rs = avg_gain / avg_loss;
+        100.0 - (100.0 / (1.0 + rs))
+    }
+}
+
 /// Wilder's RSI (default period = 14).
 pub fn compute_rsi(
     bars: &[BarRecord],
     period: usize,
     visible_until: Option<DateTime<Utc>>,
 ) -> Vec<IndicatorPoint> {
+    if period == 0 {
+        return Vec::new();
+    }
     let vis = filter_visible_final_bars(bars, visible_until);
+    if vis.is_empty() {
+        return Vec::new();
+    }
     let closes: Vec<f64> = vis
         .iter()
         .map(|b| b.close.to_f64().unwrap_or(0.0))
         .collect();
     let mut out = Vec::with_capacity(vis.len());
-    if period == 0 || vis.is_empty() {
-        return out;
-    }
 
     let mut avg_gain = 0.0;
     let mut avg_loss = 0.0;
@@ -212,43 +240,24 @@ pub fn compute_rsi(
         let gain = if change > 0.0 { change } else { 0.0 };
         let loss = if change < 0.0 { -change } else { 0.0 };
 
-        if i < period {
+        let value = if i < period {
             avg_gain += gain;
             avg_loss += loss;
-            out.push(IndicatorPoint {
-                session_date: bar.session_date,
-                close_at: bar.close_at,
-                value: None,
-            });
+            None
         } else if i == period {
             avg_gain = (avg_gain + gain) / (period as f64);
             avg_loss = (avg_loss + loss) / (period as f64);
-            let rsi = if avg_loss == 0.0 {
-                100.0
-            } else {
-                let rs = avg_gain / avg_loss;
-                100.0 - (100.0 / (1.0 + rs))
-            };
-            out.push(IndicatorPoint {
-                session_date: bar.session_date,
-                close_at: bar.close_at,
-                value: Some(rsi),
-            });
+            Some(rsi_from_avgs(avg_gain, avg_loss))
         } else {
             avg_gain = (avg_gain * ((period - 1) as f64) + gain) / (period as f64);
             avg_loss = (avg_loss * ((period - 1) as f64) + loss) / (period as f64);
-            let rsi = if avg_loss == 0.0 {
-                100.0
-            } else {
-                let rs = avg_gain / avg_loss;
-                100.0 - (100.0 / (1.0 + rs))
-            };
-            out.push(IndicatorPoint {
-                session_date: bar.session_date,
-                close_at: bar.close_at,
-                value: Some(rsi),
-            });
-        }
+            Some(rsi_from_avgs(avg_gain, avg_loss))
+        };
+        out.push(IndicatorPoint {
+            session_date: bar.session_date,
+            close_at: bar.close_at,
+            value,
+        });
     }
     out
 }
@@ -340,4 +349,70 @@ pub fn compute_bollinger_bands(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::AdjustmentKind;
+    use chrono::TimeZone;
+    use rust_decimal::Decimal;
+
+    fn bar(day: u32, close: i64) -> BarRecord {
+        let d = NaiveDate::from_ymd_opt(2026, 1, day).unwrap();
+        let px = Decimal::from(close);
+        BarRecord {
+            id: format!("B-{day}"),
+            instrument_id: "TEST".into(),
+            timeframe: "1d".into(),
+            session: "regular".into(),
+            session_date: d,
+            open_at: Utc.with_ymd_and_hms(2026, 1, day, 14, 30, 0).unwrap(),
+            close_at: Utc.with_ymd_and_hms(2026, 1, day, 21, 0, 0).unwrap(),
+            open: px,
+            high: px,
+            low: px,
+            close: px,
+            volume: Decimal::from(100),
+            source: "test".into(),
+            adjustment: AdjustmentKind::Raw,
+            is_final: true,
+            valid_from_version: 1,
+            valid_to_version: None,
+            raw_payload_hash: None,
+        }
+    }
+
+    #[test]
+    fn flat_series_rsi_is_neutral_50_and_rising_is_100() {
+        let flat: Vec<BarRecord> = (1..=6).map(|d| bar(d, 100)).collect();
+        let rsi_flat = compute_rsi(&flat, 3, None);
+        assert_eq!(rsi_flat[2].value, None);
+        assert_eq!(rsi_flat[3].value, Some(50.0));
+        assert_eq!(rsi_flat[5].value, Some(50.0));
+
+        let rising: Vec<BarRecord> = (1..=6).map(|d| bar(d, 100 + d as i64)).collect();
+        let rsi_rising = compute_rsi(&rising, 3, None);
+        assert_eq!(rsi_rising[3].value, Some(100.0));
+        assert_eq!(rsi_rising[5].value, Some(100.0));
+    }
+
+    #[test]
+    fn macd_single_pass_matches_ema_difference_and_signal() {
+        let bars: Vec<BarRecord> = (1..=10).map(|d| bar(d, 100 + (d as i64) * 2)).collect();
+        let macd = compute_macd(&bars, 2, 3, 2, None);
+        let fast = compute_ema(&bars, 2, None);
+        let slow = compute_ema(&bars, 3, None);
+        assert_eq!(macd.len(), 10);
+        for i in 0..10 {
+            match (fast[i].value, slow[i].value) {
+                (Some(f), Some(s)) => {
+                    assert!((macd[i].macd.unwrap() - (f - s)).abs() < 1e-12);
+                }
+                _ => assert!(macd[i].macd.is_none()),
+            }
+        }
+        assert!(macd[3].signal.is_some());
+        assert!((macd[3].histogram.unwrap()).abs() < 1e-12);
+    }
 }

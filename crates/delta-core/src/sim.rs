@@ -1,31 +1,29 @@
-use crate::decimal::to_canonical_text;
-use crate::indicators::filter_visible_final_bars;
-use crate::model::{
-    AdjustmentKind, BarRecord, CorporateActionRecord, CorporateActionType, Instrument,
-};
+pub use crate::decimal::canon_decimal;
+use crate::model::{BarRecord, CorporateActionRecord, CorporateActionType, Instrument};
 use chrono::{DateTime, NaiveDate, Utc};
-use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
+mod fees;
+mod matching;
+mod prng;
+
+pub use fees::*;
+pub use matching::*;
+pub use prng::*;
+
 /// Frozen simulation engine version identifier for M4 (`S-36`).
 pub const SIM_ENGINE_VERSION: &str = "m4-sim-1";
+/// M5 engine (`S-51`): `m4-sim-1` plus visible-close quick fills, order modify, single undo
+/// within the current bar and intraday `DAY` expiry. Old runs always replay as `m4-sim-1`.
+pub const SIM_ENGINE_VERSION_M5: &str = "m5-sim-2";
+/// Frozen per run and printed in the report's sample limitations (`S-51` ①).
+pub const FILL_RULE_VERSION_M5: &str = "m5-fill-1:quick=visible_close;orders=next_open_path";
 
 /// Market-order cash reservation buffer (`10%` above last visible close, `S-40`).
 pub const MARKET_BUY_RESERVATION_BUFFER_RATE: &str = "0.10";
-
-/// Normalize a `Decimal` so `-0` and trailing fractional zeros never cause canonical divergence.
-#[inline]
-pub fn canon_decimal(value: Decimal) -> Decimal {
-    if value.is_zero() {
-        Decimal::ZERO
-    } else {
-        value.normalize()
-    }
-}
 
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error_kind", rename_all = "snake_case")]
@@ -71,6 +69,19 @@ pub enum SimError {
     InvalidSamplingRange(String),
     #[error("decimal arithmetic overflow in '{0}'")]
     ArithmeticOverflow(String),
+    #[error("order '{order_id}' cannot be modified in status '{}'", status.as_str())]
+    OrderNotModifiable {
+        order_id: String,
+        status: OrderStatus,
+    },
+    #[error("nothing to undo: {0}")]
+    UndoUnavailable(String),
+    #[error("'{feature}' requires engine {required}, run uses {actual}")]
+    EngineFeatureUnavailable {
+        feature: String,
+        required: String,
+        actual: String,
+    },
 }
 
 impl SimError {
@@ -85,869 +96,6 @@ impl SimError {
             _ => None,
         }
     }
-}
-
-// ============================================================================
-// 1. W01 Pure Math Helpers: Counter-mode PRNG (S-38) & PIT Split Adjustment (S-37)
-// ============================================================================
-
-/// Compute one deterministic 64-bit random word from `SHA-256(seed || purpose || counter)` (`S-38`).
-/// Uses explicit big-endian byte length framing for `seed` and `purpose` to eliminate boundary collisions.
-pub fn prng_block_u64(seed: &[u8], purpose: &str, counter: u64) -> u64 {
-    let mut hasher = Sha256::new();
-    hasher.update((seed.len() as u64).to_be_bytes());
-    hasher.update(seed);
-    hasher.update((purpose.len() as u64).to_be_bytes());
-    hasher.update(purpose.as_bytes());
-    hasher.update(counter.to_be_bytes());
-    let digest = hasher.finalize();
-    let mut first_eight = [0u8; 8];
-    first_eight.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(first_eight)
-}
-
-/// Deterministic counter-mode PRNG backed by `SHA-256(seed || purpose || counter)` (`S-38`).
-/// Algorithm is frozen with `m4-sim-1` and independent of external RNG crate upgrades.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeterministicPrng {
-    seed: Vec<u8>,
-    purpose: String,
-    counter: u64,
-}
-
-impl DeterministicPrng {
-    pub fn new(seed: impl AsRef<[u8]>, purpose: impl Into<String>) -> Self {
-        Self {
-            seed: seed.as_ref().to_vec(),
-            purpose: purpose.into(),
-            counter: 0,
-        }
-    }
-
-    pub fn with_counter(seed: impl AsRef<[u8]>, purpose: impl Into<String>, counter: u64) -> Self {
-        Self {
-            seed: seed.as_ref().to_vec(),
-            purpose: purpose.into(),
-            counter,
-        }
-    }
-
-    pub fn counter(&self) -> u64 {
-        self.counter
-    }
-
-    pub fn next_u64(&mut self) -> u64 {
-        let word = prng_block_u64(&self.seed, &self.purpose, self.counter);
-        self.counter = self.counter.wrapping_add(1);
-        word
-    }
-
-    /// Rejection-sampled unbiased integer in `[0, upper_exclusive)` (`S-38`).
-    pub fn next_u64_below(&mut self, upper_exclusive: u64) -> Result<u64, SimError> {
-        if upper_exclusive == 0 {
-            return Err(SimError::InvalidSamplingRange(
-                "upper_exclusive must be at least 1".into(),
-            ));
-        }
-        // 2^64 mod upper_exclusive == upper_exclusive.wrapping_neg() % upper_exclusive
-        let threshold = upper_exclusive.wrapping_neg() % upper_exclusive;
-        loop {
-            let candidate = self.next_u64();
-            if candidate >= threshold {
-                return Ok(candidate % upper_exclusive);
-            }
-        }
-    }
-
-    /// Rejection-sampled unbiased slice index in `[0, len)`.
-    pub fn next_index(&mut self, len: usize) -> Result<usize, SimError> {
-        let idx = self.next_u64_below(len as u64)?;
-        Ok(idx as usize)
-    }
-}
-
-/// Deterministically sample an initial candidate index plus `redraw_count` explicit pre-start redraws
-/// from a candidate pool of size `pool_len` (`S-38`, `M4-A-02`).
-/// When `pool_len > 1`, each redraw avoids immediately repeating the previous draw.
-pub fn sample_candidate_sequence(
-    seed: &str,
-    pool_len: usize,
-    redraw_count: u32,
-) -> Result<Vec<usize>, SimError> {
-    if pool_len == 0 {
-        return Err(SimError::InvalidSamplingRange(
-            "candidate pool is empty".into(),
-        ));
-    }
-    let mut prng = DeterministicPrng::new(seed.as_bytes(), "training_candidate_sample");
-    let mut history = Vec::with_capacity((redraw_count as usize) + 1);
-    let first = prng.next_index(pool_len)?;
-    history.push(first);
-    for _ in 0..redraw_count {
-        if pool_len == 1 {
-            let _ = prng.next_u64();
-            history.push(0);
-        } else {
-            let prev = *history.last().unwrap_or(&0);
-            let offset = prng.next_index(pool_len - 1)?;
-            let next = if offset >= prev { offset + 1 } else { offset };
-            history.push(next);
-        }
-    }
-    Ok(history)
-}
-
-fn corporate_action_source_priority(source: &str) -> u8 {
-    match source {
-        "tiingo" => 3,
-        "yahoo" => 2,
-        _ => 1,
-    }
-}
-
-fn deduplicate_corporate_actions<'a>(
-    actions: &'a [CorporateActionRecord],
-) -> Vec<&'a CorporateActionRecord> {
-    let mut dedup: BTreeMap<(String, NaiveDate, u8), &'a CorporateActionRecord> = BTreeMap::new();
-    for action in actions {
-        let type_disc = match action.action_type {
-            CorporateActionType::Split => 0,
-            CorporateActionType::CashDividend => 1,
-        };
-        let key = (action.instrument_id.clone(), action.ex_date, type_disc);
-        match dedup.get(&key) {
-            Some(existing) => {
-                let new_rank = (
-                    action.factor_version,
-                    corporate_action_source_priority(&action.source),
-                    &action.id,
-                );
-                let old_rank = (
-                    existing.factor_version,
-                    corporate_action_source_priority(&existing.source),
-                    &existing.id,
-                );
-                if new_rank > old_rank {
-                    dedup.insert(key, action);
-                }
-            }
-            None => {
-                dedup.insert(key, action);
-            }
-        }
-    }
-    dedup.into_values().collect()
-}
-
-/// Derive point-in-time split-adjusted bars at `visible_until` (`S-37`, `M4-A-03`):
-/// - Strictly truncates bars to `is_final && close_at <= visible_until`.
-/// - Applies ONLY `Split` corporate actions where `ex_date <= current_visible_session_date`
-///   backwards to bars with `bar.session_date < ex_date`; future splits (`ex_date > cutoff`)
-///   are excluded prior to validation so future sentinels can never leak.
-/// - Cash dividends are never adjusted into prices (`S-37`).
-pub fn derive_point_in_time_split_adjusted_bars(
-    raw_bars: &[BarRecord],
-    corporate_actions: &[CorporateActionRecord],
-    visible_until: DateTime<Utc>,
-) -> Result<Vec<BarRecord>, SimError> {
-    let vis_refs = filter_visible_final_bars(raw_bars, Some(visible_until));
-    if vis_refs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let utc_cutoff_date = visible_until.date_naive();
-    let mut max_session_by_instrument: BTreeMap<String, NaiveDate> = BTreeMap::new();
-    for bar in &vis_refs {
-        let entry = max_session_by_instrument
-            .entry(bar.instrument_id.clone())
-            .or_insert(bar.session_date);
-        if bar.session_date > *entry {
-            *entry = bar.session_date;
-        }
-    }
-
-    // Filter to visible Split actions BEFORE inspecting ratio_or_amount so future sentinel rows are untouched.
-    let visible_splits: Vec<CorporateActionRecord> = corporate_actions
-        .iter()
-        .filter(|ca| {
-            if ca.action_type != CorporateActionType::Split {
-                return false;
-            }
-            let Some(&inst_max_session) = max_session_by_instrument.get(&ca.instrument_id) else {
-                return false;
-            };
-            let cutoff = inst_max_session.min(utc_cutoff_date);
-            ca.ex_date <= cutoff
-        })
-        .cloned()
-        .collect();
-
-    let dedup_splits = deduplicate_corporate_actions(&visible_splits);
-
-    let mut out = Vec::with_capacity(vis_refs.len());
-    for bar in vis_refs {
-        let mut split_factor = Decimal::ONE;
-        for action in &dedup_splits {
-            if action.instrument_id != bar.instrument_id || action.ex_date <= bar.session_date {
-                continue;
-            }
-            if action.ratio_or_amount <= Decimal::ZERO {
-                return Err(SimError::InvalidCorporateAction {
-                    action_id: action.id.clone(),
-                    reason: format!(
-                        "split ratio must be positive, got {}",
-                        action.ratio_or_amount
-                    ),
-                });
-            }
-            split_factor = split_factor
-                .checked_mul(action.ratio_or_amount)
-                .ok_or_else(|| SimError::ArithmeticOverflow("pit_split_factor".into()))?;
-        }
-
-        let adjust_price = |raw_price: Decimal| -> Result<Decimal, SimError> {
-            if split_factor == Decimal::ONE {
-                return Ok(canon_decimal(raw_price));
-            }
-            let scale = 6_u32.max(raw_price.scale());
-            let divided = raw_price
-                .checked_div(split_factor)
-                .ok_or_else(|| SimError::ArithmeticOverflow("pit_split_price".into()))?;
-            Ok(canon_decimal(divided.round_dp_with_strategy(
-                scale,
-                RoundingStrategy::MidpointAwayFromZero,
-            )))
-        };
-
-        let mut adjusted = bar.clone();
-        adjusted.adjustment = AdjustmentKind::SplitAdjusted;
-        adjusted.open = adjust_price(bar.open)?;
-        adjusted.high = adjust_price(bar.high)?;
-        adjusted.low = adjust_price(bar.low)?;
-        adjusted.close = adjust_price(bar.close)?;
-        adjusted.volume = canon_decimal(
-            bar.volume
-                .checked_mul(split_factor)
-                .ok_or_else(|| SimError::ArithmeticOverflow("pit_split_volume".into()))?,
-        );
-        out.push(adjusted);
-    }
-    Ok(out)
-}
-
-// ============================================================================
-// 2. Tick & Lot Validation + Adverse Tick Rounding (S-39, M4-A-04)
-// ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StepValidationViolation {
-    pub invalid_value: Decimal,
-    pub step_size: Decimal,
-    pub nearest_lower: Option<Decimal>,
-    pub nearest_upper: Option<Decimal>,
-}
-
-/// Check that `value > 0` and `value` is an exact integer multiple of `step_size` (`tick_size` or `lot_size`).
-/// Returns nearest valid lower (> 0) and upper multiples when violated (`M4-A-04`).
-pub fn validate_step_multiple(
-    value: Decimal,
-    step_size: Decimal,
-) -> Result<Decimal, StepValidationViolation> {
-    let step = canon_decimal(step_size);
-    if value <= Decimal::ZERO {
-        return Err(StepValidationViolation {
-            invalid_value: canon_decimal(value),
-            step_size: step,
-            nearest_lower: None,
-            nearest_upper: (step > Decimal::ZERO).then_some(step),
-        });
-    }
-    let rem = value % step;
-    if rem.is_zero() {
-        return Ok(canon_decimal(value));
-    }
-    let lower = canon_decimal(value - rem);
-    let upper = canon_decimal(lower + step);
-    Err(StepValidationViolation {
-        invalid_value: canon_decimal(value),
-        step_size: step,
-        nearest_lower: (lower > Decimal::ZERO).then_some(lower),
-        nearest_upper: Some(upper),
-    })
-}
-
-/// Round an execution price adversely to `tick_size` (`S-39`, `M4-A-04`):
-/// - `Buy` rounds UP (ceiling tick).
-/// - `Sell` rounds DOWN (floor tick, clamped at `tick_size` so execution price remains strictly positive).
-pub fn round_price_adverse_tick(
-    raw_price: Decimal,
-    side: OrderSide,
-    tick_size: Decimal,
-) -> Decimal {
-    let tick = canon_decimal(tick_size);
-    if tick <= Decimal::ZERO {
-        return canon_decimal(raw_price);
-    }
-    if raw_price <= Decimal::ZERO {
-        return tick;
-    }
-    let rem = raw_price % tick;
-    if rem.is_zero() {
-        return canon_decimal(raw_price);
-    }
-    match side {
-        OrderSide::Buy => canon_decimal((raw_price - rem) + tick),
-        OrderSide::Sell => {
-            let floored = canon_decimal(raw_price - rem);
-            if floored > Decimal::ZERO {
-                floored
-            } else {
-                tick
-            }
-        }
-    }
-}
-
-// ============================================================================
-// 3. Composable Fee Profile & Multi-Fill Settlement Engine (S-41, M4-A-07, M4-A-08)
-// ============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FeeMarketCategory {
-    Any,
-    UsEquity,
-    CryptoSpot,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FeeCurrencyMode {
-    /// Fee is charged in the instrument's quote currency (e.g. USD, USDT).
-    Quote,
-    /// On a Buy, fee is charged in the received base asset and deducted from received base quantity;
-    /// on a Sell, received asset is the quote currency (`M4-A-07`).
-    ReceivedAsset,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FeeRoundingMode {
-    HalfUp,
-    HalfEven,
-    Up,
-    Down,
-}
-
-impl FeeRoundingMode {
-    pub fn to_strategy(self) -> RoundingStrategy {
-        match self {
-            Self::HalfUp => RoundingStrategy::MidpointAwayFromZero,
-            Self::HalfEven => RoundingStrategy::MidpointNearestEven,
-            Self::Up => RoundingStrategy::AwayFromZero,
-            Self::Down => RoundingStrategy::ToZero,
-        }
-    }
-
-    pub fn round_value(self, value: Decimal, scale: u32) -> Decimal {
-        canon_decimal(value.round_dp_with_strategy(scale, self.to_strategy()))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FeeChargingTier {
-    /// Variable fee rounded on each fill; per-order fixed/min/max applied once across the order (`M4-A-07`).
-    PerFill,
-    /// Variable fees accumulated unrounded across fills and settled/rounded once at order end (`M4-A-07`).
-    PerOrder,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum SlippageSpec {
-    Zero,
-    Bps(Decimal),
-    Ticks(u32),
-}
-
-impl SlippageSpec {
-    pub fn canonical(self) -> Self {
-        match self {
-            Self::Zero => Self::Zero,
-            Self::Bps(bps) if bps.is_zero() => Self::Zero,
-            Self::Bps(bps) => Self::Bps(canon_decimal(bps)),
-            Self::Ticks(0) => Self::Zero,
-            Self::Ticks(n) => Self::Ticks(n),
-        }
-    }
-
-    pub fn delta_for_price(self, reference_price: Decimal, tick_size: Decimal) -> Decimal {
-        match self {
-            Self::Zero => Decimal::ZERO,
-            Self::Bps(bps) => (reference_price * bps) / Decimal::from(10_000),
-            Self::Ticks(n) => Decimal::from(n) * tick_size,
-        }
-    }
-}
-
-/// Immutable, versioned fee & execution environment profile (`S-41`, `M4-A-07`, `M4-A-08`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FeeProfileVersion {
-    pub id: String,
-    pub preset_key: String,
-    pub name: String,
-    pub version: u32,
-    pub market_category: FeeMarketCategory,
-    /// Proportional rate (e.g. `0.001` for `0.10%`).
-    pub notional_rate: Decimal,
-    /// Fee per base unit / share in settled fee currency.
-    pub per_unit_fee: Decimal,
-    /// Fixed fee charged once per order (if at least one fill occurs).
-    pub per_order_fixed_fee: Decimal,
-    /// Minimum total fee per executed order (settled once when order finishes, never per fill).
-    pub min_fee_per_order: Option<Decimal>,
-    /// Maximum total fee cap per executed order.
-    pub max_fee_per_order: Option<Decimal>,
-    pub fee_currency_mode: FeeCurrencyMode,
-    pub rounding_mode: FeeRoundingMode,
-    pub rounding_scale: u32,
-    pub charging_tier: FeeChargingTier,
-    pub slippage: SlippageSpec,
-    /// One-way half-spread in basis points applied adversely to Market orders (`S-39`, `S-41`).
-    pub half_spread_bps: Decimal,
-    pub is_builtin: bool,
-    /// True ONLY for real broker/exchange presets; requires verified `official_source_url` + `official_retrieved_at` (`M4-A-08`).
-    pub is_platform_preset: bool,
-    pub official_source_url: Option<String>,
-    pub official_retrieved_at: Option<NaiveDate>,
-    pub effective_from: Option<NaiveDate>,
-    pub effective_to: Option<NaiveDate>,
-    pub assumption_note: String,
-}
-
-impl FeeProfileVersion {
-    pub fn canonical(mut self) -> Self {
-        self.notional_rate = canon_decimal(self.notional_rate);
-        self.per_unit_fee = canon_decimal(self.per_unit_fee);
-        self.per_order_fixed_fee = canon_decimal(self.per_order_fixed_fee);
-        self.min_fee_per_order = self.min_fee_per_order.map(canon_decimal);
-        self.max_fee_per_order = self.max_fee_per_order.map(canon_decimal);
-        self.slippage = self.slippage.canonical();
-        self.half_spread_bps = canon_decimal(self.half_spread_bps);
-        self
-    }
-
-    pub fn validate(&self) -> Result<(), SimError> {
-        let invalid = |reason: &str| SimError::InvalidFeeProfile {
-            profile_id: self.id.clone(),
-            reason: reason.to_string(),
-        };
-        if self.id.trim().is_empty() || self.name.trim().is_empty() {
-            return Err(invalid("id and name must be non-empty"));
-        }
-        if self.version == 0 {
-            return Err(invalid("version must be >= 1"));
-        }
-        if self.notional_rate < Decimal::ZERO
-            || self.per_unit_fee < Decimal::ZERO
-            || self.per_order_fixed_fee < Decimal::ZERO
-            || self.half_spread_bps < Decimal::ZERO
-        {
-            return Err(invalid("fee rates and half-spread must be non-negative"));
-        }
-        if self.notional_rate >= Decimal::ONE {
-            return Err(invalid("notional_rate must be < 1"));
-        }
-        if let SlippageSpec::Bps(bps) = self.slippage {
-            if bps < Decimal::ZERO {
-                return Err(invalid("slippage bps must be non-negative"));
-            }
-        }
-        if self.rounding_scale > 18 {
-            return Err(invalid("rounding_scale must be <= 18"));
-        }
-        if let Some(min_f) = self.min_fee_per_order {
-            if min_f < Decimal::ZERO {
-                return Err(invalid("min_fee_per_order must be non-negative"));
-            }
-        }
-        if let Some(max_f) = self.max_fee_per_order {
-            if max_f < Decimal::ZERO {
-                return Err(invalid("max_fee_per_order must be non-negative"));
-            }
-        }
-        if let (Some(min_f), Some(max_f)) = (self.min_fee_per_order, self.max_fee_per_order) {
-            if min_f > max_f {
-                return Err(invalid("min_fee_per_order cannot exceed max_fee_per_order"));
-            }
-        }
-        if self.is_platform_preset {
-            let has_url = self
-                .official_source_url
-                .as_ref()
-                .is_some_and(|u| u.starts_with("https://"));
-            if !has_url || self.official_retrieved_at.is_none() {
-                return Err(invalid(
-                    "platform presets must carry a verified official https URL and retrieval date",
-                ));
-            }
-        }
-        if self.assumption_note.trim().is_empty() {
-            return Err(invalid("assumption_note must be non-empty"));
-        }
-        Ok(())
-    }
-
-    /// Create a new immutable version from `self` without mutating `self` (`M4-A-08`).
-    pub fn derive_next_version(
-        &self,
-        new_id: impl Into<String>,
-        edit: impl FnOnce(&mut FeeProfileVersion),
-    ) -> Result<FeeProfileVersion, SimError> {
-        let mut next = self.clone();
-        next.id = new_id.into();
-        next.version = self
-            .version
-            .checked_add(1)
-            .ok_or_else(|| SimError::ArithmeticOverflow("fee_profile_version".into()))?;
-        next.is_builtin = false;
-        edit(&mut next);
-        let next = next.canonical();
-        next.validate()?;
-        Ok(next)
-    }
-}
-
-/// Return the built-in M4 fee profile templates (`S-41`, `M4-A-08`).
-///
-/// Verification note (`2026-11-12`): Futu US equity schedules vary by legal entity (HK/SG/US),
-/// package choice (fixed vs monthly tiered platform fee), and sell-only regulatory pass-throughs;
-/// OKX spot schedules vary across Regular/VIP 1-9 tiers, OKB holdings, and Maker vs Taker roles
-/// that daily OHLC bars cannot distinguish. Per `S-41`, platform-specific Futu/OKX presets remain
-/// in `LOOP-06` and only the three explicit scenario-assumption templates are shipped built-in.
-pub fn builtin_fee_profiles() -> Vec<FeeProfileVersion> {
-    vec![
-        FeeProfileVersion {
-            id: "builtin-zero-cost-v1".to_string(),
-            preset_key: "zero_cost".to_string(),
-            name: "Zero Cost (Scenario Assumption)".to_string(),
-            version: 1,
-            market_category: FeeMarketCategory::Any,
-            notional_rate: Decimal::ZERO,
-            per_unit_fee: Decimal::ZERO,
-            per_order_fixed_fee: Decimal::ZERO,
-            min_fee_per_order: None,
-            max_fee_per_order: None,
-            fee_currency_mode: FeeCurrencyMode::Quote,
-            rounding_mode: FeeRoundingMode::HalfUp,
-            rounding_scale: 2,
-            charging_tier: FeeChargingTier::PerOrder,
-            slippage: SlippageSpec::Zero,
-            half_spread_bps: Decimal::ZERO,
-            is_builtin: true,
-            is_platform_preset: false,
-            official_source_url: None,
-            official_retrieved_at: None,
-            effective_from: None,
-            effective_to: None,
-            assumption_note: "Scenario assumption: zero commission, zero spread, zero slippage"
-                .to_string(),
-        }
-        .canonical(),
-        FeeProfileVersion {
-            id: "builtin-us-equity-per-share-example-v1".to_string(),
-            preset_key: "us_equity_per_share_example".to_string(),
-            name: "US Equity Per-Share Example (Scenario Assumption)".to_string(),
-            version: 1,
-            market_category: FeeMarketCategory::UsEquity,
-            notional_rate: Decimal::ZERO,
-            per_unit_fee: Decimal::new(5, 3), // 0.005 USD / share
-            per_order_fixed_fee: Decimal::ZERO,
-            min_fee_per_order: Some(Decimal::ONE), // 1.00 USD / order min
-            max_fee_per_order: None,
-            fee_currency_mode: FeeCurrencyMode::Quote,
-            rounding_mode: FeeRoundingMode::HalfUp,
-            rounding_scale: 2,
-            charging_tier: FeeChargingTier::PerOrder,
-            slippage: SlippageSpec::Bps(Decimal::from(2)),
-            half_spread_bps: Decimal::ONE,
-            is_builtin: true,
-            is_platform_preset: false,
-            official_source_url: None,
-            official_retrieved_at: None,
-            effective_from: None,
-            effective_to: None,
-            assumption_note: "Scenario assumption: illustrative $0.005/share (min $1.00/order), 1 bps half-spread, 2 bps slippage; not a live broker schedule (Futu/OKX platform presets deferred to LOOP-06)".to_string(),
-        }
-        .canonical(),
-        FeeProfileVersion {
-            id: "builtin-crypto-rate-example-v1".to_string(),
-            preset_key: "crypto_rate_example".to_string(),
-            name: "Crypto Notional Rate Example (Scenario Assumption)".to_string(),
-            version: 1,
-            market_category: FeeMarketCategory::CryptoSpot,
-            notional_rate: Decimal::new(1, 3), // 0.001 (0.10%)
-            per_unit_fee: Decimal::ZERO,
-            per_order_fixed_fee: Decimal::ZERO,
-            min_fee_per_order: None,
-            max_fee_per_order: None,
-            fee_currency_mode: FeeCurrencyMode::Quote,
-            rounding_mode: FeeRoundingMode::HalfUp,
-            rounding_scale: 6,
-            charging_tier: FeeChargingTier::PerOrder,
-            slippage: SlippageSpec::Bps(Decimal::from(3)),
-            half_spread_bps: Decimal::from(2),
-            is_builtin: true,
-            is_platform_preset: false,
-            official_source_url: None,
-            official_retrieved_at: None,
-            effective_from: None,
-            effective_to: None,
-            assumption_note: "Scenario assumption: illustrative 0.10% notional fee in quote currency, 2 bps half-spread, 3 bps slippage; not a live exchange tier schedule (Futu/OKX platform presets deferred to LOOP-06)".to_string(),
-        }
-        .canonical(),
-    ]
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyntheticFillInput {
-    pub fill_id: String,
-    pub quantity: Decimal,
-    pub fill_price: Decimal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SettledFillFee {
-    pub fill_id: String,
-    pub gross_quantity: Decimal,
-    pub net_received_base_quantity: Decimal,
-    pub fill_price: Decimal,
-    pub fee_amount: Decimal,
-    pub fee_currency: String,
-    pub fee_quote_value: Decimal,
-    pub net_quote_cash_delta: Decimal,
-    pub min_fee_top_up_applied: Decimal,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrderFeeSettlement {
-    pub fee_profile_id: String,
-    pub side: OrderSide,
-    pub fee_currency: String,
-    pub fills: Vec<SettledFillFee>,
-    pub total_fee_amount: Decimal,
-    pub total_fee_quote_value: Decimal,
-    pub min_fee_top_up_applied: Decimal,
-    pub max_fee_cap_applied: bool,
-}
-
-/// Settle composable fees over a completed order consisting of one or multiple fills (`S-41`, `M4-A-07`).
-///
-/// Guarantees:
-/// - `min_fee_per_order` and `max_fee_per_order` are applied ONCE across the order when it ends,
-///   never duplicated per fill.
-/// - `fills.iter().map(|f| f.fee_amount).sum() == total_fee_amount` holds identically.
-/// - When `fee_currency_mode == ReceivedAsset` on a `Buy`, fee is denominated in `base_asset_id`
-///   and deducted from `net_received_base_quantity` (`M4-A-07`).
-pub fn settle_order_fees(
-    profile: &FeeProfileVersion,
-    side: OrderSide,
-    base_asset_id: &str,
-    quote_currency: &str,
-    fills: &[SyntheticFillInput],
-) -> Result<OrderFeeSettlement, SimError> {
-    profile.validate()?;
-    let fee_in_received_base =
-        side == OrderSide::Buy && profile.fee_currency_mode == FeeCurrencyMode::ReceivedAsset;
-    let fee_currency = if fee_in_received_base {
-        base_asset_id.to_string()
-    } else {
-        quote_currency.to_string()
-    };
-
-    if fills.is_empty() {
-        return Ok(OrderFeeSettlement {
-            fee_profile_id: profile.id.clone(),
-            side,
-            fee_currency,
-            fills: Vec::new(),
-            total_fee_amount: Decimal::ZERO,
-            total_fee_quote_value: Decimal::ZERO,
-            min_fee_top_up_applied: Decimal::ZERO,
-            max_fee_cap_applied: false,
-        });
-    }
-
-    let min_rounded = profile
-        .min_fee_per_order
-        .map(|m| profile.rounding_mode.round_value(m, profile.rounding_scale));
-    let max_rounded = profile
-        .max_fee_per_order
-        .map(|m| profile.rounding_mode.round_value(m, profile.rounding_scale));
-
-    let mut settled_fills = Vec::with_capacity(fills.len());
-    let mut cumulative_settled = Decimal::ZERO;
-    let mut cumulative_unrounded = Decimal::ZERO;
-    let mut min_top_up_applied = Decimal::ZERO;
-    let mut max_cap_applied = false;
-    let last_idx = fills.len() - 1;
-
-    for (idx, fill) in fills.iter().enumerate() {
-        if fill.quantity <= Decimal::ZERO || fill.fill_price <= Decimal::ZERO {
-            return Err(SimError::InvalidFeeProfile {
-                profile_id: profile.id.clone(),
-                reason: "fill quantity and fill_price must be positive".into(),
-            });
-        }
-        let is_last = idx == last_idx;
-        let var_raw = if fee_in_received_base {
-            fill.quantity * profile.notional_rate + fill.quantity * profile.per_unit_fee
-        } else {
-            let notional = fill.quantity * fill.fill_price;
-            notional * profile.notional_rate + fill.quantity * profile.per_unit_fee
-        };
-        let fixed_raw = if idx == 0 {
-            profile.per_order_fixed_fee
-        } else {
-            Decimal::ZERO
-        };
-
-        let mut fill_top_up = Decimal::ZERO;
-        let fill_fee = match profile.charging_tier {
-            FeeChargingTier::PerFill => {
-                let mut f = profile
-                    .rounding_mode
-                    .round_value(var_raw + fixed_raw, profile.rounding_scale);
-                let mut next_cum = cumulative_settled + f;
-                if let Some(max_f) = max_rounded {
-                    if next_cum > max_f {
-                        max_cap_applied = true;
-                        f = (max_f - cumulative_settled).max(Decimal::ZERO);
-                        next_cum = cumulative_settled + f;
-                    }
-                }
-                if is_last {
-                    if let Some(min_f) = min_rounded {
-                        if next_cum < min_f {
-                            fill_top_up = canon_decimal(min_f - next_cum);
-                            min_top_up_applied = fill_top_up;
-                            f = canon_decimal(f + fill_top_up);
-                        }
-                    }
-                }
-                canon_decimal(f)
-            }
-            FeeChargingTier::PerOrder => {
-                cumulative_unrounded += var_raw + fixed_raw;
-                if !is_last {
-                    let mut target = profile
-                        .rounding_mode
-                        .round_value(cumulative_unrounded, profile.rounding_scale);
-                    if let Some(max_f) = max_rounded {
-                        if target > max_f {
-                            max_cap_applied = true;
-                            target = max_f;
-                        }
-                    }
-                    canon_decimal((target - cumulative_settled).max(Decimal::ZERO))
-                } else {
-                    let pre_min_rounded = profile
-                        .rounding_mode
-                        .round_value(cumulative_unrounded, profile.rounding_scale);
-                    let mut clamped_raw = cumulative_unrounded;
-                    if let Some(min_f) = profile.min_fee_per_order {
-                        if clamped_raw < min_f {
-                            clamped_raw = min_f;
-                        }
-                    }
-                    if let Some(max_f) = profile.max_fee_per_order {
-                        if clamped_raw > max_f {
-                            max_cap_applied = true;
-                            clamped_raw = max_f;
-                        }
-                    }
-                    let mut final_total = profile
-                        .rounding_mode
-                        .round_value(clamped_raw, profile.rounding_scale);
-                    if let Some(max_f) = max_rounded {
-                        if final_total > max_f {
-                            max_cap_applied = true;
-                            final_total = max_f;
-                        }
-                    }
-                    if let Some(min_f) = min_rounded {
-                        if final_total < min_f {
-                            final_total = min_f;
-                        }
-                    }
-                    let base_capped = match max_rounded {
-                        Some(max_f) => pre_min_rounded.min(max_f),
-                        None => pre_min_rounded,
-                    };
-                    if final_total > base_capped {
-                        fill_top_up = canon_decimal(final_total - base_capped);
-                        min_top_up_applied = fill_top_up;
-                    }
-                    canon_decimal((final_total - cumulative_settled).max(Decimal::ZERO))
-                }
-            }
-        };
-
-        cumulative_settled = canon_decimal(cumulative_settled + fill_fee);
-
-        let (net_base_qty, fee_quote_val, net_cash_delta) = if fee_in_received_base {
-            if fill_fee >= fill.quantity {
-                return Err(SimError::InvalidFeeProfile {
-                    profile_id: profile.id.clone(),
-                    reason: format!(
-                        "received-asset fee {} meets or exceeds fill quantity {}",
-                        fill_fee, fill.quantity
-                    ),
-                });
-            }
-            let net_base = canon_decimal(fill.quantity - fill_fee);
-            let quote_val = canon_decimal(fill_fee * fill.fill_price);
-            let cash_delta = canon_decimal(-(fill.quantity * fill.fill_price));
-            (net_base, quote_val, cash_delta)
-        } else if side == OrderSide::Buy {
-            let cash_out = canon_decimal(fill.quantity * fill.fill_price + fill_fee);
-            (canon_decimal(fill.quantity), fill_fee, -cash_out)
-        } else {
-            let cash_in = canon_decimal(fill.quantity * fill.fill_price - fill_fee);
-            (Decimal::ZERO, fill_fee, cash_in)
-        };
-
-        settled_fills.push(SettledFillFee {
-            fill_id: fill.fill_id.clone(),
-            gross_quantity: canon_decimal(fill.quantity),
-            net_received_base_quantity: net_base_qty,
-            fill_price: canon_decimal(fill.fill_price),
-            fee_amount: fill_fee,
-            fee_currency: fee_currency.clone(),
-            fee_quote_value: fee_quote_val,
-            net_quote_cash_delta: net_cash_delta,
-            min_fee_top_up_applied: fill_top_up,
-        });
-    }
-
-    let total_fee_quote_value = canon_decimal(
-        settled_fills
-            .iter()
-            .map(|f| f.fee_quote_value)
-            .sum::<Decimal>(),
-    );
-
-    Ok(OrderFeeSettlement {
-        fee_profile_id: profile.id.clone(),
-        side,
-        fee_currency,
-        fills: settled_fills,
-        total_fee_amount: cumulative_settled,
-        total_fee_quote_value,
-        min_fee_top_up_applied: min_top_up_applied,
-        max_fee_cap_applied: max_cap_applied,
-    })
 }
 
 // ============================================================================
@@ -1176,11 +324,14 @@ pub enum SimRejectCode {
     InsufficientPosition,
     InsufficientFundsAtFill,
     MissingReferencePrice,
+    /// Quick fill on a bar with zero volume or not tradable (`S-51` ①).
+    UntradableBar,
 }
 
 impl SimRejectCode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::UntradableBar => "UNTRADABLE_BAR",
             Self::UnsupportedOrderType => "UNSUPPORTED_ORDER_TYPE",
             Self::InvalidTickSize => "INVALID_TICK_SIZE",
             Self::InvalidLotSize => "INVALID_LOT_SIZE",
@@ -1247,6 +398,17 @@ pub struct OrderSubmitRequest {
     pub kind: OrderSubmitKind,
     /// Optional explicit next-session open timestamp for `eligible_at`; defaults to `submitted_at`.
     pub eligible_at_hint: Option<DateTime<Utc>>,
+    /// `m5-sim-2` only: `visible_close` fills a market order in the same command at the
+    /// current visible close; absent/`next_open_path` keeps the M4 path rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_rule: Option<FillRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FillRule {
+    NextOpenPath,
+    VisibleClose,
 }
 
 impl OrderSubmitRequest {
@@ -1268,6 +430,7 @@ impl OrderSubmitRequest {
                 attached_bracket: None,
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 
@@ -1290,6 +453,7 @@ impl OrderSubmitRequest {
                 attached_bracket: Some(attached_bracket),
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 
@@ -1312,6 +476,7 @@ impl OrderSubmitRequest {
                 is_trade_plan,
             },
             eligible_at_hint: None,
+            fill_rule: None,
         }
     }
 }
@@ -1580,6 +745,45 @@ pub enum SimCommand {
         corporate_actions: Vec<CorporateActionRecord>,
     },
     Finish,
+    /// `m5-sim-2`: change price and/or quantity of an open order (atomic cancel + re-place;
+    /// the order becomes eligible from the next bar open, group links are kept).
+    ModifyOrder {
+        order_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quantity: Option<Decimal>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_price: Option<Decimal>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_price: Option<Decimal>,
+    },
+    /// `m5-sim-2`: void the logged command `target_seq` (the last live one since the last bar
+    /// advance). Applied by [`SimReplayer`], which restores the state saved before that command
+    /// while keeping id/sequence counters moving forward (never reused).
+    UndoLast {
+        target_seq: u64,
+    },
+}
+
+impl SimCommand {
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::SubmitOrder(r) if r.fill_rule == Some(FillRule::VisibleClose) => "quick_fill",
+            Self::SubmitOrder(_) => "submit_order",
+            Self::CancelOrder { .. } => "cancel_order",
+            Self::AdvanceBar { .. } => "advance_bar",
+            Self::Finish => "finish",
+            Self::ModifyOrder { .. } => "modify_order",
+            Self::UndoLast { .. } => "undo_last",
+        }
+    }
+
+    /// Commands a user can undo (`S-51` ③): order entry, cancel, modify and quick fills.
+    pub fn is_undoable(&self) -> bool {
+        matches!(
+            self,
+            Self::SubmitOrder(_) | Self::CancelOrder { .. } | Self::ModifyOrder { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1631,6 +835,18 @@ pub enum SimEvent {
     BarAdvanced {
         snapshot: Box<SimBarSnapshot>,
     },
+    OrderModified {
+        order_id: String,
+        instrument_id: String,
+        quantity: Decimal,
+        limit_price: Option<Decimal>,
+        stop_price: Option<Decimal>,
+        eligible_at: DateTime<Utc>,
+    },
+    CommandUndone {
+        target_seq: u64,
+        target_command: String,
+    },
     SessionFinished {
         visible_until: Option<DateTime<Utc>>,
         cancelled_order_ids: Vec<String>,
@@ -1668,6 +884,23 @@ pub struct SimState {
     pub position_reservations: BTreeMap<String, PositionReservation>,
     pub applied_corporate_actions: BTreeSet<(String, NaiveDate, String)>,
     pub bar_snapshots: Vec<SimBarSnapshot>,
+    // ---- `m5-sim-2` fields: omitted from JSON when default so `m4-sim-1` hashes never change.
+    /// Frozen bar timeframe (`1d`, `4h`, `1h`); `None` = daily (M4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+    /// Whether the latest visible bar of each instrument could trade (quick fills).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_bar_tradable: BTreeMap<String, bool>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub quick_fill_count: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub modify_count: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub undo_count: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 impl SimState {
@@ -1750,9 +983,57 @@ impl SimState {
             position_reservations: BTreeMap::new(),
             applied_corporate_actions: BTreeSet::new(),
             bar_snapshots: Vec::new(),
+            timeframe: None,
+            last_bar_tradable: BTreeMap::new(),
+            quick_fill_count: 0,
+            modify_count: 0,
+            undo_count: 0,
         };
         state.normalize_fields();
         Ok(state)
+    }
+
+    /// `m5-sim-2` initial state: same as [`SimState::new`] plus the frozen timeframe and the
+    /// tradability of the last visible history bar per instrument.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_m5(
+        quote_currency: impl Into<String>,
+        initial_cash: Decimal,
+        fee_profile: FeeProfileVersion,
+        instruments: Vec<SimInstrumentSpec>,
+        initial_visible_until: Option<DateTime<Utc>>,
+        initial_last_closes: BTreeMap<String, Decimal>,
+        timeframe: &str,
+        last_bar_tradable: BTreeMap<String, bool>,
+    ) -> Result<Self, SimError> {
+        let mut state = Self::new(
+            quote_currency,
+            initial_cash,
+            fee_profile,
+            instruments,
+            initial_visible_until,
+            initial_last_closes,
+        )?;
+        state.engine_version = SIM_ENGINE_VERSION_M5.to_string();
+        state.timeframe = Some(timeframe.to_string());
+        state.last_bar_tradable = last_bar_tradable;
+        Ok(state)
+    }
+
+    pub fn is_m5(&self) -> bool {
+        self.engine_version == SIM_ENGINE_VERSION_M5
+    }
+
+    fn timeframe_duration(&self) -> chrono::Duration {
+        match self.timeframe.as_deref() {
+            Some("1h") => chrono::Duration::hours(1),
+            Some("4h") => chrono::Duration::hours(4),
+            _ => chrono::Duration::days(1),
+        }
+    }
+
+    fn is_intraday(&self) -> bool {
+        matches!(self.timeframe.as_deref(), Some("1h") | Some("4h"))
     }
 
     pub fn normalize_fields(&mut self) {
@@ -1805,9 +1086,7 @@ impl SimState {
 
     /// Deterministic SHA-256 hex digest of `canonical_json()` (`M4-K02`).
     pub fn state_hash(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.canonical_json().as_bytes());
-        hex::encode(hasher.finalize())
+        crate::sha256_hex(self.canonical_json().as_bytes())
     }
 
     pub fn reserved_cash(&self) -> Decimal {
@@ -1886,1845 +1165,11 @@ impl SimState {
     }
 }
 
-fn validate_tick_field(
-    value: Decimal,
-    tick_size: Decimal,
-    field_name: &str,
-) -> Result<Decimal, Box<OrderRejection>> {
-    validate_step_multiple(value, tick_size).map_err(|v| {
-        Box::new(OrderRejection {
-            code: SimRejectCode::InvalidTickSize,
-            message: format!(
-                "{field_name} {} violates tick_size {}; nearest valid lower={:?}, upper={:?}",
-                to_canonical_text(v.invalid_value),
-                to_canonical_text(v.step_size),
-                v.nearest_lower.map(to_canonical_text),
-                v.nearest_upper.map(to_canonical_text),
-            ),
-            field: Some(field_name.to_string()),
-            nearest_lower: v.nearest_lower,
-            nearest_upper: v.nearest_upper,
-            required: None,
-            available: None,
-        })
-    })
-}
-
-/// Validate an `OrderSubmitRequest` against instrument tick/lot rules, spot long-only rules,
-/// and cash/position reservation limits without mutating `state` (`S-39`, `S-40`, `M4-A-04`, `M4-A-06`).
-pub fn preview_order_submission(
-    state: &SimState,
-    req: &OrderSubmitRequest,
-) -> Result<OrderCostPreview, SimError> {
-    if state.finished {
-        return Err(SimError::SessionFinished);
-    }
-    let spec = state
-        .instruments
-        .get(&req.instrument_id)
-        .ok_or_else(|| SimError::UnknownInstrument(req.instrument_id.clone()))?;
-
-    let qty = validate_step_multiple(req.quantity, spec.lot_size).map_err(|v| {
-        SimError::rejected(OrderRejection {
-            code: SimRejectCode::InvalidLotSize,
-            message: format!(
-                "quantity {} violates lot_size {}; nearest valid lower={:?}, upper={:?}",
-                to_canonical_text(v.invalid_value),
-                to_canonical_text(v.step_size),
-                v.nearest_lower.map(to_canonical_text),
-                v.nearest_upper.map(to_canonical_text),
-            ),
-            field: Some("quantity".to_string()),
-            nearest_lower: v.nearest_lower,
-            nearest_upper: v.nearest_upper,
-            required: None,
-            available: None,
-        })
-    })?;
-
-    let avail_cash = state.available_cash();
-    let avail_pos = state.available_position(&req.instrument_id);
-    let buffer_mult =
-        Decimal::ONE + Decimal::from_str_exact(MARKET_BUY_RESERVATION_BUFFER_RATE).unwrap();
-
-    match &req.kind {
-        OrderSubmitKind::Single {
-            side,
-            order_type,
-            attached_bracket,
-        } => {
-            if matches!(order_type, SimOrderType::StopLimit { .. }) {
-                return Err(SimError::rejected(OrderRejection {
-                    code: SimRejectCode::UnsupportedOrderType,
-                    message: "stop_limit orders are not supported in M4".to_string(),
-                    field: Some("order_type".to_string()),
-                    nearest_lower: None,
-                    nearest_upper: None,
-                    required: None,
-                    available: None,
-                }));
-            }
-            if *side == OrderSide::Sell && attached_bracket.is_some() {
-                return Err(SimError::rejected(OrderRejection {
-                    code: SimRejectCode::InvalidOrderParams,
-                    message: "attached bracket is only supported on buy entry orders in spot long-only mode".to_string(),
-                    field: Some("attached_bracket".to_string()),
-                    nearest_lower: None,
-                    nearest_upper: None,
-                    required: None,
-                    available: None,
-                }));
-            }
-
-            let entry_explicit_price = match order_type {
-                SimOrderType::Market => None,
-                SimOrderType::Limit { limit_price } => Some(
-                    validate_tick_field(*limit_price, spec.tick_size, "limit_price")
-                        .map_err(SimError::OrderRejected)?,
-                ),
-                SimOrderType::StopMarket { stop_price } => Some(
-                    validate_tick_field(*stop_price, spec.tick_size, "stop_price")
-                        .map_err(SimError::OrderRejected)?,
-                ),
-                SimOrderType::StopLimit { .. } => unreachable!(),
-            };
-
-            if let Some(bracket) = attached_bracket {
-                if bracket.take_profit_limit.is_none() && bracket.stop_loss_stop.is_none() {
-                    return Err(SimError::rejected(OrderRejection {
-                        code: SimRejectCode::InvalidOrderParams,
-                        message:
-                            "attached bracket must specify take_profit_limit and/or stop_loss_stop"
-                                .to_string(),
-                        field: Some("attached_bracket".to_string()),
-                        nearest_lower: None,
-                        nearest_upper: None,
-                        required: None,
-                        available: None,
-                    }));
-                }
-                let tp_opt = match bracket.take_profit_limit {
-                    Some(tp) => Some(
-                        validate_tick_field(tp, spec.tick_size, "take_profit_limit")
-                            .map_err(SimError::OrderRejected)?,
-                    ),
-                    None => None,
-                };
-                let sl_opt = match bracket.stop_loss_stop {
-                    Some(sl) => Some(
-                        validate_tick_field(sl, spec.tick_size, "stop_loss_stop")
-                            .map_err(SimError::OrderRejected)?,
-                    ),
-                    None => None,
-                };
-                if let (Some(tp), Some(sl)) = (tp_opt, sl_opt) {
-                    if tp <= sl {
-                        return Err(SimError::rejected(OrderRejection {
-                            code: SimRejectCode::InvalidOrderParams,
-                            message: "attached take_profit_limit must be strictly greater than stop_loss_stop".to_string(),
-                            field: Some("attached_bracket".to_string()),
-                            nearest_lower: None,
-                            nearest_upper: None,
-                            required: None,
-                            available: None,
-                        }));
-                    }
-                }
-                if let Some(entry_p) = entry_explicit_price {
-                    if let Some(tp) = tp_opt {
-                        if tp <= entry_p {
-                            return Err(SimError::rejected(OrderRejection {
-                                code: SimRejectCode::InvalidOrderParams,
-                                message: "attached take_profit_limit must exceed entry order price"
-                                    .to_string(),
-                                field: Some("take_profit_limit".to_string()),
-                                nearest_lower: None,
-                                nearest_upper: None,
-                                required: None,
-                                available: None,
-                            }));
-                        }
-                    }
-                    if let Some(sl) = sl_opt {
-                        if sl >= entry_p {
-                            return Err(SimError::rejected(OrderRejection {
-                                code: SimRejectCode::InvalidOrderParams,
-                                message: "attached stop_loss_stop must be below entry order price"
-                                    .to_string(),
-                                field: Some("stop_loss_stop".to_string()),
-                                nearest_lower: None,
-                                nearest_upper: None,
-                                required: None,
-                                available: None,
-                            }));
-                        }
-                    }
-                }
-            }
-
-            match side {
-                OrderSide::Buy => {
-                    let reserve_unit_price = match order_type {
-                        SimOrderType::Limit { .. } => entry_explicit_price.unwrap(),
-                        SimOrderType::Market => {
-                            let last_close = state
-                                .last_close_by_instrument
-                                .get(&req.instrument_id)
-                                .copied()
-                                .ok_or_else(|| {
-                                    SimError::rejected(OrderRejection {
-                                        code: SimRejectCode::MissingReferencePrice,
-                                        message: format!(
-                                            "missing visible reference close for market buy on {}",
-                                            req.instrument_id
-                                        ),
-                                        field: None,
-                                        nearest_lower: None,
-                                        nearest_upper: None,
-                                        required: None,
-                                        available: None,
-                                    })
-                                })?;
-                            canon_decimal(last_close * buffer_mult)
-                        }
-                        SimOrderType::StopMarket { .. } => {
-                            let stop_p = entry_explicit_price.unwrap();
-                            let buffered_close = state
-                                .last_close_by_instrument
-                                .get(&req.instrument_id)
-                                .copied()
-                                .map(|c| c * buffer_mult)
-                                .unwrap_or(stop_p * buffer_mult);
-                            canon_decimal(stop_p.max(buffered_close))
-                        }
-                        SimOrderType::StopLimit { .. } => unreachable!(),
-                    };
-
-                    let settlement = settle_order_fees(
-                        &state.fee_profile,
-                        OrderSide::Buy,
-                        &spec.base_asset_id,
-                        &spec.quote_currency,
-                        &[SyntheticFillInput {
-                            fill_id: "PREVIEW".to_string(),
-                            quantity: qty,
-                            fill_price: reserve_unit_price,
-                        }],
-                    )?;
-                    let cash_fee = if state.fee_profile.fee_currency_mode == FeeCurrencyMode::Quote
-                    {
-                        settlement.total_fee_amount
-                    } else {
-                        Decimal::ZERO
-                    };
-                    let required_cash = canon_decimal(qty * reserve_unit_price + cash_fee);
-                    if required_cash > avail_cash {
-                        return Err(SimError::rejected(OrderRejection {
-                            code: SimRejectCode::InsufficientFunds,
-                            message: format!(
-                                "insufficient available cash: required {}, available {}",
-                                to_canonical_text(required_cash),
-                                to_canonical_text(avail_cash),
-                            ),
-                            field: Some("quantity".to_string()),
-                            nearest_lower: None,
-                            nearest_upper: None,
-                            required: Some(required_cash),
-                            available: Some(avail_cash),
-                        }));
-                    }
-                    Ok(OrderCostPreview {
-                        instrument_id: req.instrument_id.clone(),
-                        quantity: qty,
-                        reference_price: Some(reserve_unit_price),
-                        estimated_notional: Some(canon_decimal(qty * reserve_unit_price)),
-                        estimated_fee: Some(settlement.total_fee_amount),
-                        fee_currency: settlement.fee_currency,
-                        cash_reservation_required: required_cash,
-                        position_reservation_required: Decimal::ZERO,
-                        available_cash_before: avail_cash,
-                        available_position_before: avail_pos,
-                    })
-                }
-                OrderSide::Sell => {
-                    if qty > avail_pos {
-                        return Err(SimError::rejected(OrderRejection {
-                            code: SimRejectCode::InsufficientPosition,
-                            message: format!(
-                                "insufficient available position for {}: required {}, available {}",
-                                req.instrument_id,
-                                to_canonical_text(qty),
-                                to_canonical_text(avail_pos),
-                            ),
-                            field: Some("quantity".to_string()),
-                            nearest_lower: None,
-                            nearest_upper: None,
-                            required: Some(qty),
-                            available: Some(avail_pos),
-                        }));
-                    }
-                    let ref_p = entry_explicit_price.or_else(|| {
-                        state
-                            .last_close_by_instrument
-                            .get(&req.instrument_id)
-                            .copied()
-                    });
-                    let est_fee = match ref_p {
-                        Some(p) if p > Decimal::ZERO => Some(
-                            settle_order_fees(
-                                &state.fee_profile,
-                                OrderSide::Sell,
-                                &spec.base_asset_id,
-                                &spec.quote_currency,
-                                &[SyntheticFillInput {
-                                    fill_id: "PREVIEW".to_string(),
-                                    quantity: qty,
-                                    fill_price: p,
-                                }],
-                            )?
-                            .total_fee_amount,
-                        ),
-                        _ => None,
-                    };
-                    Ok(OrderCostPreview {
-                        instrument_id: req.instrument_id.clone(),
-                        quantity: qty,
-                        reference_price: ref_p.map(canon_decimal),
-                        estimated_notional: ref_p.map(|p| canon_decimal(qty * p)),
-                        estimated_fee: est_fee,
-                        fee_currency: spec.quote_currency.clone(),
-                        cash_reservation_required: Decimal::ZERO,
-                        position_reservation_required: qty,
-                        available_cash_before: avail_cash,
-                        available_position_before: avail_pos,
-                    })
-                }
-            }
-        }
-        OrderSubmitKind::Oco {
-            take_profit_limit,
-            stop_loss_stop,
-            ..
-        } => {
-            let tp = validate_tick_field(*take_profit_limit, spec.tick_size, "take_profit_limit")
-                .map_err(SimError::OrderRejected)?;
-            let sl = validate_tick_field(*stop_loss_stop, spec.tick_size, "stop_loss_stop")
-                .map_err(SimError::OrderRejected)?;
-            if tp <= sl {
-                return Err(SimError::rejected(OrderRejection {
-                    code: SimRejectCode::InvalidOrderParams,
-                    message: "OCO take_profit_limit must be strictly greater than stop_loss_stop"
-                        .to_string(),
-                    field: Some("take_profit_limit".to_string()),
-                    nearest_lower: None,
-                    nearest_upper: None,
-                    required: None,
-                    available: None,
-                }));
-            }
-            if qty > avail_pos {
-                return Err(SimError::rejected(OrderRejection {
-                    code: SimRejectCode::InsufficientPosition,
-                    message: format!(
-                        "insufficient available position for OCO on {}: required {}, available {}",
-                        req.instrument_id,
-                        to_canonical_text(qty),
-                        to_canonical_text(avail_pos),
-                    ),
-                    field: Some("quantity".to_string()),
-                    nearest_lower: None,
-                    nearest_upper: None,
-                    required: Some(qty),
-                    available: Some(avail_pos),
-                }));
-            }
-            let settlement = settle_order_fees(
-                &state.fee_profile,
-                OrderSide::Sell,
-                &spec.base_asset_id,
-                &spec.quote_currency,
-                &[SyntheticFillInput {
-                    fill_id: "PREVIEW".to_string(),
-                    quantity: qty,
-                    fill_price: tp,
-                }],
-            )?;
-            Ok(OrderCostPreview {
-                instrument_id: req.instrument_id.clone(),
-                quantity: qty,
-                reference_price: Some(tp),
-                estimated_notional: Some(canon_decimal(qty * tp)),
-                estimated_fee: Some(settlement.total_fee_amount),
-                fee_currency: spec.quote_currency.clone(),
-                cash_reservation_required: Decimal::ZERO,
-                position_reservation_required: qty,
-                available_cash_before: avail_cash,
-                available_position_before: avail_pos,
-            })
-        }
-    }
-}
-
-fn release_order_reservation(state: &mut SimState, order_id: &str) {
-    let Some(res_id) = state
-        .orders
-        .get(order_id)
-        .and_then(|o| o.reservation_id.clone())
-    else {
-        return;
-    };
-    state.cash_reservations.remove(&res_id);
-    let remove_pos_res = if let Some(pos_res) = state.position_reservations.get_mut(&res_id) {
-        pos_res.order_ids.retain(|id| id != order_id);
-        pos_res.order_ids.is_empty()
-    } else {
-        false
-    };
-    if remove_pos_res {
-        state.position_reservations.remove(&res_id);
-    }
-}
-
-fn consume_position_reservation_fully(state: &mut SimState, res_id: &str) {
-    state.position_reservations.remove(res_id);
-}
-
-fn cancel_order_internal(
-    state: &mut SimState,
-    order_id: &str,
-    reason: &str,
-    updated_at: DateTime<Utc>,
-    events: &mut Vec<SimEvent>,
-) {
-    let Some(order) = state.orders.get_mut(order_id) else {
-        return;
-    };
-    if !order.status.is_open_or_pending() {
-        return;
-    }
-    let inst_id = order.instrument_id.clone();
-    order.status = OrderStatus::Cancelled;
-    order.cancel_reason = Some(reason.to_string());
-    order.updated_at = updated_at;
-    release_order_reservation(state, order_id);
-    events.push(SimEvent::OrderCancelled {
-        order_id: order_id.to_string(),
-        instrument_id: inst_id,
-        reason: reason.to_string(),
-    });
-}
-
-fn next_order_id(order_seq: u64) -> String {
-    format!("SIM-ORD-{order_seq:06}")
-}
-
-fn next_fill_id(fill_seq: u64) -> String {
-    format!("SIM-FILL-{fill_seq:06}")
-}
-
-fn next_group_id(group_seq: u64) -> String {
-    format!("SIM-GRP-{group_seq:06}")
-}
-
-fn next_res_id(res_seq: u64) -> String {
-    format!("SIM-RES-{res_seq:06}")
-}
-
-fn submit_order_into_state(
-    state: &mut SimState,
-    req: OrderSubmitRequest,
-) -> Result<Vec<SimEvent>, SimError> {
-    let preview = preview_order_submission(state, &req)?;
-    let submitted_at = state
-        .visible_until
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-    let eligible_at = req
-        .eligible_at_hint
-        .filter(|&t| t >= submitted_at)
-        .unwrap_or(submitted_at);
-
-    let mut created_ids = Vec::new();
-    let mut parent_group_id_out = None;
-
-    match req.kind {
-        OrderSubmitKind::Single {
-            side,
-            order_type,
-            attached_bracket,
-        } => {
-            let order_type = order_type.canonical();
-            let entry_seq = state.next_order_seq;
-            state.next_order_seq += 1;
-            let entry_id = next_order_id(entry_seq);
-
-            let has_plan = attached_bracket.is_some();
-            let group_id = if has_plan {
-                let g = next_group_id(state.next_group_seq);
-                state.next_group_seq += 1;
-                parent_group_id_out = Some(g.clone());
-                Some(g)
-            } else {
-                None
-            };
-
-            let res_id = if preview.cash_reservation_required > Decimal::ZERO {
-                let r = next_res_id(state.next_reservation_seq);
-                state.next_reservation_seq += 1;
-                state.cash_reservations.insert(
-                    r.clone(),
-                    CashReservation {
-                        reservation_id: r.clone(),
-                        order_id: entry_id.clone(),
-                        instrument_id: req.instrument_id.clone(),
-                        amount: preview.cash_reservation_required,
-                    },
-                );
-                Some(r)
-            } else if preview.position_reservation_required > Decimal::ZERO {
-                let r = next_res_id(state.next_reservation_seq);
-                state.next_reservation_seq += 1;
-                state.position_reservations.insert(
-                    r.clone(),
-                    PositionReservation {
-                        reservation_id: r.clone(),
-                        instrument_id: req.instrument_id.clone(),
-                        quantity: preview.position_reservation_required,
-                        order_ids: vec![entry_id.clone()],
-                    },
-                );
-                Some(r)
-            } else {
-                None
-            };
-
-            state.orders.insert(
-                entry_id.clone(),
-                SimOrder {
-                    order_id: entry_id.clone(),
-                    order_seq: entry_seq,
-                    instrument_id: req.instrument_id.clone(),
-                    side,
-                    order_type,
-                    tif: req.tif,
-                    priority: req.priority,
-                    quantity: preview.quantity,
-                    parent_group_id: group_id.clone(),
-                    parent_order_id: None,
-                    oco_peer_order_id: None,
-                    reservation_id: res_id,
-                    group_role: if has_plan {
-                        OrderGroupRole::BracketEntry
-                    } else {
-                        OrderGroupRole::Standalone
-                    },
-                    has_trade_plan: has_plan,
-                    status: OrderStatus::Accepted,
-                    reject_code: None,
-                    cancel_reason: None,
-                    submitted_at,
-                    eligible_at,
-                    updated_at: submitted_at,
-                    activated_bar_close_at: None,
-                    activated_stage: None,
-                    activated_path_price: None,
-                },
-            );
-            created_ids.push(entry_id.clone());
-
-            if let Some(bracket) = attached_bracket {
-                let bracket = bracket.canonical();
-                let tp_id = bracket.take_profit_limit.map(|_| {
-                    let s = state.next_order_seq;
-                    state.next_order_seq += 1;
-                    (s, next_order_id(s))
-                });
-                let sl_id = bracket.stop_loss_stop.map(|_| {
-                    let s = state.next_order_seq;
-                    state.next_order_seq += 1;
-                    (s, next_order_id(s))
-                });
-
-                if let (Some(tp_price), Some((tp_seq, tp_ord_id))) =
-                    (bracket.take_profit_limit, tp_id.clone())
-                {
-                    state.orders.insert(
-                        tp_ord_id.clone(),
-                        SimOrder {
-                            order_id: tp_ord_id.clone(),
-                            order_seq: tp_seq,
-                            instrument_id: req.instrument_id.clone(),
-                            side: OrderSide::Sell,
-                            order_type: SimOrderType::Limit {
-                                limit_price: tp_price,
-                            },
-                            tif: bracket.tif,
-                            priority: req.priority,
-                            quantity: preview.quantity,
-                            parent_group_id: group_id.clone(),
-                            parent_order_id: Some(entry_id.clone()),
-                            oco_peer_order_id: sl_id.as_ref().map(|(_, id)| id.clone()),
-                            reservation_id: None,
-                            group_role: OrderGroupRole::BracketTakeProfit,
-                            has_trade_plan: true,
-                            status: OrderStatus::PendingParent,
-                            reject_code: None,
-                            cancel_reason: None,
-                            submitted_at,
-                            eligible_at,
-                            updated_at: submitted_at,
-                            activated_bar_close_at: None,
-                            activated_stage: None,
-                            activated_path_price: None,
-                        },
-                    );
-                    created_ids.push(tp_ord_id);
-                }
-                if let (Some(sl_price), Some((sl_seq, sl_ord_id))) = (bracket.stop_loss_stop, sl_id)
-                {
-                    state.orders.insert(
-                        sl_ord_id.clone(),
-                        SimOrder {
-                            order_id: sl_ord_id.clone(),
-                            order_seq: sl_seq,
-                            instrument_id: req.instrument_id.clone(),
-                            side: OrderSide::Sell,
-                            order_type: SimOrderType::StopMarket {
-                                stop_price: sl_price,
-                            },
-                            tif: bracket.tif,
-                            priority: req.priority,
-                            quantity: preview.quantity,
-                            parent_group_id: group_id,
-                            parent_order_id: Some(entry_id),
-                            oco_peer_order_id: tp_id.map(|(_, id)| id),
-                            reservation_id: None,
-                            group_role: OrderGroupRole::BracketStopLoss,
-                            has_trade_plan: true,
-                            status: OrderStatus::PendingParent,
-                            reject_code: None,
-                            cancel_reason: None,
-                            submitted_at,
-                            eligible_at,
-                            updated_at: submitted_at,
-                            activated_bar_close_at: None,
-                            activated_stage: None,
-                            activated_path_price: None,
-                        },
-                    );
-                    created_ids.push(sl_ord_id);
-                }
-            }
-        }
-        OrderSubmitKind::Oco {
-            take_profit_limit,
-            stop_loss_stop,
-            is_trade_plan,
-        } => {
-            let group_id = next_group_id(state.next_group_seq);
-            state.next_group_seq += 1;
-            parent_group_id_out = Some(group_id.clone());
-
-            let tp_seq = state.next_order_seq;
-            state.next_order_seq += 1;
-            let tp_id = next_order_id(tp_seq);
-
-            let sl_seq = state.next_order_seq;
-            state.next_order_seq += 1;
-            let sl_id = next_order_id(sl_seq);
-
-            let res_id = next_res_id(state.next_reservation_seq);
-            state.next_reservation_seq += 1;
-            state.position_reservations.insert(
-                res_id.clone(),
-                PositionReservation {
-                    reservation_id: res_id.clone(),
-                    instrument_id: req.instrument_id.clone(),
-                    quantity: preview.quantity,
-                    order_ids: vec![tp_id.clone(), sl_id.clone()],
-                },
-            );
-
-            state.orders.insert(
-                tp_id.clone(),
-                SimOrder {
-                    order_id: tp_id.clone(),
-                    order_seq: tp_seq,
-                    instrument_id: req.instrument_id.clone(),
-                    side: OrderSide::Sell,
-                    order_type: SimOrderType::Limit {
-                        limit_price: canon_decimal(take_profit_limit),
-                    },
-                    tif: req.tif,
-                    priority: req.priority,
-                    quantity: preview.quantity,
-                    parent_group_id: Some(group_id.clone()),
-                    parent_order_id: None,
-                    oco_peer_order_id: Some(sl_id.clone()),
-                    reservation_id: Some(res_id.clone()),
-                    group_role: OrderGroupRole::OcoTakeProfit,
-                    has_trade_plan: is_trade_plan,
-                    status: OrderStatus::Accepted,
-                    reject_code: None,
-                    cancel_reason: None,
-                    submitted_at,
-                    eligible_at,
-                    updated_at: submitted_at,
-                    activated_bar_close_at: None,
-                    activated_stage: None,
-                    activated_path_price: None,
-                },
-            );
-            state.orders.insert(
-                sl_id.clone(),
-                SimOrder {
-                    order_id: sl_id.clone(),
-                    order_seq: sl_seq,
-                    instrument_id: req.instrument_id,
-                    side: OrderSide::Sell,
-                    order_type: SimOrderType::StopMarket {
-                        stop_price: canon_decimal(stop_loss_stop),
-                    },
-                    tif: req.tif,
-                    priority: req.priority,
-                    quantity: preview.quantity,
-                    parent_group_id: Some(group_id),
-                    parent_order_id: None,
-                    oco_peer_order_id: Some(tp_id.clone()),
-                    reservation_id: Some(res_id),
-                    group_role: OrderGroupRole::OcoStopLoss,
-                    has_trade_plan: is_trade_plan,
-                    status: OrderStatus::Accepted,
-                    reject_code: None,
-                    cancel_reason: None,
-                    submitted_at,
-                    eligible_at,
-                    updated_at: submitted_at,
-                    activated_bar_close_at: None,
-                    activated_stage: None,
-                    activated_path_price: None,
-                },
-            );
-            created_ids.push(tp_id);
-            created_ids.push(sl_id);
-        }
-    }
-
-    Ok(vec![SimEvent::OrderSubmitted {
-        order_ids: created_ids,
-        parent_group_id: parent_group_id_out,
-        cash_reserved: preview.cash_reservation_required,
-        position_reserved: preview.position_reservation_required,
-    }])
-}
-
-fn cancel_order_command(
-    state: &mut SimState,
-    order_id: &str,
-    reason: Option<String>,
-) -> Result<Vec<SimEvent>, SimError> {
-    if state.finished {
-        return Err(SimError::SessionFinished);
-    }
-    let Some(order) = state.orders.get(order_id).cloned() else {
-        return Err(SimError::UnknownOrder(order_id.to_string()));
-    };
-    if !order.status.is_open_or_pending() {
-        return Err(SimError::OrderNotCancellable {
-            order_id: order_id.to_string(),
-            status: order.status,
-        });
-    }
-
-    let updated_at = state.visible_until.unwrap_or(order.submitted_at);
-    let reason_str = reason.unwrap_or_else(|| "user_cancelled".to_string());
-    let mut events = Vec::new();
-
-    cancel_order_internal(state, order_id, &reason_str, updated_at, &mut events);
-
-    // Cancel OCO peer if present
-    if let Some(peer_id) = order.oco_peer_order_id {
-        cancel_order_internal(
-            state,
-            &peer_id,
-            "oco_peer_cancelled",
-            updated_at,
-            &mut events,
-        );
-    }
-
-    // Cancel any PendingParent attached bracket legs owned by this parent order
-    let child_ids: Vec<String> = state
-        .orders
-        .values()
-        .filter(|o| {
-            o.parent_order_id.as_deref() == Some(order_id) && o.status == OrderStatus::PendingParent
-        })
-        .map(|o| o.order_id.clone())
-        .collect();
-    for child_id in child_ids {
-        cancel_order_internal(
-            state,
-            &child_id,
-            "parent_order_cancelled",
-            updated_at,
-            &mut events,
-        );
-    }
-
-    Ok(events)
-}
-
-#[derive(Debug, Clone)]
-struct TriggerMatch {
-    order_id: String,
-    priority: i32,
-    instrument_id: String,
-    order_seq: u64,
-    trigger_path_price: Decimal,
-    distance_from_cur: Decimal,
-    fill_price: Decimal,
-}
-
-fn compute_execution_price_for_order(
-    order: &SimOrder,
-    stage: BarPathStage,
-    trigger_path_price: Decimal,
-    tick_size: Decimal,
-    fee_profile: &FeeProfileVersion,
-) -> Decimal {
-    let spread_delta = (trigger_path_price * fee_profile.half_spread_bps) / Decimal::from(10_000);
-    let slip_delta = fee_profile
-        .slippage
-        .delta_for_price(trigger_path_price, tick_size);
-
-    match order.order_type {
-        SimOrderType::Market => {
-            let raw = match order.side {
-                OrderSide::Buy => trigger_path_price + spread_delta + slip_delta,
-                OrderSide::Sell => trigger_path_price - spread_delta - slip_delta,
-            };
-            round_price_adverse_tick(raw, order.side, tick_size)
-        }
-        SimOrderType::Limit { limit_price } => match order.side {
-            OrderSide::Buy => {
-                if trigger_path_price < limit_price {
-                    let raw = trigger_path_price + slip_delta;
-                    round_price_adverse_tick(raw, OrderSide::Buy, tick_size).min(limit_price)
-                } else {
-                    // Exact resting limit touch (already validated on tick grid)
-                    let _ = stage;
-                    canon_decimal(limit_price)
-                }
-            }
-            OrderSide::Sell => {
-                if trigger_path_price > limit_price {
-                    let raw = trigger_path_price - slip_delta;
-                    round_price_adverse_tick(raw, OrderSide::Sell, tick_size).max(limit_price)
-                } else {
-                    canon_decimal(limit_price)
-                }
-            }
-        },
-        SimOrderType::StopMarket { .. } => {
-            let raw = match order.side {
-                OrderSide::Buy => trigger_path_price + slip_delta,
-                OrderSide::Sell => trigger_path_price - slip_delta,
-            };
-            round_price_adverse_tick(raw, order.side, tick_size)
-        }
-        SimOrderType::StopLimit { .. } => unreachable!("StopLimit rejected at submit"),
-    }
-}
-
-fn check_order_trigger_on_subsegment(
-    order: &SimOrder,
-    stage: BarPathStage,
-    cur: Decimal,
-    seg_end: Decimal,
-    tick_size: Decimal,
-    fee_profile: &FeeProfileVersion,
-) -> Option<TriggerMatch> {
-    let trigger_opt = match order.order_type {
-        SimOrderType::Market => (stage == BarPathStage::AtOpen).then_some(cur),
-        SimOrderType::Limit { limit_price } => match order.side {
-            OrderSide::Buy => {
-                if cur <= limit_price {
-                    Some(cur)
-                } else if seg_end < cur && seg_end <= limit_price {
-                    Some(limit_price)
-                } else {
-                    None
-                }
-            }
-            OrderSide::Sell => {
-                if cur >= limit_price {
-                    Some(cur)
-                } else if seg_end > cur && seg_end >= limit_price {
-                    Some(limit_price)
-                } else {
-                    None
-                }
-            }
-        },
-        SimOrderType::StopMarket { stop_price } => match order.side {
-            OrderSide::Buy => {
-                if cur >= stop_price {
-                    Some(cur)
-                } else if seg_end > cur && seg_end >= stop_price {
-                    Some(stop_price)
-                } else {
-                    None
-                }
-            }
-            OrderSide::Sell => {
-                if cur <= stop_price {
-                    Some(cur)
-                } else if seg_end < cur && seg_end <= stop_price {
-                    Some(stop_price)
-                } else {
-                    None
-                }
-            }
-        },
-        SimOrderType::StopLimit { .. } => None,
-    }?;
-
-    let distance = (trigger_opt - cur).abs();
-    let fill_price =
-        compute_execution_price_for_order(order, stage, trigger_opt, tick_size, fee_profile);
-    Some(TriggerMatch {
-        order_id: order.order_id.clone(),
-        priority: order.priority,
-        instrument_id: order.instrument_id.clone(),
-        order_seq: order.order_seq,
-        trigger_path_price: canon_decimal(trigger_opt),
-        distance_from_cur: canon_decimal(distance),
-        fill_price,
-    })
-}
-
-/// Check whether an order's OCO peer would ALSO have been reachable on the remaining bar path
-/// starting from the pair's activation point on this bar (`S-39`, `M4-A-05`).
-fn is_oco_dual_touch_ambiguous(
-    state: &SimState,
-    order: &SimOrder,
-    bar: &BarRecord,
-    current_stage: BarPathStage,
-) -> bool {
-    let Some(peer_id) = &order.oco_peer_order_id else {
-        return false;
-    };
-    let Some(peer) = state.orders.get(peer_id) else {
-        return false;
-    };
-    if !peer.status.is_open_or_pending() {
-        return false;
-    }
-
-    // Determine where this OCO pair was active on the current bar:
-    // - If activated intra-bar on this exact bar, start from (activated_stage, activated_path_price).
-    // - Otherwise, it was active from AtOpen at bar.open.
-    let (act_stage, act_price) = if order.activated_bar_close_at == Some(bar.close_at) {
-        (
-            order.activated_stage.unwrap_or(BarPathStage::AtOpen),
-            order.activated_path_price.unwrap_or(bar.open),
-        )
-    } else {
-        (BarPathStage::AtOpen, bar.open)
-    };
-
-    // If an order already gapped/triggered immediately at bar.open (AtOpen), bar.open is a known
-    // print before any intrabar oscillation, so AtOpen gap triggers are not path-order ambiguous.
-    if current_stage == BarPathStage::AtOpen && act_stage == BarPathStage::AtOpen {
-        return false;
-    }
-
-    // Remaining price range on the bar from (act_stage, act_price) through close:
-    let (min_rem, max_rem) = remaining_bar_extrema(bar, act_stage, act_price);
-    let self_reachable = order_would_reach_extrema(order, act_price, min_rem, max_rem);
-    let peer_reachable = order_would_reach_extrema(peer, act_price, min_rem, max_rem);
-    self_reachable && peer_reachable
-}
-
-fn remaining_bar_extrema(
-    bar: &BarRecord,
-    from_stage: BarPathStage,
-    from_price: Decimal,
-) -> (Decimal, Decimal) {
-    match from_stage {
-        BarPathStage::AtOpen => (bar.low, bar.high),
-        BarPathStage::OpenToLow => (from_price.min(bar.low), from_price.max(bar.high)),
-        BarPathStage::LowToHigh => (from_price.min(bar.close), from_price.max(bar.high)),
-        BarPathStage::HighToClose => (from_price.min(bar.close), from_price.max(bar.close)),
-    }
-}
-
-fn order_would_reach_extrema(
-    order: &SimOrder,
-    act_price: Decimal,
-    min_rem: Decimal,
-    max_rem: Decimal,
-) -> bool {
-    match (order.side, order.order_type) {
-        (OrderSide::Sell, SimOrderType::Limit { limit_price }) => {
-            act_price >= limit_price || max_rem >= limit_price
-        }
-        (OrderSide::Sell, SimOrderType::StopMarket { stop_price }) => {
-            act_price <= stop_price || min_rem <= stop_price
-        }
-        (OrderSide::Buy, SimOrderType::Limit { limit_price }) => {
-            act_price <= limit_price || min_rem <= limit_price
-        }
-        (OrderSide::Buy, SimOrderType::StopMarket { stop_price }) => {
-            act_price >= stop_price || max_rem >= stop_price
-        }
-        (_, SimOrderType::Market) => true,
-        _ => false,
-    }
-}
-
-fn allocate_fifo_lots_for_sell(
-    lots: &mut Vec<SimLot>,
-    sell_qty: Decimal,
-) -> Result<Decimal, SimError> {
-    let avail: Decimal = lots.iter().map(|l| l.remaining_quantity).sum();
-    if avail < sell_qty {
-        return Err(SimError::rejected(OrderRejection {
-            code: SimRejectCode::InsufficientPosition,
-            message: format!(
-                "FIFO allocation oversell: needed {}, available {}",
-                to_canonical_text(sell_qty),
-                to_canonical_text(avail),
-            ),
-            field: Some("quantity".to_string()),
-            nearest_lower: None,
-            nearest_upper: None,
-            required: Some(sell_qty),
-            available: Some(avail),
-        }));
-    }
-    let mut rem = sell_qty;
-    let mut total_cost = Decimal::ZERO;
-    for lot in lots.iter_mut() {
-        if rem.is_zero() {
-            break;
-        }
-        if lot.remaining_quantity.is_zero() {
-            continue;
-        }
-        let take = rem.min(lot.remaining_quantity);
-        let cost = if take == lot.remaining_quantity {
-            lot.remaining_cost_quote
-        } else {
-            canon_decimal(
-                ((lot.remaining_cost_quote * take) / lot.remaining_quantity)
-                    .round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero),
-            )
-        };
-        lot.remaining_quantity = canon_decimal(lot.remaining_quantity - take);
-        lot.remaining_cost_quote = canon_decimal(lot.remaining_cost_quote - cost);
-        rem = canon_decimal(rem - take);
-        total_cost = canon_decimal(total_cost + cost);
-    }
-    lots.retain(|l| l.remaining_quantity > Decimal::ZERO);
-    Ok(total_cost)
-}
-
-fn apply_pre_open_corporate_actions_for_bar(
-    state: &mut SimState,
-    bar: &BarRecord,
-    corporate_actions: &[CorporateActionRecord],
-    events: &mut Vec<SimEvent>,
-) -> Result<(), SimError> {
-    let relevant: Vec<CorporateActionRecord> = corporate_actions
-        .iter()
-        .filter(|ca| ca.instrument_id == bar.instrument_id && ca.ex_date == bar.session_date)
-        .cloned()
-        .collect();
-    if relevant.is_empty() {
-        return Ok(());
-    }
-    let dedup = deduplicate_corporate_actions(&relevant);
-
-    for action in dedup {
-        let action_key = (
-            action.instrument_id.clone(),
-            action.ex_date,
-            action.action_type.as_str().to_string(),
-        );
-        if state.applied_corporate_actions.contains(&action_key) {
-            continue;
-        }
-
-        match action.action_type {
-            CorporateActionType::Split => {
-                let ratio = canon_decimal(action.ratio_or_amount);
-                if ratio <= Decimal::ZERO {
-                    return Err(SimError::InvalidCorporateAction {
-                        action_id: action.id.clone(),
-                        reason: format!("split ratio must be positive, got {ratio}"),
-                    });
-                }
-                let qty_before = state.position_quantity(&bar.instrument_id);
-                if let Some(lots) = state.lots_by_instrument.get_mut(&bar.instrument_id) {
-                    for lot in lots.iter_mut() {
-                        lot.original_quantity =
-                            canon_decimal(lot.original_quantity.checked_mul(ratio).ok_or_else(
-                                || SimError::ArithmeticOverflow("split_orig_qty".into()),
-                            )?);
-                        lot.remaining_quantity =
-                            canon_decimal(lot.remaining_quantity.checked_mul(ratio).ok_or_else(
-                                || SimError::ArithmeticOverflow("split_rem_qty".into()),
-                            )?);
-                        // Total cost basis (`remaining_cost_quote`) is strictly unchanged (`S-42`)!
-                    }
-                }
-                let qty_after = state.position_quantity(&bar.instrument_id);
-
-                // Cancel all open/pending orders for this instrument with reason `corporate_action_split` (`S-42`, `M4-A-03`)
-                let open_ids: Vec<String> = state
-                    .orders
-                    .values()
-                    .filter(|o| {
-                        o.instrument_id == bar.instrument_id && o.status.is_open_or_pending()
-                    })
-                    .map(|o| o.order_id.clone())
-                    .collect();
-                let mut cancel_events = Vec::new();
-                for ord_id in &open_ids {
-                    cancel_order_internal(
-                        state,
-                        ord_id,
-                        "corporate_action_split",
-                        bar.open_at,
-                        &mut cancel_events,
-                    );
-                }
-
-                state.applied_corporate_actions.insert(action_key);
-                events.push(SimEvent::CorporateActionApplied {
-                    action_id: action.id.clone(),
-                    instrument_id: bar.instrument_id.clone(),
-                    action_type: CorporateActionType::Split,
-                    ex_date: action.ex_date,
-                    ratio_or_amount: ratio,
-                    position_qty_before: qty_before,
-                    position_qty_after: qty_after,
-                    cash_credited: Decimal::ZERO,
-                    cancelled_order_ids: open_ids,
-                    assumption_marker: None,
-                });
-                events.extend(cancel_events);
-            }
-            CorporateActionType::CashDividend => {
-                let div_per_share = canon_decimal(action.ratio_or_amount);
-                if div_per_share < Decimal::ZERO {
-                    return Err(SimError::InvalidCorporateAction {
-                        action_id: action.id.clone(),
-                        reason: format!("cash dividend cannot be negative, got {div_per_share}"),
-                    });
-                }
-                let qty = state.position_quantity(&bar.instrument_id);
-                let cash_credited = if qty > Decimal::ZERO && div_per_share > Decimal::ZERO {
-                    let credit =
-                        canon_decimal(qty.checked_mul(div_per_share).ok_or_else(|| {
-                            SimError::ArithmeticOverflow("dividend_credit".into())
-                        })?);
-                    state.cash_balance = canon_decimal(state.cash_balance + credit);
-                    state.dividend_income = canon_decimal(state.dividend_income + credit);
-                    state.ex_date_dividend_assumed = true;
-                    credit
-                } else {
-                    Decimal::ZERO
-                };
-
-                let marker = if cash_credited > Decimal::ZERO {
-                    Some("ex_date_pre_open_cash_credit".to_string())
-                } else {
-                    None
-                };
-                state.applied_corporate_actions.insert(action_key);
-                events.push(SimEvent::CorporateActionApplied {
-                    action_id: action.id.clone(),
-                    instrument_id: bar.instrument_id.clone(),
-                    action_type: CorporateActionType::CashDividend,
-                    ex_date: action.ex_date,
-                    ratio_or_amount: div_per_share,
-                    position_qty_before: qty,
-                    position_qty_after: qty,
-                    cash_credited,
-                    cancelled_order_ids: Vec::new(),
-                    assumption_marker: marker,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_bar_ohlc(bar: &BarRecord) -> Result<(), SimError> {
-    if !bar.is_final {
-        return Err(SimError::InvalidBar {
-            bar_id: bar.id.clone(),
-            reason: "simulation only accepts closed final bars (is_final = true)".into(),
-        });
-    }
-    if bar.open <= Decimal::ZERO
-        || bar.high <= Decimal::ZERO
-        || bar.low <= Decimal::ZERO
-        || bar.close <= Decimal::ZERO
-    {
-        return Err(SimError::InvalidBar {
-            bar_id: bar.id.clone(),
-            reason: "bar OHLC prices must all be strictly positive".into(),
-        });
-    }
-    if bar.low > bar.open
-        || bar.low > bar.close
-        || bar.high < bar.open
-        || bar.high < bar.close
-        || bar.low > bar.high
-    {
-        return Err(SimError::InvalidBar {
-            bar_id: bar.id.clone(),
-            reason: format!(
-                "invalid OHLC envelope: O={}, H={}, L={}, C={}",
-                bar.open, bar.high, bar.low, bar.close
-            ),
-        });
-    }
-    if bar.volume < Decimal::ZERO {
-        return Err(SimError::InvalidBar {
-            bar_id: bar.id.clone(),
-            reason: "bar volume cannot be negative".into(),
-        });
-    }
-    if bar.close_at < bar.open_at {
-        return Err(SimError::InvalidBar {
-            bar_id: bar.id.clone(),
-            reason: "bar close_at precedes open_at".into(),
-        });
-    }
-    Ok(())
-}
-
-/// Process a batch of simultaneous bars (single bar in M4 training, or multi-instrument bars
-/// sharing `event_time` in M5 backtest) with deterministic ordering `(event_time, priority, instrument_id, order_seq)`.
-pub fn step_multi_bars(
-    state: &SimState,
-    step_bars: &[SimStepBar],
-    corporate_actions: &[CorporateActionRecord],
-) -> Result<(SimState, Vec<SimEvent>), SimError> {
-    if state.finished {
-        return Err(SimError::SessionFinished);
-    }
-    if step_bars.is_empty() {
-        return Err(SimError::MissingBarInput);
-    }
-
-    let mut next = state.clone();
-    next.command_seq += 1;
-
-    // Sort incoming bars deterministically by `(close_at, open_at, instrument_id)`
-    let mut sorted_bars: Vec<&SimStepBar> = step_bars.iter().collect();
-    sorted_bars.sort_by(|a, b| {
-        a.bar
-            .close_at
-            .cmp(&b.bar.close_at)
-            .then_with(|| a.bar.open_at.cmp(&b.bar.open_at))
-            .then_with(|| a.bar.instrument_id.cmp(&b.bar.instrument_id))
-    });
-
-    // Validate instruments, OHLC invariants, and strict per-instrument + global replay clock monotonicity
-    let mut seen_instruments = BTreeSet::new();
-    for sb in &sorted_bars {
-        if !next.instruments.contains_key(&sb.bar.instrument_id) {
-            return Err(SimError::UnknownInstrument(sb.bar.instrument_id.clone()));
-        }
-        if !seen_instruments.insert(sb.bar.instrument_id.clone()) {
-            return Err(SimError::InvalidBar {
-                bar_id: sb.bar.id.clone(),
-                reason: format!("duplicate bar in same step for {}", sb.bar.instrument_id),
-            });
-        }
-        validate_bar_ohlc(&sb.bar)?;
-        if let Some(prev_inst_close) = next.last_close_at_by_instrument.get(&sb.bar.instrument_id) {
-            if sb.bar.close_at <= *prev_inst_close {
-                return Err(SimError::ClockNotMonotonic {
-                    current: Some(*prev_inst_close),
-                    incoming: sb.bar.close_at,
-                });
-            }
-        }
-        if let Some(prev_global) = next.visible_until {
-            if sb.bar.close_at <= prev_global {
-                return Err(SimError::ClockNotMonotonic {
-                    current: Some(prev_global),
-                    incoming: sb.bar.close_at,
-                });
-            }
-        }
-    }
-
-    let mut events = Vec::new();
-    let mut pos_before_by_inst: BTreeMap<String, Decimal> = BTreeMap::new();
-    let mut had_buy_by_inst: BTreeMap<String, bool> = BTreeMap::new();
-    let mut had_sell_by_inst: BTreeMap<String, bool> = BTreeMap::new();
-
-    for sb in &sorted_bars {
-        pos_before_by_inst.insert(
-            sb.bar.instrument_id.clone(),
-            next.position_quantity(&sb.bar.instrument_id),
-        );
-        had_buy_by_inst.insert(sb.bar.instrument_id.clone(), false);
-        had_sell_by_inst.insert(sb.bar.instrument_id.clone(), false);
-        apply_pre_open_corporate_actions_for_bar(
-            &mut next,
-            &sb.bar,
-            corporate_actions,
-            &mut events,
-        )?;
-    }
-
-    // Activate eligible Accepted orders across tradable/untradable bars
-    let bar_map: BTreeMap<String, &SimStepBar> = sorted_bars
-        .iter()
-        .map(|sb| (sb.bar.instrument_id.clone(), *sb))
-        .collect();
-
-    for order in next.orders.values_mut() {
-        if order.status == OrderStatus::Accepted {
-            if let Some(sb) = bar_map.get(&order.instrument_id) {
-                if sb.bar.close_at > order.submitted_at && sb.bar.open_at >= order.eligible_at {
-                    order.status = OrderStatus::Active;
-                    order.updated_at = sb.bar.open_at;
-                }
-            }
-        }
-    }
-
-    // Traverse stages 0..=3 synchronously across all tradable bars in deterministic order
-    let stages = [
-        BarPathStage::AtOpen,
-        BarPathStage::OpenToLow,
-        BarPathStage::LowToHigh,
-        BarPathStage::HighToClose,
-    ];
-
-    for stage in stages {
-        let mut cur_price_by_inst: BTreeMap<String, (Decimal, Decimal)> = BTreeMap::new();
-        for sb in &sorted_bars {
-            if !sb.is_effectively_tradable() {
-                continue;
-            }
-            let (seg_start, seg_end) = match stage {
-                BarPathStage::AtOpen => (sb.bar.open, sb.bar.open),
-                BarPathStage::OpenToLow => (sb.bar.open, sb.bar.low),
-                BarPathStage::LowToHigh => (sb.bar.low, sb.bar.high),
-                BarPathStage::HighToClose => (sb.bar.high, sb.bar.close),
-            };
-            cur_price_by_inst.insert(sb.bar.instrument_id.clone(), (seg_start, seg_end));
-        }
-
-        let max_iters = next.orders.len().saturating_mul(4).saturating_add(16);
-        for _ in 0..max_iters {
-            let mut candidates: Vec<TriggerMatch> = Vec::new();
-
-            for order in next.orders.values() {
-                if order.status != OrderStatus::Active {
-                    continue;
-                }
-                let Some(&(cur, seg_end)) = cur_price_by_inst.get(&order.instrument_id) else {
-                    continue;
-                };
-                let Some(sb) = bar_map.get(&order.instrument_id) else {
-                    continue;
-                };
-                if !(sb.bar.close_at > order.submitted_at && sb.bar.open_at >= order.eligible_at) {
-                    continue;
-                }
-                // Enforce attached bracket post-entry activation rule (`S-39`, `M4-A-05`):
-                // If activated on this bar at `act_stage`, never trigger on an earlier stage,
-                // and at `AtOpen` an order activated BY an `AtOpen` fill only runs on `OpenToLow`+.
-                if order.activated_bar_close_at == Some(sb.bar.close_at) {
-                    if let Some(act_stage) = order.activated_stage {
-                        if stage < act_stage
-                            || (stage == BarPathStage::AtOpen && act_stage == BarPathStage::AtOpen)
-                        {
-                            continue;
-                        }
-                    }
-                }
-
-                let spec = &next.instruments[&order.instrument_id];
-                if let Some(m) = check_order_trigger_on_subsegment(
-                    order,
-                    stage,
-                    cur,
-                    seg_end,
-                    spec.tick_size,
-                    &next.fee_profile,
-                ) {
-                    candidates.push(m);
-                }
-            }
-
-            if candidates.is_empty() {
-                break;
-            }
-
-            // Order candidates deterministically:
-            // - For single instrument on a segment, earlier path touch (`distance_from_cur`) comes first!
-            // - Across instruments / ties at exact same distance: `(event_time, priority, instrument_id, order_seq)` (`S-36`).
-            candidates.sort_by(|a, b| {
-                let ta = bar_map[&a.instrument_id].bar.open_at;
-                let tb = bar_map[&b.instrument_id].bar.open_at;
-                ta.cmp(&tb)
-                    .then_with(|| {
-                        if a.instrument_id == b.instrument_id {
-                            a.distance_from_cur.cmp(&b.distance_from_cur)
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    })
-                    .then_with(|| a.priority.cmp(&b.priority))
-                    .then_with(|| a.instrument_id.cmp(&b.instrument_id))
-                    .then_with(|| a.order_seq.cmp(&b.order_seq))
-            });
-
-            let chosen = candidates.remove(0);
-            if let Some(entry) = cur_price_by_inst.get_mut(&chosen.instrument_id) {
-                entry.0 = chosen.trigger_path_price;
-            }
-
-            execute_triggered_order(
-                &mut next,
-                &chosen,
-                stage,
-                &bar_map[&chosen.instrument_id].bar,
-                &mut had_buy_by_inst,
-                &mut had_sell_by_inst,
-                &mut events,
-            )?;
-        }
-    }
-
-    // End of bar: expire remaining active/accepted DAY orders on each bar (including untradable/zero-volume bars, `M4-A-06`)
-    for sb in &sorted_bars {
-        let day_expire_ids: Vec<String> = next
-            .orders
-            .values()
-            .filter(|o| {
-                o.instrument_id == sb.bar.instrument_id
-                    && matches!(o.status, OrderStatus::Active | OrderStatus::Accepted)
-                    && o.tif == TimeInForce::Day
-                    && sb.bar.close_at > o.submitted_at
-                    && sb.bar.open_at >= o.eligible_at
-            })
-            .map(|o| o.order_id.clone())
-            .collect();
-
-        for ord_id in day_expire_ids {
-            let Some(ord_snapshot) = next.orders.get(&ord_id).cloned() else {
-                continue;
-            };
-            if !matches!(
-                ord_snapshot.status,
-                OrderStatus::Active | OrderStatus::Accepted
-            ) {
-                continue;
-            }
-            if let Some(o) = next.orders.get_mut(&ord_id) {
-                o.status = OrderStatus::Expired;
-                o.updated_at = sb.bar.close_at;
-            }
-            release_order_reservation(&mut next, &ord_id);
-            events.push(SimEvent::OrderExpired {
-                order_id: ord_id.clone(),
-                instrument_id: sb.bar.instrument_id.clone(),
-                bar_close_at: sb.bar.close_at,
-            });
-
-            // Cancel any PendingParent attached bracket legs owned by an expired DAY entry
-            let pending_children: Vec<String> = next
-                .orders
-                .values()
-                .filter(|c| {
-                    c.parent_order_id.as_deref() == Some(ord_id.as_str())
-                        && c.status == OrderStatus::PendingParent
-                })
-                .map(|c| c.order_id.clone())
-                .collect();
-            for child_id in pending_children {
-                cancel_order_internal(
-                    &mut next,
-                    &child_id,
-                    "parent_order_expired",
-                    sb.bar.close_at,
-                    &mut events,
-                );
-            }
-        }
-
-        next.last_close_by_instrument
-            .insert(sb.bar.instrument_id.clone(), canon_decimal(sb.bar.close));
-        next.last_close_at_by_instrument
-            .insert(sb.bar.instrument_id.clone(), sb.bar.close_at);
-        next.visible_until = Some(match next.visible_until {
-            Some(prev) => prev.max(sb.bar.close_at),
-            None => sb.bar.close_at,
-        });
-        next.step_count += 1;
-
-        let pos_after = next.position_quantity(&sb.bar.instrument_id);
-        let cost_after = next.position_cost(&sb.bar.instrument_id);
-        let equity = next.total_equity_at_last_close();
-        let snapshot = SimBarSnapshot {
-            step_index: next.step_count,
-            instrument_id: sb.bar.instrument_id.clone(),
-            session_date: sb.bar.session_date,
-            open_at: sb.bar.open_at,
-            close_at: sb.bar.close_at,
-            open: canon_decimal(sb.bar.open),
-            high: canon_decimal(sb.bar.high),
-            low: canon_decimal(sb.bar.low),
-            close: canon_decimal(sb.bar.close),
-            volume: canon_decimal(sb.bar.volume),
-            tradable: sb.is_effectively_tradable(),
-            had_buy_fill: *had_buy_by_inst.get(&sb.bar.instrument_id).unwrap_or(&false),
-            had_sell_fill: *had_sell_by_inst
-                .get(&sb.bar.instrument_id)
-                .unwrap_or(&false),
-            position_qty_before: *pos_before_by_inst
-                .get(&sb.bar.instrument_id)
-                .unwrap_or(&Decimal::ZERO),
-            cash_after: next.cash_balance,
-            position_qty_after: pos_after,
-            position_cost_after: cost_after,
-            equity_at_close: equity,
-        };
-        next.bar_snapshots.push(snapshot.clone());
-        events.push(SimEvent::BarAdvanced {
-            snapshot: Box::new(snapshot),
-        });
-    }
-
-    next.normalize_fields();
-    Ok((next, events))
-}
-
-fn execute_triggered_order(
-    state: &mut SimState,
-    trig: &TriggerMatch,
-    stage: BarPathStage,
-    bar: &BarRecord,
-    had_buy_by_inst: &mut BTreeMap<String, bool>,
-    had_sell_by_inst: &mut BTreeMap<String, bool>,
-    events: &mut Vec<SimEvent>,
-) -> Result<(), SimError> {
-    let Some(order) = state.orders.get(&trig.order_id).cloned() else {
-        return Ok(());
-    };
-    if order.status != OrderStatus::Active {
-        return Ok(());
-    }
-    let spec = state.instruments[&order.instrument_id].clone();
-
-    let settlement = settle_order_fees(
-        &state.fee_profile,
-        order.side,
-        &spec.base_asset_id,
-        &spec.quote_currency,
-        &[SyntheticFillInput {
-            fill_id: "EXEC".to_string(),
-            quantity: order.quantity,
-            fill_price: trig.fill_price,
-        }],
-    )?;
-    let settled_fill = &settlement.fills[0];
-
-    // Check `INSUFFICIENT_FUNDS_AT_FILL` (`S-40`, `M4-A-06`):
-    // Total cash required at fill must not exceed `available_cash + this_order_cash_reservation`.
-    let order_cash_reserved = order
-        .reservation_id
-        .as_ref()
-        .and_then(|rid| state.cash_reservations.get(rid))
-        .map(|r| r.amount)
-        .unwrap_or(Decimal::ZERO);
-    let max_spendable_for_order = canon_decimal(state.available_cash() + order_cash_reserved);
-
-    if settled_fill.net_quote_cash_delta < Decimal::ZERO {
-        let cash_needed = -settled_fill.net_quote_cash_delta;
-        if cash_needed > max_spendable_for_order {
-            if let Some(o) = state.orders.get_mut(&order.order_id) {
-                o.status = OrderStatus::Rejected;
-                o.reject_code = Some(SimRejectCode::InsufficientFundsAtFill);
-                o.updated_at = bar.close_at;
-            }
-            release_order_reservation(state, &order.order_id);
-            let rejection = OrderRejection {
-                code: SimRejectCode::InsufficientFundsAtFill,
-                message: format!(
-                    "whole order rejected at fill: required cash {}, spendable (available + order reservation) {}",
-                    to_canonical_text(cash_needed),
-                    to_canonical_text(max_spendable_for_order),
-                ),
-                field: None,
-                nearest_lower: None,
-                nearest_upper: None,
-                required: Some(cash_needed),
-                available: Some(max_spendable_for_order),
-            };
-            events.push(SimEvent::OrderRejected {
-                order_id: order.order_id.clone(),
-                instrument_id: order.instrument_id.clone(),
-                rejection,
-            });
-            if let Some(peer_id) = &order.oco_peer_order_id {
-                cancel_order_internal(state, peer_id, "oco_peer_rejected", bar.close_at, events);
-            }
-            // Cancel any PendingParent attached bracket legs owned by this rejected entry
-            let pending_children: Vec<String> = state
-                .orders
-                .values()
-                .filter(|c| {
-                    c.parent_order_id.as_deref() == Some(order.order_id.as_str())
-                        && c.status == OrderStatus::PendingParent
-                })
-                .map(|c| c.order_id.clone())
-                .collect();
-            for child_id in pending_children {
-                cancel_order_internal(
-                    state,
-                    &child_id,
-                    "parent_order_rejected",
-                    bar.close_at,
-                    events,
-                );
-            }
-            return Ok(());
-        }
-    }
-
-    let ambiguous = is_oco_dual_touch_ambiguous(state, &order, bar, stage);
-    if ambiguous {
-        state.ambiguous_fill_count += 1;
-    }
-
-    let fill_seq = state.next_fill_seq;
-    state.next_fill_seq += 1;
-    let fill_id = next_fill_id(fill_seq);
-
-    let (net_base_qty, realized_pnl_delta) = match order.side {
-        OrderSide::Buy => {
-            // Release cash reservation first, then deduct actual cash cost
-            release_order_reservation(state, &order.order_id);
-            state.cash_balance =
-                canon_decimal(state.cash_balance + settled_fill.net_quote_cash_delta);
-            let lot_cost = canon_decimal(-settled_fill.net_quote_cash_delta);
-            let net_qty = settled_fill.net_received_base_quantity;
-            state
-                .lots_by_instrument
-                .entry(order.instrument_id.clone())
-                .or_default()
-                .push(SimLot {
-                    lot_id: format!("SIM-LOT-{fill_seq:06}"),
-                    source_fill_id: fill_id.clone(),
-                    instrument_id: order.instrument_id.clone(),
-                    acquired_at: bar.close_at,
-                    original_quantity: net_qty,
-                    remaining_quantity: net_qty,
-                    original_cost_quote: lot_cost,
-                    remaining_cost_quote: lot_cost,
-                });
-            had_buy_by_inst.insert(order.instrument_id.clone(), true);
-            (net_qty, Decimal::ZERO)
-        }
-        OrderSide::Sell => {
-            if let Some(rid) = &order.reservation_id {
-                consume_position_reservation_fully(state, rid);
-            }
-            let lots = state
-                .lots_by_instrument
-                .entry(order.instrument_id.clone())
-                .or_default();
-            let allocated_cost = allocate_fifo_lots_for_sell(lots, order.quantity)?;
-            let net_proceeds = settled_fill.net_quote_cash_delta;
-            state.cash_balance = canon_decimal(state.cash_balance + net_proceeds);
-            let pnl = canon_decimal(net_proceeds - allocated_cost);
-            state.realized_pnl = canon_decimal(state.realized_pnl + pnl);
-            had_sell_by_inst.insert(order.instrument_id.clone(), true);
-            (order.quantity, pnl)
-        }
-    };
-
-    state.total_fees_quote = canon_decimal(state.total_fees_quote + settled_fill.fee_quote_value);
-
-    if let Some(o) = state.orders.get_mut(&order.order_id) {
-        o.status = OrderStatus::Filled;
-        o.updated_at = bar.close_at;
-    }
-
-    let sim_fill = SimFill {
-        fill_id,
-        fill_seq,
-        order_id: order.order_id.clone(),
-        order_seq: order.order_seq,
-        parent_group_id: order.parent_group_id.clone(),
-        group_role: order.group_role,
-        has_trade_plan: order.has_trade_plan,
-        instrument_id: order.instrument_id.clone(),
-        bar_session_date: bar.session_date,
-        bar_open_at: bar.open_at,
-        bar_close_at: bar.close_at,
-        path_stage: stage,
-        raw_path_price: trig.trigger_path_price,
-        fill_price: settled_fill.fill_price,
-        gross_quantity: order.quantity,
-        net_base_quantity: net_base_qty,
-        side: order.side,
-        fee_amount: settled_fill.fee_amount,
-        fee_currency: settled_fill.fee_currency.clone(),
-        fee_quote_value: settled_fill.fee_quote_value,
-        realized_pnl_delta,
-        ambiguous,
-    };
-    state.fills.push(sim_fill.clone());
-    events.push(SimEvent::OrderFilled {
-        fill: Box::new(sim_fill),
-    });
-
-    // If this order had an OCO peer, cancel the other OCO leg immediately (`S-39`, `M4-A-05`)
-    if let Some(peer_id) = &order.oco_peer_order_id {
-        cancel_order_internal(state, peer_id, "oco_peer_filled", bar.close_at, events);
-    }
-
-    // If this was a Buy entry with PendingParent attached bracket leg(s), activate them NOW
-    // for path segments strictly AFTER `(stage, trig.trigger_path_price)` (`S-39`, `M4-A-05`)!
-    if order.side == OrderSide::Buy {
-        let mut child_ids: Vec<String> = state
-            .orders
-            .values()
-            .filter(|c| {
-                c.parent_order_id.as_deref() == Some(order.order_id.as_str())
-                    && c.status == OrderStatus::PendingParent
-            })
-            .map(|c| c.order_id.clone())
-            .collect();
-        child_ids.sort();
-
-        if !child_ids.is_empty() {
-            let rem_lot = net_base_qty % spec.lot_size;
-            let exit_qty = canon_decimal(net_base_qty - rem_lot);
-            if exit_qty <= Decimal::ZERO
-                || exit_qty > state.available_position(&order.instrument_id)
-            {
-                for cid in child_ids {
-                    cancel_order_internal(
-                        state,
-                        &cid,
-                        "insufficient_received_lot_for_bracket",
-                        bar.close_at,
-                        events,
-                    );
-                }
-            } else {
-                let res_id = next_res_id(state.next_reservation_seq);
-                state.next_reservation_seq += 1;
-                state.position_reservations.insert(
-                    res_id.clone(),
-                    PositionReservation {
-                        reservation_id: res_id.clone(),
-                        instrument_id: order.instrument_id.clone(),
-                        quantity: exit_qty,
-                        order_ids: child_ids.clone(),
-                    },
-                );
-                for cid in child_ids {
-                    if let Some(c) = state.orders.get_mut(&cid) {
-                        c.quantity = exit_qty;
-                        c.reservation_id = Some(res_id.clone());
-                        c.status = OrderStatus::Active;
-                        c.updated_at = bar.close_at;
-                        c.activated_bar_close_at = Some(bar.close_at);
-                        c.activated_stage = Some(stage);
-                        c.activated_path_price = Some(trig.trigger_path_price);
-                    }
-                    events.push(SimEvent::OrderActivated {
-                        order_id: cid,
-                        instrument_id: order.instrument_id.clone(),
-                        quantity: exit_qty,
-                        at_stage: stage,
-                        at_path_price: trig.trigger_path_price,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Pure single-step state transition function (`S-36`):
-/// `step(state, command, bar) -> Result<(SimState, Vec<SimEvent>), SimError>`.
-pub fn step(
-    state: &SimState,
-    command: SimCommand,
-    bar: Option<&SimStepBar>,
-) -> Result<(SimState, Vec<SimEvent>), SimError> {
-    match command {
-        SimCommand::SubmitOrder(req) => {
-            let mut next = state.clone();
-            let events = submit_order_into_state(&mut next, req)?;
-            next.command_seq += 1;
-            next.normalize_fields();
-            Ok((next, events))
-        }
-        SimCommand::CancelOrder { order_id, reason } => {
-            let mut next = state.clone();
-            let events = cancel_order_command(&mut next, &order_id, reason)?;
-            next.command_seq += 1;
-            next.normalize_fields();
-            Ok((next, events))
-        }
-        SimCommand::AdvanceBar { corporate_actions } => {
-            let sb = bar.ok_or(SimError::MissingBarInput)?;
-            step_multi_bars(state, std::slice::from_ref(sb), &corporate_actions)
-        }
-        SimCommand::Finish => {
-            if state.finished {
-                return Err(SimError::SessionFinished);
-            }
-            let mut next = state.clone();
-            next.command_seq += 1;
-            let now = next
-                .visible_until
-                .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-            let open_ids: Vec<String> = next
-                .orders
-                .values()
-                .filter(|o| o.status.is_open_or_pending())
-                .map(|o| o.order_id.clone())
-                .collect();
-            let mut events = Vec::new();
-            for oid in &open_ids {
-                cancel_order_internal(&mut next, oid, "session_finished", now, &mut events);
-            }
-            next.finished = true;
-            events.push(SimEvent::SessionFinished {
-                visible_until: next.visible_until,
-                cancelled_order_ids: open_ids,
-            });
-            next.normalize_fields();
-            Ok((next, events))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::decimal::parse_decimal_lossless;
+    use crate::model::AdjustmentKind;
     use chrono::TimeZone;
 
     fn dec(s: &str) -> Decimal {
@@ -5138,5 +2583,718 @@ mod tests {
         let hashes_a = run_script(init_a);
         let hashes_b = run_script(init_b);
         assert_eq!(hashes_a, hashes_b);
+    }
+
+    // ------------------------------------------------------------------
+    // `m5-sim-2` (`S-51`) hand-checkable fixtures
+    // ------------------------------------------------------------------
+
+    fn m5_state(cash: &str, fp: FeeProfileVersion, close: &str, tradable: bool) -> SimState {
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        SimState::new_m5(
+            "USD",
+            dec(cash),
+            fp,
+            vec![equity_spec("NASDAQ:AAPL", "AAPL", "1", "0.01")],
+            Some(t0),
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), dec(close))]),
+            "1d",
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), tradable)]),
+        )
+        .unwrap()
+    }
+
+    fn quick_req(side: OrderSide, qty: &str) -> SimCommand {
+        let mut req = OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            side,
+            SimOrderType::Market,
+            TimeInForce::Day,
+            dec(qty),
+        );
+        req.fill_rule = Some(FillRule::VisibleClose);
+        SimCommand::SubmitOrder(req)
+    }
+
+    fn costly_profile() -> FeeProfileVersion {
+        let mut fp = zero_fee_profile();
+        fp.notional_rate = dec("0.001");
+        fp.half_spread_bps = dec("20");
+        fp.slippage = SlippageSpec::Ticks(5);
+        fp.rounding_mode = FeeRoundingMode::HalfUp;
+        fp.rounding_scale = 2;
+        fp
+    }
+
+    fn reject_code(err: SimError) -> SimRejectCode {
+        err.rejection().expect("order rejection").code
+    }
+
+    #[test]
+    fn m5_quick_fill_at_visible_close_is_hand_checkable() {
+        let st = m5_state("10000", costly_profile(), "100", true);
+        assert_eq!(st.engine_version, SIM_ENGINE_VERSION_M5);
+        // Buy 40 @ close 100: + half spread 100 × 20 bps = 0.20, + 5 ticks = 0.05 -> 100.25.
+        // Notional 4010.00; fee 0.1% = 4.01; cash 10000 - 4010 - 4.01 = 5985.99.
+        let (st1, ev) = step(&st, quick_req(OrderSide::Buy, "40"), None).unwrap();
+        assert_eq!(st1.fills.len(), 1);
+        assert_eq!(st1.fills[0].fill_price, dec("100.25"));
+        assert_eq!(st1.fills[0].fee_amount, dec("4.01"));
+        assert_eq!(st1.cash_balance, dec("5985.99"));
+        assert_eq!(st1.quick_fill_count, 1);
+        assert_eq!(
+            st1.visible_until, st.visible_until,
+            "quick fills never move the clock"
+        );
+        assert!(ev.iter().any(|e| matches!(e, SimEvent::OrderFilled { .. })
+            || matches!(e, SimEvent::OrderSubmitted { .. })));
+        // Sell 40 @ 100: 100 - 0.20 - 0.05 = 99.75; notional 3990.00; fee 3.99.
+        let (st2, _) = step(&st1, quick_req(OrderSide::Sell, "40"), None).unwrap();
+        assert_eq!(st2.fills[1].fill_price, dec("99.75"));
+        assert_eq!(st2.fills[1].fee_amount, dec("3.99"));
+        assert_eq!(st2.cash_balance, dec("5985.99") + dec("3990") - dec("3.99"));
+    }
+
+    #[test]
+    fn m5_quick_fill_rounds_adversely_and_rejects_without_shrinking() {
+        let mut fp = zero_fee_profile();
+        fp.half_spread_bps = dec("7");
+        let st = m5_state("10000", fp.clone(), "100.01", true);
+        // 100.01 × 7 bps = 0.070007 -> buy raw 100.080007 rounds up to 100.09.
+        let (st1, _) = step(&st, quick_req(OrderSide::Buy, "1"), None).unwrap();
+        assert_eq!(st1.fills[0].fill_price, dec("100.09"));
+        // sell raw 99.939993 rounds down to 99.93.
+        let (st2, _) = step(&st1, quick_req(OrderSide::Sell, "1"), None).unwrap();
+        assert_eq!(st2.fills[1].fill_price, dec("99.93"));
+        // Insufficient cash: rejected, never reduced to an affordable quantity.
+        let err = step(&st, quick_req(OrderSide::Buy, "100"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::InsufficientFunds);
+        // Selling more than held: rejected.
+        let err = step(&st, quick_req(OrderSide::Sell, "1"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::InsufficientPosition);
+        // Zero-volume visible bar: rejected.
+        let untradable = m5_state("10000", fp, "100", false);
+        let err = step(&untradable, quick_req(OrderSide::Buy, "1"), None).unwrap_err();
+        assert_eq!(reject_code(err), SimRejectCode::UntradableBar);
+        // `m4-sim-1` states never accept M5-only commands.
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let m4 = init_single_equity_state("10000", zero_fee_profile(), "1", "0.01", ("100", t0));
+        assert!(matches!(
+            step(&m4, quick_req(OrderSide::Buy, "1"), None).unwrap_err(),
+            SimError::EngineFeatureUnavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn m5_modify_and_undo_restore_exact_state_and_never_cross_an_advance() {
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let mut rp = SimReplayer::new(st.clone());
+        let limit = SimCommand::SubmitOrder(OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            OrderSide::Buy,
+            SimOrderType::Limit {
+                limit_price: dec("95"),
+            },
+            TimeInForce::Gtc,
+            dec("10"),
+        ));
+        let (s1, _) = rp.apply(&st, 1, limit, None).unwrap();
+        let oid = s1.orders.keys().next().unwrap().clone();
+        // Modify price and quantity in place (same id); reservation recomputed: 10 × 95 -> 20 × 96.
+        let modify = SimCommand::ModifyOrder {
+            order_id: oid.clone(),
+            quantity: Some(dec("20")),
+            limit_price: Some(dec("96")),
+            stop_price: None,
+        };
+        let (s2, _) = rp.apply(&s1, 2, modify, None).unwrap();
+        assert_eq!(s2.orders[&oid].quantity, dec("20"));
+        assert_eq!(
+            s2.orders[&oid].order_type,
+            SimOrderType::Limit {
+                limit_price: dec("96")
+            }
+        );
+        assert_eq!(s2.modify_count, 1);
+        // Undo the modify: the order is back to 10 @ 95 and cash/reservations match s1.
+        let (s3, ev) = rp
+            .apply(&s2, 3, SimCommand::UndoLast { target_seq: 2 }, None)
+            .unwrap();
+        assert!(matches!(
+            ev[0],
+            SimEvent::CommandUndone { target_seq: 2, .. }
+        ));
+        assert_eq!(s3.orders[&oid], s1.orders[&oid]);
+        assert_eq!(s3.cash_balance, s1.cash_balance);
+        assert_eq!(s3.undo_count, 1);
+        // Undoing the wrong target or past the boundary is refused.
+        assert!(matches!(
+            rp.apply(&s3, 4, SimCommand::UndoLast { target_seq: 99 }, None)
+                .unwrap_err(),
+            SimError::UndoUnavailable(_)
+        ));
+        // Advance a bar that trades through 95: the GTC limit fills at 95.
+        let bar = make_bar("NASDAQ:AAPL", 2025, 1, 3, "99", "100", "94", "97", "1000");
+        let (s4, _) = rp
+            .apply(
+                &s3,
+                4,
+                SimCommand::AdvanceBar {
+                    corporate_actions: Vec::new(),
+                },
+                Some(&SimStepBar::from_bar(bar)),
+            )
+            .unwrap();
+        assert_eq!(s4.fills.len(), 1);
+        assert_eq!(s4.fills[0].fill_price, dec("95"));
+        assert!(matches!(
+            rp.apply(&s4, 5, SimCommand::UndoLast { target_seq: 1 }, None)
+                .unwrap_err(),
+            SimError::UndoUnavailable(_)
+        ));
+        // A filled order cannot be modified.
+        let err = step(
+            &s4,
+            SimCommand::ModifyOrder {
+                order_id: oid,
+                quantity: None,
+                limit_price: Some(dec("90")),
+                stop_price: None,
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SimError::OrderNotModifiable { .. }));
+    }
+
+    #[test]
+    fn m5_undo_after_an_earlier_undo_keeps_surviving_ids_exact() {
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let mut rp = SimReplayer::new(st.clone());
+        let (s1, _) = rp
+            .apply(&st, 1, quick_req(OrderSide::Buy, "1"), None)
+            .unwrap();
+        let (s2, _) = rp
+            .apply(&s1, 2, SimCommand::UndoLast { target_seq: 1 }, None)
+            .unwrap();
+        // The voided id is not reused.
+        let (s3, _) = rp
+            .apply(&s2, 3, quick_req(OrderSide::Buy, "1"), None)
+            .unwrap();
+        let limit = SimCommand::SubmitOrder(OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            OrderSide::Buy,
+            SimOrderType::Limit {
+                limit_price: dec("95"),
+            },
+            TimeInForce::Gtc,
+            dec("10"),
+        ));
+        let (s4, _) = rp.apply(&s3, 4, limit, None).unwrap();
+        let ids: Vec<String> = s4.orders.keys().cloned().collect();
+        assert!(!ids.contains(&s1.orders.keys().next().unwrap().clone()));
+        let limit_id = ids.iter().max().unwrap().clone();
+        let modify = SimCommand::ModifyOrder {
+            order_id: limit_id.clone(),
+            quantity: None,
+            limit_price: Some(dec("94")),
+            stop_price: None,
+        };
+        let (s5, _) = rp.apply(&s4, 5, modify, None).unwrap();
+        let (s6, _) = rp
+            .apply(&s5, 6, SimCommand::UndoLast { target_seq: 5 }, None)
+            .unwrap();
+        // Same ids, same orders, fills, cash as before the modify; only counters moved on.
+        assert_eq!(s6.orders, s4.orders);
+        assert_eq!(s6.fills, s4.fills);
+        assert_eq!(s6.cash_balance, s4.cash_balance);
+        assert_eq!(s6.reserved_cash(), s4.reserved_cash());
+        assert_eq!(s6.next_order_seq, s5.next_order_seq);
+        assert_eq!(s6.undo_count, 2);
+    }
+
+    #[test]
+    fn m5_quick_fill_session_date_and_bar_snapshot_refresh() {
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let mut rp = SimReplayer::new(st.clone());
+
+        // Step-0 quick fill at 21:00Z must keep 2025-01-02 (not roll back to 2025-01-01).
+        let (s1, _) = rp
+            .apply(&st, 1, quick_req(OrderSide::Buy, "10"), None)
+            .unwrap();
+        assert_eq!(
+            s1.fills[0].bar_session_date,
+            NaiveDate::from_ymd_opt(2025, 1, 2).unwrap()
+        );
+        assert_eq!(s1.fills[0].bar_close_at, t0);
+        assert_eq!(s1.fills[0].bar_open_at, t0 - chrono::Duration::days(1));
+
+        // Advance one bar (2025-01-03 14:30Z..21:00Z, close 105), then quick buy 10 at close.
+        let bar = make_bar(
+            "NASDAQ:AAPL",
+            2025,
+            1,
+            3,
+            "101",
+            "106",
+            "100",
+            "105",
+            "1000",
+        );
+        let (s2, _) = rp
+            .apply(
+                &s1,
+                2,
+                SimCommand::AdvanceBar {
+                    corporate_actions: Vec::new(),
+                },
+                Some(&SimStepBar::from_bar(bar.clone())),
+            )
+            .unwrap();
+        let snap_before = s2.bar_snapshots.last().unwrap();
+        assert!(!snap_before.had_buy_fill);
+        assert_eq!(snap_before.position_qty_after, dec("10"));
+        assert_eq!(snap_before.cash_after, dec("9000"));
+        assert_eq!(snap_before.equity_at_close, dec("10050"));
+
+        let (s3, _) = rp
+            .apply(&s2, 3, quick_req(OrderSide::Buy, "10"), None)
+            .unwrap();
+        let fill2 = s3.fills.last().unwrap();
+        assert_eq!(fill2.bar_open_at, bar.open_at);
+        assert_eq!(fill2.bar_close_at, bar.close_at);
+        assert_eq!(fill2.bar_session_date, bar.session_date);
+        let snap_after = s3.bar_snapshots.last().unwrap();
+        assert!(snap_after.had_buy_fill);
+        assert_eq!(snap_after.position_qty_after, dec("20"));
+        assert_eq!(snap_after.cash_after, dec("7950"));
+        assert_eq!(snap_after.equity_at_close, dec("10050"));
+
+        // Undo restores the pre-quick-fill snapshot exactly.
+        let (s4, _) = rp
+            .apply(&s3, 4, SimCommand::UndoLast { target_seq: 3 }, None)
+            .unwrap();
+        assert_eq!(s4.bar_snapshots, s2.bar_snapshots);
+        assert_eq!(s4.fills, s2.fills);
+        assert_eq!(s4.cash_balance, s2.cash_balance);
+    }
+
+    #[test]
+    fn step_multi_bars_maintains_strict_order_and_consistent_portfolio_equity() {
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let mut init_closes = BTreeMap::new();
+        init_closes.insert("NASDAQ:AAPL".to_string(), dec("100"));
+        init_closes.insert("NASDAQ:MSFT".to_string(), dec("100"));
+        let mut st = SimState::new(
+            "USD",
+            dec("100000"),
+            zero_fee_profile(),
+            vec![
+                SimInstrumentSpec {
+                    instrument_id: "NASDAQ:AAPL".to_string(),
+                    base_asset_id: "AAPL".to_string(),
+                    quote_currency: "USD".to_string(),
+                    lot_size: dec("1"),
+                    tick_size: dec("0.01"),
+                },
+                SimInstrumentSpec {
+                    instrument_id: "NASDAQ:MSFT".to_string(),
+                    base_asset_id: "MSFT".to_string(),
+                    quote_currency: "USD".to_string(),
+                    lot_size: dec("1"),
+                    tick_size: dec("0.01"),
+                },
+            ],
+            Some(t0),
+            init_closes,
+        )
+        .unwrap();
+
+        // Establish initial positions of 10 shares in each instrument on bar 0.
+        for inst in ["NASDAQ:AAPL", "NASDAQ:MSFT"] {
+            (st, _) = step(
+                &st,
+                SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                    inst,
+                    OrderSide::Buy,
+                    SimOrderType::Market,
+                    TimeInForce::Day,
+                    dec("10"),
+                )),
+                None,
+            )
+            .unwrap();
+        }
+        let b0_aapl = SimStepBar::from_bar(make_bar(
+            "NASDAQ:AAPL",
+            2025,
+            1,
+            3,
+            "100",
+            "101",
+            "99",
+            "100",
+            "1000",
+        ));
+        let b0_msft = SimStepBar::from_bar(make_bar(
+            "NASDAQ:MSFT",
+            2025,
+            1,
+            3,
+            "100",
+            "101",
+            "99",
+            "100",
+            "1000",
+        ));
+        (st, _) = step_multi_bars(&st, &[b0_aapl, b0_msft], &[]).unwrap();
+
+        // Construct the former Condorcet cycle on OpenToLow:
+        // B: AAPL Sell Stop @ 90 (dist=10, prio=2), A: AAPL Buy Limit @ 99 (dist=1, prio=3),
+        // C: MSFT Sell Stop @ 95 (dist=5, prio=2, higher order_id than B).
+        (st, _) = step(
+            &st,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                "NASDAQ:AAPL",
+                OrderSide::Sell,
+                SimOrderType::StopMarket {
+                    stop_price: dec("90"),
+                },
+                TimeInForce::Day,
+                dec("5"),
+            )),
+            None,
+        )
+        .unwrap();
+        let aapl_stop_id = st.orders.keys().max().unwrap().clone();
+        (st, _) = step(
+            &st,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                "NASDAQ:AAPL",
+                OrderSide::Buy,
+                SimOrderType::Limit {
+                    limit_price: dec("99"),
+                },
+                TimeInForce::Day,
+                dec("5"),
+            )),
+            None,
+        )
+        .unwrap();
+        let aapl_limit_id = st.orders.keys().max().unwrap().clone();
+        (st, _) = step(
+            &st,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                "NASDAQ:MSFT",
+                OrderSide::Sell,
+                SimOrderType::StopMarket {
+                    stop_price: dec("95"),
+                },
+                TimeInForce::Day,
+                dec("5"),
+            )),
+            None,
+        )
+        .unwrap();
+
+        let b1_aapl = SimStepBar::from_bar(make_bar(
+            "NASDAQ:AAPL",
+            2025,
+            1,
+            6,
+            "100",
+            "110",
+            "85",
+            "105",
+            "1000",
+        ));
+        let b1_msft = SimStepBar::from_bar(make_bar(
+            "NASDAQ:MSFT",
+            2025,
+            1,
+            6,
+            "100",
+            "120",
+            "90",
+            "115",
+            "1000",
+        ));
+        let (st2, _) = step_multi_bars(&st, &[b1_aapl, b1_msft], &[]).unwrap();
+
+        // Within AAPL, closer Buy Limit @ 99 must execute before further Sell Stop @ 90.
+        let step1_fills: Vec<&SimFill> = st2
+            .fills
+            .iter()
+            .filter(|f| f.bar_session_date == NaiveDate::from_ymd_opt(2025, 1, 6).unwrap())
+            .collect();
+        assert_eq!(step1_fills.len(), 3);
+        let aapl_limit_pos = step1_fills
+            .iter()
+            .position(|f| f.order_id == aapl_limit_id)
+            .unwrap();
+        let aapl_stop_pos = step1_fills
+            .iter()
+            .position(|f| f.order_id == aapl_stop_id)
+            .unwrap();
+        assert!(aapl_limit_pos < aapl_stop_pos);
+
+        // Both snapshots from the simultaneous timestamp must share the same end-of-step
+        // portfolio equity reflecting BOTH updated closes (AAPL=105, MSFT=115).
+        let n = st2.bar_snapshots.len();
+        let snap_a = &st2.bar_snapshots[n - 2];
+        let snap_b = &st2.bar_snapshots[n - 1];
+        assert_eq!(snap_a.equity_at_close, snap_b.equity_at_close);
+        assert_eq!(snap_a.equity_at_close, st2.total_equity_at_last_close());
+    }
+
+    #[test]
+    fn m5_modify_bracket_validation_qty_sync_and_intraday_day_activation() {
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 15, 0, 0).unwrap();
+        let mut st = SimState::new_m5(
+            "USD",
+            dec("50000"),
+            zero_fee_profile(),
+            vec![SimInstrumentSpec {
+                instrument_id: "NASDAQ:AAPL".to_string(),
+                base_asset_id: "AAPL".to_string(),
+                quote_currency: "USD".to_string(),
+                lot_size: dec("1"),
+                tick_size: dec("0.01"),
+            }],
+            Some(t0),
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), dec("105"))]),
+            "1h",
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), true)]),
+        )
+        .unwrap();
+
+        let (st1, _) = step(
+            &st,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single_with_bracket(
+                "NASDAQ:AAPL",
+                OrderSide::Buy,
+                SimOrderType::Limit {
+                    limit_price: dec("100"),
+                },
+                TimeInForce::Gtc,
+                dec("10"),
+                AttachedBracket {
+                    take_profit_limit: Some(dec("110")),
+                    stop_loss_stop: Some(dec("90")),
+                    tif: TimeInForce::Day,
+                },
+            )),
+            None,
+        )
+        .unwrap();
+        let parent_id = st1
+            .orders
+            .values()
+            .find(|o| o.group_role == OrderGroupRole::BracketEntry)
+            .unwrap()
+            .order_id
+            .clone();
+        let tp_id = st1
+            .orders
+            .values()
+            .find(|o| o.group_role == OrderGroupRole::BracketTakeProfit)
+            .unwrap()
+            .order_id
+            .clone();
+        let sl_id = st1
+            .orders
+            .values()
+            .find(|o| o.group_role == OrderGroupRole::BracketStopLoss)
+            .unwrap()
+            .order_id
+            .clone();
+
+        // Crossing parent <-> child prices must be rejected on ModifyOrder.
+        for bad_cmd in [
+            SimCommand::ModifyOrder {
+                order_id: parent_id.clone(),
+                quantity: None,
+                limit_price: Some(dec("110")),
+                stop_price: None,
+            },
+            SimCommand::ModifyOrder {
+                order_id: parent_id.clone(),
+                quantity: None,
+                limit_price: Some(dec("90")),
+                stop_price: None,
+            },
+            SimCommand::ModifyOrder {
+                order_id: tp_id.clone(),
+                quantity: None,
+                limit_price: Some(dec("100")),
+                stop_price: None,
+            },
+            SimCommand::ModifyOrder {
+                order_id: sl_id.clone(),
+                quantity: None,
+                limit_price: None,
+                stop_price: Some(dec("100")),
+            },
+        ] {
+            let err = step(&st1, bad_cmd, None).unwrap_err();
+            assert_eq!(reject_code(err), SimRejectCode::InvalidOrderParams);
+        }
+
+        // Modifying parent BracketEntry quantity syncs PendingParent TP/SL quantities.
+        (st, _) = step(
+            &st1,
+            SimCommand::ModifyOrder {
+                order_id: parent_id,
+                quantity: Some(dec("20")),
+                limit_price: None,
+                stop_price: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(st.orders[&tp_id].quantity, dec("20"));
+        assert_eq!(st.orders[&sl_id].quantity, dec("20"));
+
+        // Entry fills on the NEXT UTC day (2025-01-03 15:00Z..16:00Z).
+        // Activated DAY children must refresh eligible_at to 2025-01-03T15:00Z so they stay open
+        // for the rest of 2025-01-03 and fill on the subsequent intraday bar.
+        let make_1h =
+            |hour: u32, close_day: u32, close_hour: u32, o: &str, h: &str, l: &str, c: &str| {
+                BarRecord {
+                    id: format!("BAR-1H-2025-01-03-{hour}"),
+                    instrument_id: "NASDAQ:AAPL".to_string(),
+                    timeframe: "1h".to_string(),
+                    session: "regular".to_string(),
+                    session_date: NaiveDate::from_ymd_opt(2025, 1, 3).unwrap(),
+                    open_at: Utc.with_ymd_and_hms(2025, 1, 3, hour, 0, 0).unwrap(),
+                    close_at: Utc
+                        .with_ymd_and_hms(2025, 1, close_day, close_hour, 0, 0)
+                        .unwrap(),
+                    open: dec(o),
+                    high: dec(h),
+                    low: dec(l),
+                    close: dec(c),
+                    volume: dec("500"),
+                    source: "fixture".to_string(),
+                    adjustment: AdjustmentKind::Raw,
+                    is_final: true,
+                    valid_from_version: 1,
+                    valid_to_version: None,
+                    raw_payload_hash: None,
+                }
+            };
+
+        let bar_fill = make_1h(15, 3, 16, "102", "103", "99", "101");
+        let (st_filled, _) = step(
+            &st,
+            SimCommand::AdvanceBar {
+                corporate_actions: Vec::new(),
+            },
+            Some(&SimStepBar::from_bar(bar_fill.clone())),
+        )
+        .unwrap();
+        assert_eq!(st_filled.orders[&tp_id].status, OrderStatus::Active);
+        assert_eq!(st_filled.orders[&sl_id].status, OrderStatus::Active);
+        assert_eq!(st_filled.orders[&tp_id].eligible_at, bar_fill.open_at);
+
+        // Branch 1: next intraday bar on same UTC day hits TP @ 110 for all 20 shares.
+        let bar_tp = make_1h(16, 3, 17, "101", "112", "100", "111");
+        let (st_tp, _) = step(
+            &st_filled,
+            SimCommand::AdvanceBar {
+                corporate_actions: Vec::new(),
+            },
+            Some(&SimStepBar::from_bar(bar_tp)),
+        )
+        .unwrap();
+        assert_eq!(st_tp.orders[&tp_id].status, OrderStatus::Filled);
+        assert_eq!(st_tp.orders[&sl_id].status, OrderStatus::Cancelled);
+        assert_eq!(st_tp.position_quantity("NASDAQ:AAPL"), Decimal::ZERO);
+
+        // Branch 2: bar closing at 2025-01-04T00:00Z expires untouched DAY bracket legs.
+        let bar_eod = make_1h(23, 4, 0, "101", "105", "95", "102");
+        let (st_eod, _) = step(
+            &st_filled,
+            SimCommand::AdvanceBar {
+                corporate_actions: Vec::new(),
+            },
+            Some(&SimStepBar::from_bar(bar_eod)),
+        )
+        .unwrap();
+        assert_eq!(st_eod.orders[&tp_id].status, OrderStatus::Expired);
+        assert_eq!(st_eod.orders[&sl_id].status, OrderStatus::Expired);
+    }
+
+    #[test]
+    fn sim_guards_zero_step_arithmetic_overflow_and_tiny_lot_cost_rounding() {
+        // CORE-B10: zero step size returns structured violation instead of panicking on `%`.
+        let err = fees::validate_step_multiple(dec("1"), Decimal::ZERO).unwrap_err();
+        assert_eq!(err.step_size, Decimal::ZERO);
+        assert_eq!(err.nearest_lower, None);
+        assert_eq!(err.nearest_upper, None);
+
+        // CORE-B10: extreme order notional returns ArithmeticOverflow instead of panicking.
+        let st = m5_state("10000", zero_fee_profile(), "100", true);
+        let huge = OrderSubmitRequest::single(
+            "NASDAQ:AAPL",
+            OrderSide::Buy,
+            SimOrderType::Limit {
+                limit_price: dec("1000000"),
+            },
+            TimeInForce::Day,
+            Decimal::MAX,
+        );
+        assert!(matches!(
+            preview_order_submission(&st, &huge),
+            Err(SimError::ArithmeticOverflow(_))
+        ));
+
+        // CORE-B15: tiny scale-10 crypto lot partial sell clamps allocated cost and never goes negative.
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let mut st_crypto = SimState::new_m5(
+            "USD",
+            dec("100"),
+            zero_fee_profile(),
+            vec![SimInstrumentSpec {
+                instrument_id: "CRYPTO:MICRO".to_string(),
+                base_asset_id: "MICRO".to_string(),
+                quote_currency: "USD".to_string(),
+                lot_size: dec("0.000000001"),
+                tick_size: dec("0.000000001"),
+            }],
+            Some(t0),
+            BTreeMap::from([("CRYPTO:MICRO".to_string(), dec("0.1"))]),
+            "1d",
+            BTreeMap::from([("CRYPTO:MICRO".to_string(), true)]),
+        )
+        .unwrap();
+        let mut buy_req = OrderSubmitRequest::single(
+            "CRYPTO:MICRO",
+            OrderSide::Buy,
+            SimOrderType::Market,
+            TimeInForce::Day,
+            dec("0.000000007"),
+        );
+        buy_req.fill_rule = Some(FillRule::VisibleClose);
+        (st_crypto, _) = step(&st_crypto, SimCommand::SubmitOrder(buy_req), None).unwrap();
+
+        let mut sell_req = OrderSubmitRequest::single(
+            "CRYPTO:MICRO",
+            OrderSide::Sell,
+            SimOrderType::Market,
+            TimeInForce::Day,
+            dec("0.000000006"),
+        );
+        sell_req.fill_rule = Some(FillRule::VisibleClose);
+        (st_crypto, _) = step(&st_crypto, SimCommand::SubmitOrder(sell_req), None).unwrap();
+
+        let lot = &st_crypto.lots_by_instrument["CRYPTO:MICRO"][0];
+        assert_eq!(lot.remaining_quantity, dec("0.000000001"));
+        assert!(
+            lot.remaining_cost_quote >= Decimal::ZERO,
+            "remaining_cost_quote must never be negative: {}",
+            lot.remaining_cost_quote
+        );
     }
 }

@@ -131,9 +131,13 @@ impl CredentialStore {
                 target: target.clone(),
                 reason,
             })?;
-        String::from_utf8(plain).map_err(|_| CredentialError::Store {
-            target,
-            reason: "credential is not UTF-8".into(),
+        String::from_utf8(plain).map_err(|err| {
+            let mut bytes = err.into_bytes();
+            zeroize_bytes(&mut bytes);
+            CredentialError::Store {
+                target,
+                reason: "credential is not UTF-8".into(),
+            }
         })
     }
 
@@ -150,31 +154,55 @@ impl CredentialStore {
     }
 }
 
+fn zeroize_bytes(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        // SAFETY: `byte` is a valid, uniquely borrowed mutable reference.
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(windows)]
 mod dpapi {
+    use super::zeroize_bytes;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
 
-    fn blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
-        CRYPT_INTEGER_BLOB {
-            cbData: bytes.len() as u32,
+    fn blob(bytes: &[u8]) -> Result<CRYPT_INTEGER_BLOB, String> {
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| "credential payload exceeds DPAPI maximum size".to_string())?;
+        Ok(CRYPT_INTEGER_BLOB {
+            cbData: len,
             pbData: bytes.as_ptr() as *mut u8,
-        }
+        })
     }
 
-    fn take(output: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-        // SAFETY: DPAPI allocated `cbData` bytes at `pbData` with LocalAlloc.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) }.to_vec();
+    fn take(output: CRYPT_INTEGER_BLOB, zero_source: bool) -> Vec<u8> {
+        if output.pbData.is_null() {
+            return Vec::new();
+        }
+        let len = output.cbData as usize;
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: DPAPI allocated `cbData` bytes at `pbData` with LocalAlloc.
+            let slice = unsafe { std::slice::from_raw_parts_mut(output.pbData, len) };
+            let copy = slice.to_vec();
+            if zero_source {
+                zeroize_bytes(slice);
+            }
+            copy
+        };
+        // SAFETY: `output.pbData` was allocated by DPAPI with LocalAlloc and is non-null.
         unsafe { LocalFree(output.pbData.cast()) };
         bytes
     }
 
     pub fn protect(plain: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
-        let input = blob(plain);
-        let extra = blob(entropy);
+        let input = blob(plain)?;
+        let extra = blob(entropy)?;
         let mut output = CRYPT_INTEGER_BLOB {
             cbData: 0,
             pbData: std::ptr::null_mut(),
@@ -196,12 +224,12 @@ mod dpapi {
                 std::io::Error::last_os_error()
             ));
         }
-        Ok(take(output))
+        Ok(take(output, false))
     }
 
     pub fn unprotect(sealed: &[u8], entropy: &[u8]) -> Result<Vec<u8>, String> {
-        let input = blob(sealed);
-        let extra = blob(entropy);
+        let input = blob(sealed)?;
+        let extra = blob(entropy)?;
         let mut output = CRYPT_INTEGER_BLOB {
             cbData: 0,
             pbData: std::ptr::null_mut(),
@@ -222,7 +250,7 @@ mod dpapi {
                 "DPAPI decryption failed (another user, another machine or a changed file)".into(),
             );
         }
-        Ok(take(output))
+        Ok(take(output, true))
     }
 }
 
@@ -247,4 +275,22 @@ pub fn redact_secrets(input: &str, secrets: &[&str]) -> String {
         }
     }
     output
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dpapi_handles_empty_secret_without_null_slice_ub() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_cred_empty_{}", uuid::Uuid::new_v4()));
+        let store = CredentialStore::new(&root, "delta-test-empty");
+        store.set_secret("model", "empty_user", "").unwrap();
+        assert_eq!(store.get_secret("model", "empty_user").unwrap(), "");
+        store.delete_secret("model", "empty_user").unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
 }

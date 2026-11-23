@@ -22,9 +22,10 @@ use gpui_kit::{
 };
 
 use crate::{
+    components::section_heading,
     controller::UiAction,
     i18n::{I18nCatalog, MarketColorConvention},
-    workbench::{CenterWorkspacePanel, RightAiReviewPanel},
+    workbench::{CenterWorkspacePanel, RightAiReviewPanel, WorkbenchSharedState},
 };
 
 pub(crate) struct FormFields(BTreeMap<&'static str, Entity<InputState>>);
@@ -52,7 +53,9 @@ impl FormFields {
     }
 
     pub(crate) fn get(&self, key: &str) -> &Entity<InputState> {
-        &self.0[key]
+        self.0
+            .get(key)
+            .unwrap_or_else(|| panic!("unknown form field '{key}'"))
     }
     pub(crate) fn value(&self, key: &str, cx: &App) -> String {
         self.get(key).read(cx).value().to_string()
@@ -207,6 +210,14 @@ pub(crate) const CENTER_FIELDS: &[(&str, &str)] = &[
 fn invalid(message: impl Into<String>) -> ErrorEnvelope {
     ErrorEnvelope::new("INVALID_ARGUMENT", message, false)
 }
+fn non_empty_path(value: &str, message: &str) -> Result<PathBuf, ErrorEnvelope> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(invalid(message))
+    } else {
+        Ok(PathBuf::from(trimmed))
+    }
+}
 fn date(value: &str) -> Result<NaiveDate, ErrorEnvelope> {
     NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
         .map_err(|_| invalid("日期请填写 YYYY-MM-DD"))
@@ -232,7 +243,7 @@ impl CenterWorkspacePanel {
                 .controller
                 .update(cx, |ctl, cx| ctl.dispatch(action, window, cx)),
             Err(error) => {
-                self.state.lock().unwrap().ui_error = Some(error);
+                crate::lock_or_recover(&self.state).ui_error = Some(error);
                 cx.notify();
             }
         }
@@ -252,12 +263,29 @@ impl CenterWorkspacePanel {
     }
 
     pub(crate) fn sync_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let state = self.state.lock().unwrap();
-        let editor = &state.note_editor;
+        // Snapshot & drop the state mutex before mutating any InputState entity so synchronous
+        // GPUI InputEvent listeners can never re-enter `self.state.lock()` (`UI-B08`).
+        let (editor, settings, model_settings, clear_trn_note) = {
+            let mut state = crate::lock_or_recover(&self.state);
+            let clear_trn_note = std::mem::take(&mut state.training.clear_note_rationale_pending);
+            (
+                state.note_editor.clone(),
+                (
+                    state.layout.report_currency.clone(),
+                    state.layout.display_timezone.clone(),
+                ),
+                state.model_connection_settings.clone(),
+                clear_trn_note,
+            )
+        };
         self.fields
             .set("form.note_title", &editor.title_buffer, window, cx);
-        self.fields
-            .set("form.note_tags", editor.tags_buffer.join(", "), window, cx);
+        let keep_tags_draft = self.fields.is_any_focused(&["form.note_tags"], window, cx)
+            && names(&self.fields.value("form.note_tags", cx)) == editor.tags_buffer;
+        if !keep_tags_draft {
+            self.fields
+                .set("form.note_tags", editor.tags_buffer.join(", "), window, cx);
+        }
         for (key, value) in [
             ("form.thesis", &editor.structured_buffer.thesis),
             ("form.invalidation", &editor.structured_buffer.invalidation),
@@ -270,23 +298,19 @@ impl CenterWorkspacePanel {
         }
         if self.note_body.read(cx).value().as_str() != editor.body_buffer {
             self.note_body.update(cx, |input, cx| {
-                input.set_value(editor.body_buffer.clone(), window, cx)
+                input.set_value(editor.body_buffer, window, cx)
             });
         }
-        let settings = (
-            state.layout.report_currency.clone(),
-            state.layout.display_timezone.clone(),
-        );
         if self.applied_settings.as_ref() != Some(&settings) {
             self.fields
                 .set("form.report_currency", &settings.0, window, cx);
             self.fields.set("form.timezone", &settings.1, window, cx);
             self.applied_settings = Some(settings);
         }
-        if let Some(settings) = &state.model_connection_settings {
-            if self.applied_model_settings.as_ref() != Some(settings) {
+        if let Some(settings) = model_settings {
+            if self.applied_model_settings.as_ref() != Some(&settings) {
                 let previous = self.applied_model_settings.as_ref().map(model_form_values);
-                for (key, value) in model_form_values(settings) {
+                for (key, value) in model_form_values(&settings) {
                     // First load restores persisted settings. Later updates only touch
                     // fields that still equal the last applied value, preserving drafts.
                     if previous.as_ref().is_none_or(|old| {
@@ -297,8 +321,11 @@ impl CenterWorkspacePanel {
                         self.fields.set(key, value, window, cx);
                     }
                 }
-                self.applied_model_settings = Some(settings.clone());
+                self.applied_model_settings = Some(settings);
             }
+        }
+        if clear_trn_note {
+            self.fields.set("form.trn_note_rationale", "", window, cx);
         }
     }
 
@@ -310,7 +337,7 @@ impl CenterWorkspacePanel {
     ) {
         match event {
             InputEvent::Change => {
-                let mut state = self.state.lock().unwrap();
+                let mut state = crate::lock_or_recover(&self.state);
                 let mut editor = state.note_editor.clone();
                 editor.title_buffer = self.fields.value("form.note_title", cx);
                 editor.tags_buffer = names(&self.fields.value("form.note_tags", cx));
@@ -340,7 +367,7 @@ impl CenterWorkspacePanel {
     }
 
     pub(crate) fn save_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = self.state.lock().unwrap().note_editor.clone();
+        let editor = crate::lock_or_recover(&self.state).note_editor.clone();
         if matches!(
             editor.status,
             AutosaveStatus::Editing | AutosaveStatus::SaveFailed { .. }
@@ -349,15 +376,17 @@ impl CenterWorkspacePanel {
         }
     }
 
-    pub(crate) fn render_data_center(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
-        let preview = state.import_preview.clone();
-        let held = state.held_import_rows.clone();
+    pub(crate) fn render_data_center(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let preview = state.import_preview.as_ref();
         v_flex()
             .id("data-center-form")
             .w_full()
             .gap_3()
-            .child(section_title(I18nCatalog::tr("form.accounts"), cx))
+            .child(section_heading(I18nCatalog::tr("form.accounts"), cx))
             .children(state.accounts.iter().map(|a| {
                 div().text_sm().child(format!(
                     "{} · {} · {} · {}",
@@ -423,7 +452,7 @@ impl CenterWorkspacePanel {
                 },
                 cx,
             ))
-            .child(section_title(I18nCatalog::tr("form.import"), cx))
+            .child(section_heading(I18nCatalog::tr("form.import"), cx))
             .child(self.fields.row(&[
                 "form.import_account",
                 "form.import_preset",
@@ -449,7 +478,7 @@ impl CenterWorkspacePanel {
                     ),
             )
             .children(preview.into_iter().flat_map(|p| {
-                p.rows.into_iter().map(|row| {
+                p.rows.iter().map(|row| {
                     div()
                         .text_xs()
                         .p_2()
@@ -459,15 +488,16 @@ impl CenterWorkspacePanel {
                             "#{} · {} · {}\n{}\n{}",
                             row.row_no,
                             row.validation_state,
-                            row.error_reason.unwrap_or_default(),
+                            row.error_reason.as_deref().unwrap_or_default(),
                             row.raw_payload,
                             row.normalized
-                                .and_then(|v| serde_json::to_string(&v).ok())
+                                .as_ref()
+                                .and_then(|v| serde_json::to_string(v).ok())
                                 .unwrap_or_default()
                         ))
                 })
             }))
-            .children(held.into_iter().map(|id| {
+            .children(state.held_import_rows.iter().map(|id| {
                 let include_id = id.clone();
                 let exclude_id = id.clone();
                 h_flex()
@@ -504,7 +534,7 @@ impl CenterWorkspacePanel {
                             })),
                     )
             }))
-            .child(section_title(I18nCatalog::tr("form.sync"), cx))
+            .child(section_heading(I18nCatalog::tr("form.sync"), cx))
             .child(
                 self.fields
                     .row(&["form.sync_symbols", "form.sync_start", "form.sync_end"]),
@@ -535,17 +565,23 @@ impl CenterWorkspacePanel {
                         )
                         .disabled(state.active_sync_job.is_some()),
                     )
-                    .child(self.button(
-                        "sync-cancel",
-                        "action.cancel_sync",
-                        |panel, _, cx| panel.controller.update(cx, |ctl, cx| ctl.cancel_sync(cx)),
-                        cx,
-                    )),
+                    .child(
+                        self.button(
+                            "sync-cancel",
+                            "action.cancel_sync",
+                            |panel, _, cx| {
+                                panel.controller.update(cx, |ctl, cx| ctl.cancel_sync(cx))
+                            },
+                            cx,
+                        )
+                        .disabled(state.active_sync_job.is_none()),
+                    ),
             )
             .child(
                 div().text_xs().child(
                     state
                         .data_quality
+                        .as_ref()
                         .map(|v| {
                             format!(
                                 "数据版本 {} · {}\n{}\n{}",
@@ -573,11 +609,10 @@ impl CenterWorkspacePanel {
             let preset = StatementPreset::parse(&self.fields.value("form.import_preset", cx))
                 .ok_or_else(|| invalid("请选择支持的账单格式"))?;
             let account = self.fields.value("form.import_account", cx);
-            let path = self.fields.value("form.import_path", cx);
-            if path.trim().is_empty() {
-                return Err(invalid("请填写账单文件路径"));
-            }
-            let file = PathBuf::from(path);
+            let file = non_empty_path(
+                &self.fields.value("form.import_path", cx),
+                "请填写账单文件路径",
+            )?;
             Ok(if commit {
                 UiAction::ImportCommit {
                     account,
@@ -595,8 +630,11 @@ impl CenterWorkspacePanel {
         self.dispatch(result, window, cx);
     }
 
-    pub(crate) fn render_journal(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_journal(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let enabled = state.note_editor.allow_model_access;
         let save_status = match &state.note_editor.status {
             AutosaveStatus::Editing => I18nCatalog::tr("autosave.editing").to_string(),
@@ -672,7 +710,7 @@ impl CenterWorkspacePanel {
                         },
                         |panel, window, cx| {
                             {
-                                let mut state = panel.state.lock().unwrap();
+                                let mut state = crate::lock_or_recover(&panel.state);
                                 state.note_editor.allow_model_access =
                                     !state.note_editor.allow_model_access;
                                 state.note_editor.status = AutosaveStatus::Editing;
@@ -740,13 +778,12 @@ impl CenterWorkspacePanel {
                 "note-add-attachment",
                 "action.attach",
                 |panel, window, cx| {
-                    panel.dispatch(
-                        Ok(UiAction::Attachment(PathBuf::from(
-                            panel.fields.value("form.attachment_path", cx),
-                        ))),
-                        window,
-                        cx,
+                    let result = non_empty_path(
+                        &panel.fields.value("form.attachment_path", cx),
+                        "请填写附件文件路径",
                     )
+                    .map(UiAction::Attachment);
+                    panel.dispatch(result, window, cx);
                 },
                 cx,
             ))
@@ -769,24 +806,24 @@ impl CenterWorkspacePanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().warning)
-                    .child(state.notes_result_notice),
+                    .child(state.notes_result_notice.clone()),
             )
-            .children(state.notes_results.into_iter().map(|note| {
+            .children(state.notes_results.iter().map(|note| {
                 let id = note.id.clone();
-                let links = note.links.clone();
                 v_flex()
                     .gap_1()
                     .child(
                         Button::new(format!("open-note-{}", note.id))
                             .small()
                             .ghost()
-                            .label(note.title)
+                            .label(note.title.clone())
                             .on_click(cx.listener(move |panel, _, window, cx| {
                                 panel.dispatch(Ok(UiAction::OpenNote(id.clone())), window, cx)
                             })),
                     )
-                    .children(links.into_iter().map(|link| {
+                    .children(note.links.iter().map(|link| {
                         let target = link.target_id.clone();
+                        let is_chart = link.target_type == "chart_context";
                         Button::new(format!("note-link-{}", link.id))
                             .small()
                             .label(format!(
@@ -808,7 +845,7 @@ impl CenterWorkspacePanel {
                                 "chart_context" | "event"
                             ))
                             .on_click(cx.listener(move |panel, _, window, cx| {
-                                let action = if link.target_type == "chart_context" {
+                                let action = if is_chart {
                                     UiAction::ChartContext(target.clone())
                                 } else {
                                     UiAction::SelectTransaction(target.clone())
@@ -820,7 +857,7 @@ impl CenterWorkspacePanel {
     }
 
     fn current_chart_context(&self) -> Result<ChartContextDto, ErrorEnvelope> {
-        let state = self.state.lock().unwrap();
+        let state = crate::lock_or_recover(&self.state);
         let slice = state
             .kline_slice
             .as_ref()
@@ -858,10 +895,13 @@ impl CenterWorkspacePanel {
     }
 
     /// Left market column: search, results and watchlist groups (Longbridge watchlist layout).
-    pub(crate) fn render_market_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_market_sidebar(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let caption = crate::theme::Chrome::caption();
-        let active = state.active_instrument.clone();
+        let active = state.active_instrument.as_str();
         let row = |id: SharedString,
                    symbol: String,
                    detail: String,
@@ -899,7 +939,7 @@ impl CenterWorkspacePanel {
         if groups.is_empty() && !active.is_empty() {
             groups.push((
                 I18nCatalog::tr("market.current").to_string(),
-                vec![active.clone()],
+                vec![active.to_string()],
             ));
         }
         v_flex()
@@ -1056,10 +1096,7 @@ impl CenterWorkspacePanel {
                                 panel.dispatch(
                                     Ok(UiAction::Watchlist {
                                         name: panel.fields.value("form.watchlist_name", cx),
-                                        instrument: panel
-                                            .state
-                                            .lock()
-                                            .unwrap()
+                                        instrument: crate::lock_or_recover(&panel.state)
                                             .active_instrument
                                             .clone(),
                                     }),
@@ -1072,11 +1109,14 @@ impl CenterWorkspacePanel {
     }
 
     /// Quote header above the chart: symbol, last close and host-computed change, OHLCV grid.
-    pub(crate) fn render_quote_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_quote_header(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let caption = crate::theme::Chrome::caption();
         let convention = state.layout.color_convention;
-        let slice = state.kline_slice.as_ref();
+        let slice = state.kline_slice.as_deref();
         let (venue, symbol) = state
             .active_instrument
             .split_once(':')
@@ -1207,8 +1247,12 @@ impl CenterWorkspacePanel {
     }
 
     /// Chart toolbar under the quote header: jump-to-date, zoom/pan, adjustment and indicators.
-    pub(crate) fn render_chart_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let adjustment = self.state.lock().unwrap().active_adjustment;
+    pub(crate) fn render_chart_toolbar(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let adjustment = state.active_adjustment;
         let tool = |id: &'static str, label: &'static str| {
             Button::new(id)
                 .xsmall()
@@ -1253,7 +1297,9 @@ impl CenterWorkspacePanel {
                     .selected(adjustment != AdjustmentKind::Raw)
                     .label(I18nCatalog::tr("action.adjustment"))
                     .on_click(cx.listener(|panel, _, window, cx| {
-                        let adjustment = match panel.state.lock().unwrap().active_adjustment {
+                        let adjustment = match crate::lock_or_recover(&panel.state)
+                            .active_adjustment
+                        {
                             AdjustmentKind::Raw => AdjustmentKind::SplitAdjusted,
                             AdjustmentKind::SplitAdjusted => AdjustmentKind::TotalReturnAdjusted,
                             _ => AdjustmentKind::Raw,
@@ -1290,8 +1336,11 @@ impl CenterWorkspacePanel {
     }
 
     /// Clickable trade/note markers under the chart.
-    pub(crate) fn render_chart_markers(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_chart_markers(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         h_flex()
             .px_3()
             .py_1()
@@ -1329,21 +1378,26 @@ impl CenterWorkspacePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut viewport = self.state.lock().unwrap().kline_viewport.clone();
-        if pan != 0 {
-            viewport.pan(pan as isize);
-        }
-        if zoom != 1. {
-            viewport.zoom(zoom, 0.5);
-        }
-        self.state.lock().unwrap().kline_viewport = viewport.clone();
+        let viewport = {
+            let mut state = crate::lock_or_recover(&self.state);
+            if pan != 0 {
+                state.kline_viewport.pan(pan as isize);
+            }
+            if zoom != 1. {
+                state.kline_viewport.zoom(zoom, 0.5);
+            }
+            state.kline_viewport.clone()
+        };
         self.dispatch(Ok(UiAction::ChartViewport(viewport)), window, cx);
     }
 
-    pub(crate) fn render_asset_controls(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_asset_controls(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let selected = match &state.selected_marker_outcome {
-            Some(crate::workbench::MarkerSelectionOutcome::TradeFill(row)) => Some(row.clone()),
+            Some(crate::workbench::MarkerSelectionOutcome::TradeFill(row)) => Some(row),
             _ => None,
         };
         v_flex()
@@ -1358,7 +1412,9 @@ impl CenterWorkspacePanel {
                         "transaction-filter",
                         "action.search",
                         |panel, window, cx| {
-                            let mut filter = panel.state.lock().unwrap().transaction_filter.clone();
+                            let mut filter = crate::lock_or_recover(&panel.state)
+                                .transaction_filter
+                                .clone();
                             let id = panel.fields.value("form.transaction_search", cx);
                             filter.instrument_id =
                                 if id.trim().is_empty() { None } else { Some(id) };
@@ -1411,7 +1467,7 @@ impl CenterWorkspacePanel {
                         cx,
                     )),
             )
-            .children(state.manual_valuations.into_iter().map(|v| {
+            .children(state.manual_valuations.iter().map(|v| {
                 div().text_xs().child(format!(
                     "{} · {} {} · {} · {}",
                     v.asset_or_liability_id,
@@ -1467,7 +1523,7 @@ impl CenterWorkspacePanel {
                         row.event_id,
                         row.occurred_at,
                         row.account_id,
-                        row.raw_payload.unwrap_or_default()
+                        row.raw_payload.as_deref().unwrap_or_default()
                     )))
                     .child(self.fields.row(&[
                         "form.amend_qty",
@@ -1508,7 +1564,9 @@ impl CenterWorkspacePanel {
     }
 
     fn page_transactions(&self, next: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let mut filter = self.state.lock().unwrap().transaction_filter.clone();
+        let mut filter = crate::lock_or_recover(&self.state)
+            .transaction_filter
+            .clone();
         filter.offset = if next {
             filter.offset.saturating_add(filter.limit)
         } else {
@@ -1535,8 +1593,11 @@ impl CenterWorkspacePanel {
         self.dispatch(result, window, cx);
     }
 
-    pub(crate) fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
+    pub(crate) fn render_settings(
+        &self,
+        state: &WorkbenchSharedState,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let update = crate::lifecycle::update_state();
         let update_text = update
             .as_ref()
@@ -1569,17 +1630,60 @@ impl CenterWorkspacePanel {
         );
         let data_dir = state.data_dir.clone();
         let data_dir_toggle = state.data_dir.clone();
+        let close_action = state.layout.close_action;
+        let close_to_tray_btn = {
+            let btn = Button::new("settings-close-to-tray")
+                .small()
+                .label(I18nCatalog::tr("action.close_to_tray"));
+            let btn = if close_action == crate::tray::CloseAction::MinimizeToTray {
+                btn.primary()
+            } else {
+                btn
+            };
+            btn.on_click(cx.listener(|panel, _, window, cx| {
+                {
+                    let mut state = crate::lock_or_recover(&panel.state);
+                    state.layout.close_action = crate::tray::CloseAction::MinimizeToTray;
+                }
+                panel.dispatch(Ok(UiAction::SaveLayout), window, cx);
+                cx.notify();
+            }))
+        };
+        let close_quit_btn = {
+            let btn = Button::new("settings-close-quit")
+                .small()
+                .label(I18nCatalog::tr("action.close_quit"));
+            let btn = if close_action == crate::tray::CloseAction::Quit {
+                btn.primary()
+            } else {
+                btn
+            };
+            btn.on_click(cx.listener(|panel, _, window, cx| {
+                {
+                    let mut state = crate::lock_or_recover(&panel.state);
+                    state.layout.close_action = crate::tray::CloseAction::Quit;
+                }
+                panel.dispatch(Ok(UiAction::SaveLayout), window, cx);
+                cx.notify();
+            }))
+        };
         v_flex().id("settings-form").w_full().gap_3()
-            .child(section_title(I18nCatalog::tr("settings.about"), cx))
+            .child(section_heading(I18nCatalog::tr("settings.about"), cx))
             .child(div().id("settings-about").text_xs().child(about))
-            .child(section_title(I18nCatalog::tr("settings.update"), cx))
+            .child(section_heading(I18nCatalog::tr("settings.update"), cx))
             .child(div().id("settings-update-status").text_xs().child(update_text))
             .when(update_available, |form| form.child(h_flex().gap_2()
                 .child(Button::new("update-check").small().label(I18nCatalog::tr("action.check_update"))
-                    .on_click(move |_, _, _| crate::lifecycle::start_check(data_dir.clone())))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::lifecycle::start_check(data_dir.clone());
+                        cx.notify();
+                    })))
                 .child(Button::new("update-auto-check").small()
                     .label(I18nCatalog::tr(if auto_check { "action.auto_check_on" } else { "action.auto_check_off" }))
-                    .on_click(move |_, _, _| crate::lifecycle::set_auto_check(data_dir_toggle.clone(), !auto_check)))
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        crate::lifecycle::set_auto_check(data_dir_toggle.clone(), !auto_check);
+                        cx.notify();
+                    })))
                 .when(update_ready, |row| row.child(Button::new("update-apply").small().primary()
                     .label(I18nCatalog::tr("action.apply_update"))
                     .on_click(|_, _, _| crate::lifecycle::APPLY_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst))))
@@ -1589,24 +1693,29 @@ impl CenterWorkspacePanel {
                         crate::lifecycle::APPLY_CONFIRMED_BUSY.store(true, std::sync::atomic::Ordering::SeqCst);
                         crate::lifecycle::APPLY_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
                     })))))
+            .child(section_heading(I18nCatalog::tr("settings.window"), cx))
+            .child(div().id("settings-close-action-hint").text_xs().child(I18nCatalog::tr("settings.close_action_hint")))
+            .child(h_flex().gap_2().child(close_to_tray_btn).child(close_quit_btn))
             .child(self.fields.row(&["form.report_currency", "form.timezone"]))
             .child(h_flex().gap_2()
                 .child(self.button("settings-save", "action.save_settings", |panel, window, cx| {
                     panel.dispatch(Ok(UiAction::Settings { currency: panel.fields.value("form.report_currency", cx), timezone: panel.fields.value("form.timezone", cx) }), window, cx);
                 }, cx))
                 .child(self.button("settings-colors", "action.change_colors", |panel, window, cx| {
-                    { let mut state = panel.state.lock().unwrap(); state.layout.color_convention = match state.layout.color_convention {
-                        MarketColorConvention::RedUpGreenDown => MarketColorConvention::GreenUpRedDown, _ => MarketColorConvention::RedUpGreenDown }; }
+                    { let mut state = crate::lock_or_recover(&panel.state); state.layout.color_convention = match state.layout.color_convention {
+                        MarketColorConvention::RedUpGreenDown => MarketColorConvention::GreenUpRedDown,
+                        MarketColorConvention::GreenUpRedDown => MarketColorConvention::RedUpGreenDown,
+                    }; }
                     panel.dispatch(Ok(UiAction::SaveLayout), window, cx);
                 }, cx)))
-            .child(section_title(I18nCatalog::tr("form.model_connection"), cx))
+            .child(section_heading(I18nCatalog::tr("form.model_connection"), cx))
             .child(self.fields.row(&["form.model_protocol", "form.base_url", "form.model_id"]))
             .child(self.fields.row(&["form.api_key", "form.context_window", "form.output_tokens", "form.run_timeout"]))
             .child(h_flex().gap_2()
                 .child(self.button("model-configure", "action.save_connection", |panel, window, cx| {
                     let result = (|| {
                         let protocol = ModelProtocol::parse(&panel.fields.value("form.model_protocol", cx)).map_err(|e| invalid(e.safe_message))?;
-                        let saved = panel.state.lock().unwrap().model_connection_settings.clone();
+                        let saved = crate::lock_or_recover(&panel.state).model_connection_settings.clone();
                         let id = saved.as_ref().map(|connection| connection.id.clone()).unwrap_or_else(|| panel.draft_model_connection_id.clone());
                         let mut connection = saved.unwrap_or_else(|| ModelConnection::loopback(id, protocol, "", ""));
                         connection.protocol = protocol;
@@ -1615,8 +1724,8 @@ impl CenterWorkspacePanel {
                         connection.context_window = panel.fields.value("form.context_window", cx).parse().map_err(|_| invalid("上下文窗口请填写正整数"))?;
                         connection.budget.max_output_tokens = panel.fields.value("form.output_tokens", cx).parse().map_err(|_| invalid("输出预算请填写正整数"))?;
                         let seconds: u64 = panel.fields.value("form.run_timeout", cx).parse().map_err(|_| invalid("超时请填写正整数秒"))?;
-                        if seconds == 0 || connection.budget.max_output_tokens == 0 {
-                            return Err(invalid("超时和输出预算必须大于零"));
+                        if seconds == 0 || connection.budget.max_output_tokens == 0 || connection.context_window == 0 {
+                            return Err(invalid("上下文窗口、超时和输出预算必须大于零"));
                         }
                         connection.budget.max_run_duration_ms = seconds.checked_mul(1000).ok_or_else(|| invalid("超时过大"))?;
                         connection.timeouts.total_ms = connection.budget.max_run_duration_ms;
@@ -1629,21 +1738,33 @@ impl CenterWorkspacePanel {
                     if valid { panel.fields.set("form.api_key", "", window, cx); }
                 }, cx))
                 .child(self.button("model-probe", "action.probe_model", |panel, window, cx| panel.dispatch(Ok(UiAction::ProbeModel), window, cx), cx)))
-            .child(section_title(I18nCatalog::tr("form.library_operations"), cx))
+            .child(section_heading(I18nCatalog::tr("form.library_operations"), cx))
             .child(self.fields.row(&["form.backup_path", "form.export_path"]))
             .child(h_flex().gap_2()
-                .child(self.button("library-backup", "action.backup", |panel, window, cx| panel.dispatch(Ok(UiAction::Backup(PathBuf::from(panel.fields.value("form.backup_path", cx)))), window, cx), cx))
-                .child(self.button("library-export", "action.export", |panel, window, cx| panel.dispatch(Ok(UiAction::Export(PathBuf::from(panel.fields.value("form.export_path", cx)))), window, cx), cx)))
+                .child(self.button("library-backup", "action.backup", |panel, window, cx| {
+                    let result = non_empty_path(&panel.fields.value("form.backup_path", cx), "请填写备份路径").map(UiAction::Backup);
+                    panel.dispatch(result, window, cx);
+                }, cx))
+                .child(self.button("library-export", "action.export", |panel, window, cx| {
+                    let result = non_empty_path(&panel.fields.value("form.export_path", cx), "请填写导出路径").map(UiAction::Export);
+                    panel.dispatch(result, window, cx);
+                }, cx)))
             .child(self.fields.row(&["form.restore_backup", "form.restore_target"]))
-            .child(self.button("library-restore", "action.restore", |panel, window, cx| panel.dispatch(Ok(UiAction::Restore {
-                backup: PathBuf::from(panel.fields.value("form.restore_backup", cx)), target: PathBuf::from(panel.fields.value("form.restore_target", cx)) }), window, cx), cx))
+            .child(self.button("library-restore", "action.restore", |panel, window, cx| {
+                let result = (|| Ok(UiAction::Restore {
+                    backup: non_empty_path(&panel.fields.value("form.restore_backup", cx), "请填写备份文件路径")?,
+                    target: non_empty_path(&panel.fields.value("form.restore_target", cx), "请填写恢复目标目录")?,
+                }))();
+                panel.dispatch(result, window, cx);
+            }, cx))
             .child(self.button("library-delete-preview", "action.delete_preview", |panel, window, cx| panel.dispatch(Ok(UiAction::DeletePreview), window, cx), cx))
-            .children(state.deletion_preview.into_iter().map(|preview| {
+            .children(state.deletion_preview.as_ref().into_iter().map(|preview| {
+                let preview_for_click = preview.clone();
                 v_flex().gap_2().child(div().text_sm().child(format!("{} · {} · {} 个账户 · {} 篇笔记 · {} 个附件 · {} 个会话 · {} 个文件 · {} 字节",
                     preview.library_id, preview.target_data_dir.display(), preview.accounts, preview.notes, preview.attachments, preview.ai_sessions, preview.file_count, preview.total_bytes)))
                     .child(self.fields.row(&["form.delete_confirm"]))
                     .child(Button::new("library-delete-confirm").small().label(I18nCatalog::tr("action.delete_confirm"))
-                        .on_click(cx.listener(move |panel, _, window, cx| panel.dispatch(Ok(UiAction::DeleteLibrary { preview: preview.clone(), typed_id: panel.fields.value("form.delete_confirm", cx) }), window, cx))))
+                        .on_click(cx.listener(move |panel, _, window, cx| panel.dispatch(Ok(UiAction::DeleteLibrary { preview: preview_for_click.clone(), typed_id: panel.fields.value("form.delete_confirm", cx) }), window, cx))))
             }))
     }
 }
@@ -1681,30 +1802,4 @@ impl RightAiReviewPanel {
             ctl.dispatch(UiAction::AiReview { session, question }, window, cx)
         });
     }
-}
-
-/// Section heading used across data center, journal and settings pages: a short dark bar and a
-/// compact semibold label, matching the dense terminal layout.
-pub(crate) fn section_title(label: &'static str, cx: &App) -> impl IntoElement {
-    h_flex()
-        .w_full()
-        .pt_2()
-        .pb_1()
-        .gap_2()
-        .items_center()
-        .border_b_1()
-        .border_color(cx.theme().border)
-        .child(
-            div()
-                .w(px(3.))
-                .h(px(13.))
-                .rounded(px(1.5))
-                .bg(cx.theme().foreground),
-        )
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(label),
-        )
 }

@@ -2,6 +2,7 @@ pub mod calendar;
 pub mod importers;
 pub mod m2_schema;
 pub mod m4_schema;
+pub mod m5_schema;
 pub mod providers;
 pub mod registry;
 pub mod storage;
@@ -10,6 +11,7 @@ pub use calendar::*;
 pub use importers::*;
 pub use m2_schema::*;
 pub use m4_schema::*;
+pub use m5_schema::*;
 pub use providers::*;
 pub use registry::*;
 pub use storage::*;
@@ -111,12 +113,18 @@ impl LoopbackTestServer {
                                     let idx = *counts.get(&key).unwrap_or(&0);
                                     counts.insert(key.clone(), idx + 1);
                                     let seq = r_map.get_mut(&key).unwrap();
-                                    let pick = if idx < seq.len() {
+                                    if idx < seq.len() {
                                         seq[idx].clone()
+                                    } else if let Some(last) = seq.last() {
+                                        last.clone()
                                     } else {
-                                        seq.last().unwrap().clone()
-                                    };
-                                    pick
+                                        CannedHttpResponse::json(
+                                            500,
+                                            format!(
+                                                r#"{{"error":"empty response sequence for {key}"}}"#
+                                            ),
+                                        )
+                                    }
                                 } else {
                                     CannedHttpResponse::json(
                                         404,
@@ -216,6 +224,30 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::path::PathBuf;
+
+    struct TestTempDir(PathBuf);
+
+    impl TestTempDir {
+        fn new(prefix: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "delta_data_{prefix}_{}_{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).expect("create isolated temp dir");
+            Self(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -504,11 +536,10 @@ mod tests {
 
     #[test]
     fn test_s09_storage_version_intervals_and_backup_restore() {
-        let tmp_dir = std::env::temp_dir().join(format!("delta_data_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp = TestTempDir::new("s09_storage");
+        let tmp_dir = tmp.path();
 
-        let mut store = SqliteStore::open_or_init(&tmp_dir, "USD", "USD", "UTC").unwrap();
+        let mut store = SqliteStore::open_or_init(tmp_dir, "USD", "USD", "UTC").unwrap();
 
         let d1 = NaiveDate::from_ymd_opt(2020, 8, 27).unwrap();
         let d2 = NaiveDate::from_ymd_opt(2020, 8, 28).unwrap();
@@ -644,18 +675,15 @@ mod tests {
 
         drop(restored);
         drop(store);
-        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_statement_importers_and_header_mismatch() {
         let root = repo_root();
-        let tmp_dir =
-            std::env::temp_dir().join(format!("delta_import_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let tmp = TestTempDir::new("statement_importers");
+        let tmp_dir = tmp.path();
 
-        let mut store = SqliteStore::open_or_init(&tmp_dir, "USD", "USD", "UTC").unwrap();
+        let mut store = SqliteStore::open_or_init(tmp_dir, "USD", "USD", "UTC").unwrap();
         let rates: Vec<delta_core::FxRateRecord> = serde_json::from_str(
             &std::fs::read_to_string(
                 root.join("tests/fixtures/market_data/ledger_fx_synthetic.json"),
@@ -789,6 +817,157 @@ mod tests {
         }
 
         drop(store);
-        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_data_b08_b21_b22_calendar_registry_storage_and_loopback_regressions() {
+        // DATA-B21g: unrecognized exchange venue returns CalendarUnknown instead of falling back to XNYS.
+        let unknown_sess =
+            query_calendar_session("XLON", NaiveDate::from_ymd_opt(2025, 1, 2).unwrap());
+        assert_eq!(unknown_sess.kind, CalendarSessionKind::CalendarUnknown);
+        assert!(unknown_sess.open_at.is_none());
+
+        // DATA-B21h: deterministic wire-format resolution independent of row insertion order + no duplicate crypto aliases.
+        let reg = InstrumentRegistry::new_seeded();
+        assert_eq!(
+            reg.resolve_symbol(None, "BTCUSDT").as_deref(),
+            Some("BINANCE:BTC/USDT")
+        );
+        assert_eq!(
+            reg.resolve_symbol(None, "BTC-USDT").as_deref(),
+            Some("OKX:BTC/USDT")
+        );
+        let okx_btc_count = reg
+            .aliases
+            .iter()
+            .filter(|a| a.provider == "okx" && a.external_symbol == "BTC-USDT")
+            .count();
+        assert_eq!(okx_btc_count, 1, "crypto aliases must not be duplicated");
+
+        // DATA-B08 & DATA-B21a-d: storage bar validation, same-version bar revision, gap resolution, empty crypto base.
+        let tmp = TestTempDir::new("b08_b21");
+        let mut store = SqliteStore::open_or_init(tmp.path(), "USD", "USD", "UTC").unwrap();
+        assert!(
+            store
+                .register_market_instrument("BINANCE", "/USDT", false)
+                .is_err(),
+            "empty crypto base must be rejected"
+        );
+        let inst = store
+            .register_market_instrument("NASDAQ", "TEST", false)
+            .unwrap();
+        let dsv1 = store
+            .create_dataset_version("yahoo", "personal", "{}", "exact", "exact")
+            .unwrap()
+            .version_num;
+        let d1 = NaiveDate::from_ymd_opt(2025, 1, 2).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2025, 1, 3).unwrap();
+        let d3 = NaiveDate::from_ymd_opt(2025, 1, 6).unwrap();
+        let mk_bar = |d: NaiveDate, low_px: &str, close_px: &str, close_shift_mins: i64| {
+            let s = query_calendar_session("XNAS", d);
+            BarRecord {
+                id: format!("BAR:{inst}:1d:raw:yahoo:{d}:1"),
+                instrument_id: inst.clone(),
+                timeframe: "1d".into(),
+                session: "regular".into(),
+                session_date: d,
+                open_at: s.open_at.unwrap(),
+                close_at: s.close_at.unwrap() + chrono::Duration::minutes(close_shift_mins),
+                open: parse_decimal_lossless("100").unwrap(),
+                high: parse_decimal_lossless("105").unwrap(),
+                low: parse_decimal_lossless(low_px).unwrap(),
+                close: parse_decimal_lossless(close_px).unwrap(),
+                volume: parse_decimal_lossless("1000").unwrap(),
+                source: "yahoo".into(),
+                adjustment: AdjustmentKind::Raw,
+                is_final: true,
+                valid_from_version: dsv1,
+                valid_to_version: None,
+                raw_payload_hash: None,
+            }
+        };
+
+        // low <= 0 must be rejected.
+        assert!(store
+            .commit_bars_and_checkpoint(&[mk_bar(d1, "0", "100", 0)], dsv1, None)
+            .is_err());
+
+        // Commit d1 and d3 (leaving d2 missing), analyze gap, then revise d1 in-place at SAME dsv1 without PK collision.
+        store
+            .commit_bars_and_checkpoint(
+                &[mk_bar(d1, "98", "101", 0), mk_bar(d3, "99", "102", 0)],
+                dsv1,
+                None,
+            )
+            .unwrap();
+        let (ins_same_ver, rev_same_ver) = store
+            .commit_bars_and_checkpoint(&[mk_bar(d1, "98", "101", 5)], dsv1, None)
+            .unwrap();
+        assert_eq!(
+            ins_same_ver, 1,
+            "same-version close_at update must succeed in place without PK crash"
+        );
+        assert!(rev_same_ver.is_empty());
+        let v1_bars = store
+            .query_bars_at_version(&inst, "1d", AdjustmentKind::Raw, Some("yahoo"), dsv1, None)
+            .unwrap();
+        assert_eq!(v1_bars[0].close_at, mk_bar(d1, "98", "101", 5).close_at);
+
+        let (_, gaps_v1) = store
+            .analyze_coverage_gaps("XNAS", &inst, d1, d3, dsv1)
+            .unwrap();
+        assert_eq!(gaps_v1.len(), 1);
+        assert_eq!(gaps_v1[0].start_date, d2);
+
+        // Backfill d2 and revise d1 close_at at dsv2: open gap resolves and cross-version close_at revision records DQI.
+        let dsv2 = store
+            .create_dataset_version("yahoo", "personal", "{}", "exact", "exact")
+            .unwrap()
+            .version_num;
+        let (ins_v2, rev_v2) = store
+            .commit_bars_and_checkpoint(
+                &[mk_bar(d1, "98", "101", 10), mk_bar(d2, "99", "101.5", 0)],
+                dsv2,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ins_v2, 2);
+        assert_eq!(
+            rev_v2.len(),
+            1,
+            "cross-version close_at revision must emit data_revision"
+        );
+        let (_, gaps_v2) = store
+            .analyze_coverage_gaps("XNAS", &inst, d1, d3, dsv2)
+            .unwrap();
+        assert!(gaps_v2.is_empty());
+        let open_gaps: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM coverage_gap WHERE instrument_id = ?1 AND resolution != 'resolved'",
+                rusqlite::params![inst],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open_gaps, 0, "backfilled gap must be marked resolved");
+
+        // DATA-B22: LoopbackTestServer returns 500 cleanly instead of panicking on empty sequence.
+        let srv = LoopbackTestServer::start().unwrap();
+        srv.register_sequence("/empty", Vec::new());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = build_http_client(3000).unwrap();
+        let resp_err = rt
+            .block_on(get_text_with_retry(
+                &client,
+                "test",
+                &format!("{}/empty", srv.base_url()),
+                &[],
+                0,
+            ))
+            .unwrap_err();
+        assert!(resp_err.to_string().contains("500"));
     }
 }

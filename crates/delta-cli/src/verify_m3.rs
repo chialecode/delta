@@ -5,7 +5,12 @@
 //! uninstall keys, shortcuts and data roots are snapshotted and must stay identical.
 
 use super::{
-    verify::{case_from_tests, failure, owned_test_directories, record_tests, source_fingerprint},
+    verify::{failure, owned_test_directories, source_fingerprint},
+    verify_common::{
+        build_gate_env, default_gate_jobs, finalize_and_write_report, make_initial_report,
+        record_execution_outcome, record_mapped_case, rel_path, run_mechanical_gates,
+        verify_prior_stage_regressions, MechanicalGateConfig, QuietnessMonitor,
+    },
     CaseResultRecord, PocResultRecord, VerifyStageReport,
 };
 use crate::installer::{
@@ -14,8 +19,8 @@ use crate::installer::{
 };
 use chrono::Utc;
 use delta_app::{
-    count_visible_windows_for_current_process, current_process_priority, observed_window_details,
-    run_quiet_command, run_quiet_command_with_timeout, sanitize_terminal_output, spawn_quiet_child,
+    count_visible_windows_for_current_process, observed_window_details, run_quiet_command,
+    run_quiet_command_with_timeout, sanitize_terminal_output, spawn_quiet_child,
     update::{self, UpdateLoopbackServer},
     AppHost, AppService, BuildChannel, ControlCommand, ErrorEnvelope, InstallIdentity,
     QuietJobObject, ResolvedAppPaths,
@@ -25,17 +30,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
-    ffi::OsStr,
-    fs,
+    env, fs,
     io::BufRead,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::{Child, ExitCode},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -44,11 +44,7 @@ const PENDING_NOTE_BODY: &str = "Typed just before the upgrade; autosave had not
 const UNKNOWN_DATA_FILE: &str = "m3-unknown-user-file.txt";
 
 fn ensure(condition: bool, message: impl std::fmt::Display) -> Result<(), ErrorEnvelope> {
-    if condition {
-        Ok(())
-    } else {
-        Err(failure("M3_CHECK", message))
-    }
+    super::verify_common::ensure("M3_CHECK", condition, message)
 }
 
 fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -159,7 +155,10 @@ fn developer_state() -> DeveloperState {
             identity.name().into(),
             installed_value(identity, "DisplayVersion"),
         );
-        if let Some(link) = shortcut(identity) {
+        for link in [shortcut(identity), desktop_shortcut(identity)]
+            .into_iter()
+            .flatten()
+        {
             state.shortcuts.insert(
                 link.display().to_string(),
                 link.is_file()
@@ -182,18 +181,6 @@ fn developer_state() -> DeveloperState {
     state
 }
 
-// ---------------------------------------------------------------------------
-// Quietness monitor (`D-25`, `M3-K04`): processes outside the gate's job (installers,
-// uninstallers, relaunched apps) are matched by image name.
-// ---------------------------------------------------------------------------
-
-struct QuietnessMonitor {
-    stop: Arc<AtomicBool>,
-    findings: Arc<Mutex<BTreeSet<String>>>,
-    samples: Arc<Mutex<u64>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
 fn gate_owned_image(image: &str) -> bool {
     let name = image
         .rsplit(['\\', '/'])
@@ -208,115 +195,6 @@ fn gate_owned_image(image: &str) -> bool {
         || name.starts_with("_iu")
         || name.starts_with("iscc")
         || name.contains("-setup-")
-}
-
-#[cfg(windows)]
-fn process_image(pid: u32) -> Option<String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return None;
-        }
-        let mut buffer = [0u16; 1024];
-        let mut size = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size);
-        CloseHandle(process);
-        (ok != 0).then(|| String::from_utf16_lossy(&buffer[..size as usize]))
-    }
-}
-
-#[cfg(windows)]
-fn sample_windows(findings: &Mutex<BTreeSet<String>>) {
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-    };
-    fn describe(hwnd: HWND) -> Option<String> {
-        unsafe {
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            let image = process_image(pid)?;
-            if !gate_owned_image(&image) {
-                return None;
-            }
-            let mut title = [0u16; 256];
-            let length = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32).max(0);
-            Some(format!(
-                "{} \"{}\"",
-                image.rsplit('\\').next().unwrap_or(&image),
-                String::from_utf16_lossy(&title[..length as usize])
-            ))
-        }
-    }
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> i32 {
-        let findings = &*(lparam as *const Mutex<BTreeSet<String>>);
-        if delta_app::window_is_perceivable(hwnd as isize) {
-            if let Some(text) = describe(hwnd) {
-                findings
-                    .lock()
-                    .unwrap()
-                    .insert(format!("visible window: {text}"));
-            }
-        }
-        1
-    }
-    unsafe {
-        let foreground = GetForegroundWindow();
-        if !foreground.is_null() {
-            if let Some(text) = describe(foreground) {
-                findings
-                    .lock()
-                    .unwrap()
-                    .insert(format!("foreground: {text}"));
-            }
-        }
-        EnumWindows(Some(visit), findings as *const _ as LPARAM);
-    }
-}
-
-#[cfg(not(windows))]
-fn sample_windows(_findings: &Mutex<BTreeSet<String>>) {}
-
-impl QuietnessMonitor {
-    fn start() -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let findings = Arc::new(Mutex::new(BTreeSet::new()));
-        let samples = Arc::new(Mutex::new(0));
-        let thread = {
-            let (stop, findings, samples) = (
-                Arc::clone(&stop),
-                Arc::clone(&findings),
-                Arc::clone(&samples),
-            );
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    sample_windows(&findings);
-                    *samples.lock().unwrap() += 1;
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-            })
-        };
-        Self {
-            stop,
-            findings,
-            samples,
-            thread: Some(thread),
-        }
-    }
-
-    fn finish(mut self) -> (u64, Vec<String>) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-        let samples = *self.samples.lock().unwrap();
-        let findings = self.findings.lock().unwrap().iter().cloned().collect();
-        (samples, findings)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,7 +236,7 @@ impl Resident {
                     .map_while(Result::ok)
                 {
                     if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                        events.lock().unwrap().push(value);
+                        events.lock().unwrap_or_else(|e| e.into_inner()).push(value);
                     }
                 }
             });
@@ -367,7 +245,7 @@ impl Resident {
             let stderr = Arc::clone(&stderr);
             std::thread::spawn(move || {
                 for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                    let mut text = stderr.lock().unwrap();
+                    let mut text = stderr.lock().unwrap_or_else(|e| e.into_inner());
                     if text.len() < 16 * 1024 {
                         text.push_str(&line);
                         text.push('\n');
@@ -386,7 +264,7 @@ impl Resident {
     fn event(&self, name: &str) -> Option<Value> {
         self.events
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|e| e["event"] == name)
             .cloned()
@@ -395,7 +273,7 @@ impl Resident {
     fn names(&self) -> Vec<String> {
         self.events
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter_map(|e| e["event"].as_str().map(str::to_string))
             .collect()
@@ -420,7 +298,9 @@ impl Resident {
                         self.identity.name(),
                         exited.map(|s| s.code()),
                         self.names(),
-                        sanitize_terminal_output(&self.stderr.lock().unwrap())
+                        sanitize_terminal_output(
+                            &self.stderr.lock().unwrap_or_else(|e| e.into_inner())
+                        )
                     ),
                 ));
             }
@@ -651,24 +531,14 @@ impl Gate {
     fn log_json(&mut self, name: &str, value: &impl Serialize) -> String {
         let path = self.logs.join(format!("{name}.json"));
         let _ = fs::write(&path, serde_json::to_vec_pretty(value).unwrap_or_default());
-        let relative = path
-            .strip_prefix(&self.root)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let relative = rel_path(&self.root, &path);
         self.report.log_files.insert(name.into(), relative.clone());
         relative
     }
 
     fn log_path(&mut self, name: &str) -> PathBuf {
         let path = self.logs.join(name);
-        let relative = path
-            .strip_prefix(&self.root)
-            .unwrap_or(&path)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let relative = rel_path(&self.root, &path);
         self.report.log_files.insert(name.into(), relative);
         path
     }
@@ -712,44 +582,27 @@ pub(crate) fn run_verify_stage_m3(
     let test_directories_before =
         owned_test_directories().map_err(|e| failure("temp_snapshot", e))?;
     let developer_before = developer_state();
-    let jobs = env::var("DELTA_GATE_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().saturating_sub(2).max(1))
-                .unwrap_or(1)
-        });
+    let jobs = default_gate_jobs();
     let mut gate = Gate {
         root: root.clone(),
         temp: temp.clone(),
         logs,
         ui_smoke,
-        report: VerifyStageReport {
-            stage: "M3".into(),
-            plan_version: "1.0".into(),
-            executed_at: Utc::now().to_rfc3339(),
-            live_mode: false,
-            source_fingerprint: fingerprint,
-            visible_window_count: 0,
-            window_details: Vec::new(),
-            temp_residual_dirs: 0,
-            outside_temp_created_dirs: 0,
-            path_observation_scope: "SHA-256 of every file in LOCALAPPDATA/Programs/delta and delta-dev, their HKCU uninstall keys and Start-menu shortcuts, and the directory trees of LOCALAPPDATA and Documents delta/delta-dev; test identities install into Programs/delta-test* and keep data in TEMP".into(),
-            release_data_dir_touched: false,
-            poc_results: Vec::new(),
-            case_results: Vec::new(),
-            live_probes: Vec::new(),
-            overall_status: "running".into(),
-            gate_jobs: jobs,
-            process_priority: current_process_priority(),
-            test_results: BTreeMap::new(),
-            log_files: BTreeMap::new(),
-            errors: Vec::new(),
-        },
+        report: make_initial_report(
+            "M3",
+            "1.0",
+            false,
+            fingerprint,
+            jobs,
+            "SHA-256 of every file in LOCALAPPDATA/Programs/delta and delta-dev, their HKCU uninstall keys, Start-menu and desktop shortcuts, and the directory trees of LOCALAPPDATA and Documents delta/delta-dev; test identities install into Programs/delta-test* and keep data in TEMP",
+        ),
     };
-    let monitor = QuietnessMonitor::start();
+    let monitor = QuietnessMonitor::for_predicate(
+        Duration::from_millis(200),
+        false,
+        "foreground",
+        |_pid, image| gate_owned_image(image),
+    );
 
     let execution = catch_unwind(AssertUnwindSafe(|| -> Result<(), ErrorEnvelope> {
         let job = QuietJobObject::new().map_err(|e| failure("job_object", e))?;
@@ -794,23 +647,9 @@ pub(crate) fn run_verify_stage_m3(
         }
         Ok(())
     }));
-    match execution {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => gate
-            .report
-            .errors
-            .push(format!("{}: {}", error.code, error.message)),
-        Err(payload) => gate.report.errors.push(format!(
-            "gate panic: {}",
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic")
-        )),
-    }
+    record_execution_outcome(&mut gate.report, execution);
 
-    // M3-A-10: quietness, isolation, cleanup and regressions.
+    // M3-A-10: quietness, isolation, cleanup and regressions (`CLI-B05`).
     let started = Instant::now();
     let (samples, findings) = monitor.finish();
     let cleanup = cleanup_test_roots(&gate);
@@ -837,8 +676,8 @@ pub(crate) fn run_verify_stage_m3(
         .count();
     gate.report.visible_window_count = count_visible_windows_for_current_process();
     gate.report.window_details = observed_window_details();
-    let regressions = regression_reports(&gate);
-    let a10 = (|| -> Result<String, ErrorEnvelope> {
+
+    let quiet_and_clean = (|| -> Result<String, ErrorEnvelope> {
         ensure(
             !cfg!(windows) || gate.report.process_priority == "below_normal",
             "process priority is not below normal",
@@ -855,21 +694,41 @@ pub(crate) fn run_verify_stage_m3(
             gate.report.temp_residual_dirs == 0,
             "test temporary directories remain",
         )?;
-        let cleanup = cleanup.clone()?;
-        let regressions = regressions.clone()?;
-        ensure(installer_mode, "requires --installer")?;
-        Ok(format!(
-            "below_normal; {samples} window samples, 0 visible/foreground test windows; developer installs ({} files), uninstall keys, shortcuts and {} data directories identical; {cleanup}; {regressions}",
-            developer_before.installs.len(),
-            developer_before.data_directories.len()
-        ))
+        cleanup
     })();
-    if installer_mode || a10.is_err() {
-        gate.record("M3-A-10", "M3-W06", started, a10.clone());
-    } else {
-        gate.not_run("M3-A-10", "M3-W06", "required", "requires --installer");
-    }
-    let k04 = a10.is_ok();
+    let k04 = match quiet_and_clean {
+        Err(error) => {
+            gate.record("M3-A-10", "M3-W06", started, Err(error));
+            false
+        }
+        Ok(cleanup_summary) if installer_mode => {
+            let full = verify_prior_stage_regressions(
+                &gate.root,
+                &gate.report.source_fingerprint,
+                &[("m1", "M1", "2.6"), ("m2", "M2", "1.0")],
+                false,
+            )
+            .map(|regressions| {
+                format!(
+                    "below_normal; {samples} window samples, 0 visible/foreground test windows; developer installs ({} files), uninstall keys, shortcuts and {} data directories identical; {cleanup_summary}; {regressions}",
+                    developer_before.installs.len(),
+                    developer_before.data_directories.len()
+                )
+            });
+            gate.record("M3-A-10", "M3-W06", started, full)
+        }
+        Ok(_) => {
+            gate.not_run(
+                "M3-A-10",
+                "M3-W06",
+                "required",
+                &format!(
+                    "quietness ({samples} window samples, 0 visible/foreground test windows) and developer isolation passed; requires --installer and same-fingerprint M1/M2 reports"
+                ),
+            );
+            false
+        }
+    };
     poc(
         &mut gate,
         "M3-K04",
@@ -921,22 +780,12 @@ pub(crate) fn run_verify_stage_m3(
             .poc_results
             .iter()
             .any(|p| p.status == "not-run");
-    gate.report.overall_status = if failed {
-        "failed"
-    } else if required_not_run {
-        "not-run"
-    } else {
-        "passed"
-    }
-    .into();
-    let json = serde_json::to_string_pretty(&gate.report).map_err(|e| failure("report", e))?;
-    fs::write(reports.join("verify-stage-report.json"), &json).map_err(|e| failure("report", e))?;
-    println!("{}", sanitize_terminal_output(&json));
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    finalize_and_write_report(
+        &mut gate.report,
+        &reports.join("verify-stage-report.json"),
+        failed,
+        Some(required_not_run),
+    )
 }
 
 fn poc(gate: &mut Gate, id: &str, title: &str, ran: bool, passed: bool) {
@@ -961,77 +810,22 @@ fn poc(gate: &mut Gate, id: &str, title: &str, ran: bool, passed: bool) {
 }
 
 fn mechanical_gates(gate: &mut Gate, jobs: usize) -> Result<(), ErrorEnvelope> {
-    let gate_env = BTreeMap::from([
-        (
-            "DELTA_DATA_DIR".into(),
-            gate.temp.join("gate-data").display().to_string(),
-        ),
-        (
-            "DELTA_DOCUMENTS_DIR".into(),
-            gate.temp.join("gate-documents").display().to_string(),
-        ),
-        (
-            "LOCALAPPDATA".into(),
-            gate.temp.join("gate-localappdata").display().to_string(),
-        ),
-        ("CARGO_BUILD_JOBS".into(), jobs.to_string()),
-        ("CARGO_INCREMENTAL".into(), "0".into()),
-        ("PYTHONUTF8".into(), "1".into()),
-        ("RUST_TEST_THREADS".into(), jobs.to_string()),
-        (
-            "DELTA_TEST_ROOT".into(),
-            gate.temp.join("tests").display().to_string(),
-        ),
-    ]);
-    for (id, program, args) in [
-        ("M3-G-01", "python", vec!["scripts/check_docs.py"]),
-        ("M3-G-02", "git", vec!["diff", "--check"]),
-        ("M3-G-03", "cargo", vec!["fmt", "--all", "--check"]),
-        (
-            "M3-G-04",
-            "cargo",
-            vec![
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--",
-                "-D",
-                "warnings",
-            ],
-        ),
-        ("M3-G-05", "cargo", vec!["test", "--workspace", "--locked"]),
-    ] {
-        let started = Instant::now();
-        let result = run_quiet_command(
-            OsStr::new(program),
-            args.clone(),
-            Some(&gate.root),
-            &gate_env,
-        )
-        .map_err(|e| failure("gate_command", e))?;
-        let log = gate.log_json(id, &result);
-        if id == "M3-G-05" {
-            record_tests(&result.stdout, &mut gate.report.test_results);
-        }
-        let passed = result.status_code == Some(0) && !result.timed_out;
-        gate.report.case_results.push(CaseResultRecord {
-            case_id: id.into(),
-            work_package: "M3-W06".into(),
-            tier: "required".into(),
-            status: if passed { "passed" } else { "failed" }.into(),
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            evidence: format!(
-                "{program} {}; exit={:?}; log {log}",
-                args.join(" "),
-                result.status_code
-            ),
-        });
-        if !passed {
-            return Err(failure("gate_failed", format!("{id}: see {log}")));
-        }
-    }
-    case_from_tests(
+    let gate_env = build_gate_env(&gate.temp, jobs);
+    run_mechanical_gates(
+        &gate.root,
+        &gate.logs,
         &mut gate.report,
+        &gate_env,
+        MechanicalGateConfig {
+            stage_prefix: "M3",
+            work_package: "M3-W06",
+            clippy_locked: false,
+            test_locked: true,
+        },
+    )?;
+    record_mapped_case(
+        &mut gate.report,
+        "M3-G-05",
         "M3-A-01",
         "M3-W01",
         "required",
@@ -1039,16 +833,20 @@ fn mechanical_gates(gate: &mut Gate, jobs: usize) -> Result<(), ErrorEnvelope> {
             "version::tests::m3_a01_version_derivation_for_release_dev_and_test_identities",
             "identity::tests::identities_are_fully_isolated_and_test_identities_never_compile_as_release",
         ],
+        None,
     );
-    case_from_tests(
+    record_mapped_case(
         &mut gate.report,
+        "M3-G-05",
         "M3-A-02",
         "M3-W01",
         "required",
         &["instance::tests::m3_a02_single_instance_and_control_pipe_reject_cross_identity_requests"],
+        None,
     );
-    case_from_tests(
+    record_mapped_case(
         &mut gate.report,
+        "M3-G-05",
         "M3-A-07",
         "M3-W04",
         "required",
@@ -1057,6 +855,7 @@ fn mechanical_gates(gate: &mut Gate, jobs: usize) -> Result<(), ErrorEnvelope> {
             "update::tests::m3_a08_loopback_check_resume_and_redirect_rejection",
             "update::tests::update_preferences_default_on_and_respect_interval",
         ],
+        None,
     );
     Ok(())
 }
@@ -1143,37 +942,6 @@ fn offline_contracts(gate: &mut Gate) {
         ))
     })();
     gate.record("M3-G-06", "M3-W02,M3-W04", started, outcome);
-}
-
-fn regression_reports(gate: &Gate) -> Result<String, ErrorEnvelope> {
-    let mut parts = Vec::new();
-    for (stage, plan) in [("m1", "2.6"), ("m2", "1.0")] {
-        let path = gate
-            .root
-            .join(format!(".local/reports/{stage}/verify-stage-report.json"));
-        let report: Value = serde_json::from_slice(&fs::read(&path).map_err(|e| {
-            failure(
-                "REGRESSION",
-                format!("{stage} report missing ({e}); run verify-stage {stage} first"),
-            )
-        })?)
-        .map_err(|e| failure("REGRESSION", e))?;
-        ensure(
-            report["plan_version"] == plan
-                && report["overall_status"] == "passed"
-                && report["source_fingerprint"] == gate.report.source_fingerprint.as_str(),
-            format!(
-                "{stage} regression must be passed for this source fingerprint (found {} / {})",
-                report["overall_status"], report["source_fingerprint"]
-            ),
-        )?;
-        parts.push(format!(
-            "{} v{plan} passed at {} for this fingerprint",
-            stage.to_uppercase(),
-            report["executed_at"].as_str().unwrap_or("?")
-        ));
-    }
-    Ok(parts.join("; "))
 }
 
 /// Remove everything the gate created for the test identities and confirm it is gone.
@@ -1376,14 +1144,26 @@ fn preflight(gate: &mut Gate) -> Result<(), ErrorEnvelope> {
         )?;
         if installed_version(identity).is_some() {
             let log = gate.log_path(&format!("preflight-uninstall-{}.log", identity.name()));
-            run_uninstall_silently(identity, &log)?;
+            let run = run_uninstall_silently(identity, &log)?;
+            ensure(
+                run.exit_code == Some(0) && !run.timed_out,
+                format!(
+                    "preflight uninstall of {} exited {:?} (timed_out={})",
+                    identity.name(),
+                    run.exit_code,
+                    run.timed_out
+                ),
+            )?;
         }
         if let Some(directory) = install_dir(identity) {
             if directory.exists() {
                 fs::remove_dir_all(&directory).map_err(|e| failure("PREFLIGHT", e))?;
             }
         }
-        if let Some(link) = shortcut(identity) {
+        for link in [shortcut(identity), desktop_shortcut(identity)]
+            .into_iter()
+            .flatten()
+        {
             if link.exists() {
                 fs::remove_file(&link).map_err(|e| failure("PREFLIGHT", e))?;
             }
@@ -1879,10 +1659,7 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         &environment,
     )?;
     resident.wait_event("resident-ready", Duration::from_secs(120))?;
-    let before = {
-        // The library is locked while the app runs; compare against the restarted app later.
-        resident.event("resident-ready").unwrap_or_default()
-    };
+    let before = resident.event("resident-ready").unwrap_or_default();
     let install_dev = |gate: &mut Gate, package: &Path, name: &str| {
         let result = run_quiet_command_with_timeout(
             cli.as_os_str(),
@@ -1934,6 +1711,7 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         result.status_code == Some(0)
             && receipt["was_running"] == true
             && receipt["restarted"] == true
+            && receipt["background"] == true
             && receipt["installed_version"] == packages.dev_test_v2.version.as_str(),
         format!("install-dev failed: {}", result.stderr.trim()),
     )?;
@@ -1992,7 +1770,7 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         &packages.dev_test_v2.version,
     )?;
     Ok(format!(
-        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently (desktop shortcut made again, no Start-menu one), restarted as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept",
+        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently (desktop shortcut made again, no Start-menu one), restarted in background as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept",
         before["detail"]["process_id"],
         packages.dev_test_v1.version,
         packages.dev_test_v2.version,
@@ -2215,7 +1993,11 @@ fn case_a08(
         })
     });
     ensure(relaunched, "the relaunched app did not become ready")?;
-    let ranges = server.ranges_seen.lock().unwrap().clone();
+    let ranges = server
+        .ranges_seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     ensure(
         !ranges.is_empty(),
         "the interrupted download was not resumed",

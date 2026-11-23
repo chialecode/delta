@@ -242,10 +242,11 @@ impl UpdatePolicy {
         })
     }
 
-    /// Validate an offer completely before any installer byte is downloaded.
-    pub fn evaluate(
+    /// Validate manifest metadata, policy bindings, and detached Ed25519 signature without
+    /// comparing against an installed version. Shared by `evaluate`, `download`, `verify_installer`,
+    /// and `launch_installer` so direct verifier/launcher callers cannot bypass policy checks.
+    pub(crate) fn validate_manifest_and_signature(
         &self,
-        current: &Version,
         manifest: &UpdateManifest,
         signature_hex: Option<&str>,
     ) -> Result<Version, UpdateError> {
@@ -278,6 +279,17 @@ impl UpdatePolicy {
         }
         let signature = signature_hex.ok_or(UpdateError::SignatureMissing)?;
         verify_manifest_signature(self.key()?, manifest, signature)?;
+        Ok(offered)
+    }
+
+    /// Validate an offer completely before any installer byte is downloaded.
+    pub fn evaluate(
+        &self,
+        current: &Version,
+        manifest: &UpdateManifest,
+        signature_hex: Option<&str>,
+    ) -> Result<Version, UpdateError> {
+        let offered = self.validate_manifest_and_signature(manifest, signature_hex)?;
         if offered <= *current {
             return Err(UpdateError::NotNewer {
                 current: current.to_string(),
@@ -341,9 +353,14 @@ impl UpdatePreferences {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(io)?;
         }
-        let temporary = path.with_extension("json.tmp");
-        fs::write(&temporary, serde_json::to_vec_pretty(self).map_err(io)?).map_err(io)?;
-        fs::rename(temporary, path).map_err(io)
+        let temporary = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4().simple()));
+        let bytes = serde_json::to_vec_pretty(self).map_err(io)?;
+        fs::write(&temporary, bytes).map_err(io)?;
+        if let Err(err) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(io(err));
+        }
+        Ok(())
     }
 
     pub fn check_due(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
@@ -408,9 +425,25 @@ impl UpdateClient {
         }
     }
 
+    fn run_async<F, T>(&self, future: F) -> T
+    where
+        F: std::future::Future<Output = T> + Send,
+        T: Send,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            std::thread::scope(|s| {
+                s.spawn(|| self.runtime.block_on(future))
+                    .join()
+                    .expect("update async helper thread panicked")
+            })
+        } else {
+            self.runtime.block_on(future)
+        }
+    }
+
     fn get_limited(&self, url: &str, limit: usize) -> Result<Vec<u8>, UpdateError> {
         self.policy.check_url(url)?;
-        self.runtime.block_on(async {
+        self.run_async(async {
             let mut response = self
                 .http
                 .get(url)
@@ -484,8 +517,9 @@ impl UpdateClient {
     }
 
     /// Download with HTTP Range resume into `directory`. A partial file survives network
-    /// errors; a server that ignores Range restarts the whole download. The finished file is
-    /// verified (size, SHA-256, signature) before it gets its final name.
+    /// errors; a server that ignores Range, returns HTTP 416, or returns an unexpected
+    /// `Content-Range` restarts the whole download. The finished file is verified (policy,
+    /// size, SHA-256, signature) before it gets its final name.
     pub fn download(
         &self,
         offer: &UpdateOffer,
@@ -493,11 +527,11 @@ impl UpdateClient {
         cancel: &AtomicBool,
     ) -> Result<PathBuf, UpdateError> {
         self.policy.check_url(&offer.installer_url)?;
-        self.policy.evaluate(
-            &Version::new(0, 0, 0),
-            &offer.manifest,
-            Some(&offer.signature_hex),
-        )?;
+        self.policy
+            .validate_manifest_and_signature(&offer.manifest, Some(&offer.signature_hex))?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err(UpdateError::Network("download cancelled".into()));
+        }
         fs::create_dir_all(directory).map_err(io)?;
         let target = directory.join(&offer.manifest.file);
         if target.is_file() && verify_installer(&self.policy, offer, &target).is_ok() {
@@ -509,44 +543,79 @@ impl UpdateClient {
             fs::remove_file(&partial).map_err(io)?;
             existing = 0;
         }
-        self.runtime.block_on(async {
-            let mut request = self.http.get(&offer.installer_url);
-            if existing > 0 {
-                request = request.header("Range", format!("bytes={existing}-"));
-            }
-            let mut response = request.send().await.map_err(Self::map_error)?;
-            let status = response.status();
-            let mut file = if existing > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
-                fs::OpenOptions::new()
-                    .append(true)
-                    .open(&partial)
-                    .map_err(io)?
-            } else if status.is_success() {
-                existing = 0;
-                fs::File::create(&partial).map_err(io)?
-            } else {
-                return Err(UpdateError::Network(format!("HTTP {status}")));
-            };
-            let mut written = existing;
-            while let Some(chunk) = response.chunk().await.map_err(Self::map_error)? {
+        self.run_async(async {
+            for attempt in 0..2u8 {
                 if cancel.load(Ordering::SeqCst) {
                     return Err(UpdateError::Network("download cancelled".into()));
                 }
-                written += chunk.len() as u64;
-                if written > offer.manifest.size || written > self.policy.max_bytes {
-                    drop(file);
-                    let _ = fs::remove_file(&partial);
-                    return Err(UpdateError::SizeMismatch);
+                let mut request = self.http.get(&offer.installer_url);
+                if existing > 0 {
+                    request = request.header("Range", format!("bytes={existing}-"));
                 }
-                file.write_all(&chunk).map_err(io)?;
+                let mut response = await_with_cancel(request.send(), cancel)
+                    .await?
+                    .map_err(Self::map_error)?;
+                let status = response.status();
+                if existing > 0 && status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                    let _ = fs::remove_file(&partial);
+                    existing = 0;
+                    if attempt == 0 {
+                        continue;
+                    }
+                    return Err(UpdateError::Network(format!("HTTP {status}")));
+                }
+                let mut file = if existing > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+                    let range_header = response
+                        .headers()
+                        .get(reqwest::header::CONTENT_RANGE)
+                        .and_then(|v| v.to_str().ok());
+                    if !content_range_matches(range_header, existing, offer.manifest.size) {
+                        let _ = fs::remove_file(&partial);
+                        existing = 0;
+                        if attempt == 0 {
+                            continue;
+                        }
+                        return Err(UpdateError::Network(
+                            "server returned mismatched Content-Range on resume".into(),
+                        ));
+                    }
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(&partial)
+                        .map_err(io)?
+                } else if status.is_success() {
+                    existing = 0;
+                    fs::File::create(&partial).map_err(io)?
+                } else {
+                    return Err(UpdateError::Network(format!("HTTP {status}")));
+                };
+                let mut written = existing;
+                while let Some(chunk) = await_with_cancel(response.chunk(), cancel)
+                    .await?
+                    .map_err(Self::map_error)?
+                {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(UpdateError::Network("download cancelled".into()));
+                    }
+                    written += chunk.len() as u64;
+                    if written > offer.manifest.size || written > self.policy.max_bytes {
+                        drop(file);
+                        let _ = fs::remove_file(&partial);
+                        return Err(UpdateError::SizeMismatch);
+                    }
+                    file.write_all(&chunk).map_err(io)?;
+                }
+                file.sync_all().map_err(io)?;
+                if written < offer.manifest.size {
+                    return Err(UpdateError::Network(
+                        "download interrupted; it will resume".into(),
+                    ));
+                }
+                return Ok(());
             }
-            file.sync_all().map_err(io)?;
-            if written < offer.manifest.size {
-                return Err(UpdateError::Network(
-                    "download interrupted; it will resume".into(),
-                ));
-            }
-            Ok(())
+            Err(UpdateError::Network(
+                "download retry budget exhausted".into(),
+            ))
         })?;
         if let Err(error) = verify_installer(&self.policy, offer, &partial) {
             let _ = fs::remove_file(&partial);
@@ -555,6 +624,61 @@ impl UpdateClient {
         fs::rename(&partial, &target).map_err(io)?;
         Ok(target)
     }
+}
+
+async fn await_with_cancel<F, T>(future: F, cancel: &AtomicBool) -> Result<T, UpdateError>
+where
+    F: std::future::Future<Output = T>,
+{
+    if cancel.load(Ordering::SeqCst) {
+        return Err(UpdateError::Network("download cancelled".into()));
+    }
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            biased;
+            res = &mut future => return Ok(res),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(UpdateError::Network("download cancelled".into()));
+                }
+            }
+        }
+    }
+}
+
+fn content_range_matches(header: Option<&str>, expected_start: u64, expected_total: u64) -> bool {
+    let Some(raw) = header.map(str::trim) else {
+        return false;
+    };
+    let Some(rest) = raw
+        .strip_prefix("bytes ")
+        .or_else(|| raw.strip_prefix("BYTES "))
+    else {
+        return false;
+    };
+    let Some((range_part, total_part)) = rest.split_once('/') else {
+        return false;
+    };
+    let Some((start_str, end_str)) = range_part.split_once('-') else {
+        return false;
+    };
+    let (Ok(start), Ok(end)) = (
+        start_str.trim().parse::<u64>(),
+        end_str.trim().parse::<u64>(),
+    ) else {
+        return false;
+    };
+    if start != expected_start || end < start {
+        return false;
+    }
+    let total_part = total_part.trim();
+    if total_part == "*" {
+        return true;
+    }
+    total_part
+        .parse::<u64>()
+        .is_ok_and(|total| total == expected_total && end < total)
 }
 
 pub fn sha256_of(path: &Path) -> Result<String, UpdateError> {
@@ -572,11 +696,13 @@ pub fn sha256_of(path: &Path) -> Result<String, UpdateError> {
 }
 
 /// Re-verify a downloaded installer immediately before it is executed.
+/// Enforces full policy/channel/filename/size-cap/signature validation as well as file integrity.
 pub fn verify_installer(
     policy: &UpdatePolicy,
     offer: &UpdateOffer,
     path: &Path,
 ) -> Result<(), UpdateError> {
+    policy.validate_manifest_and_signature(&offer.manifest, Some(&offer.signature_hex))?;
     let size = fs::metadata(path).map_err(io)?.len();
     if size != offer.manifest.size {
         return Err(UpdateError::SizeMismatch);
@@ -584,7 +710,7 @@ pub fn verify_installer(
     if sha256_of(path)? != offer.manifest.sha256 {
         return Err(UpdateError::HashMismatch);
     }
-    verify_manifest_signature(policy.key()?, &offer.manifest, &offer.signature_hex)
+    Ok(())
 }
 
 /// Encode the app's relaunch arguments for the installer's restart entry.
@@ -621,6 +747,15 @@ pub fn launch_installer(
     log: &Path,
     restart_args: &[String],
 ) -> Result<DetachedLaunch, UpdateError> {
+    let offered =
+        policy.validate_manifest_and_signature(&offer.manifest, Some(&offer.signature_hex))?;
+    let current = current_version();
+    if offered <= current {
+        return Err(UpdateError::NotNewer {
+            current: current.to_string(),
+            offered: offered.to_string(),
+        });
+    }
     verify_installer(policy, offer, installer)?;
     spawn_detached_app(
         installer.as_os_str(),
@@ -864,6 +999,28 @@ fn serve_loopback(
 mod tests {
     use super::*;
 
+    /// D-35 / M5-W08: the published v0.1.1 `latest.json` and detached signature (copied verbatim
+    /// from the GitHub release) must still verify with the embedded release key after the
+    /// `ed25519-dalek` 3 / `sha2` 0.11 / `getrandom` 0.4 upgrade; any field change must fail.
+    #[test]
+    fn published_v0_1_1_manifest_signature_still_verifies() {
+        let manifest: UpdateManifest = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/release/v0.1.1/latest.json"
+        ))
+        .unwrap();
+        let signature =
+            include_str!("../../../tests/fixtures/release/v0.1.1/delta-setup-0.1.1-x64.exe.sig");
+        let key = embedded_release_public_key().expect("embedded release key");
+        assert_eq!(manifest.version, "0.1.1");
+        verify_manifest_signature(&key, &manifest, signature).unwrap();
+        let mut tampered = manifest.clone();
+        tampered.sha256 = tampered.sha256.replace('5', "6");
+        assert!(verify_manifest_signature(&key, &tampered, signature).is_err());
+        let mut other = manifest;
+        other.version = "0.1.2".into();
+        assert!(verify_manifest_signature(&key, &other, signature).is_err());
+    }
+
     fn fixture(
         key: &SigningKey,
         channel: &str,
@@ -1093,5 +1250,202 @@ mod tests {
         assert!(preferences.check_due(now));
         preferences.auto_check = false;
         assert!(!preferences.check_due(now));
+    }
+
+    #[test]
+    fn verify_installer_enforces_policy_and_launch_rejects_downgrade() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_m3_policy_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let key = generate_signing_key().unwrap();
+        let release = UpdatePolicy::release(Some(key.verifying_key()));
+        let body = b"signed installer bytes".to_vec();
+        let file_path = root.join("installer.exe");
+        fs::write(&file_path, &body).unwrap();
+
+        // Cross-channel signed manifest must be rejected by verify_installer directly.
+        let (test_manifest, test_sig) = fixture(&key, "test", "9.9.9", &body);
+        let cross_channel_offer = UpdateOffer {
+            manifest: test_manifest,
+            signature_hex: test_sig,
+            installer_url: "https://github.com/chialecode/delta/releases/download/v9.9.9/x.exe"
+                .into(),
+        };
+        assert_eq!(
+            verify_installer(&release, &cross_channel_offer, &file_path)
+                .unwrap_err()
+                .code(),
+            "UPDATE_CHANNEL_MISMATCH"
+        );
+
+        // Signed manifest with unexpected/traversal filename must be rejected by verify_installer.
+        let mut bad_name_manifest = fixture(&key, "release", "9.9.9", &body).0;
+        bad_name_manifest.file = "../evil.exe".into();
+        let bad_name_offer = UpdateOffer {
+            signature_hex: sign_manifest(&key, &bad_name_manifest),
+            manifest: bad_name_manifest,
+            installer_url: "https://github.com/chialecode/delta/releases/download/v9.9.9/x.exe"
+                .into(),
+        };
+        assert_eq!(
+            verify_installer(&release, &bad_name_offer, &file_path)
+                .unwrap_err()
+                .code(),
+            "UPDATE_MANIFEST"
+        );
+
+        // Downgrade offer cannot be launched even if signed and hash-matching.
+        let (old_manifest, old_sig) = fixture(&key, "release", "0.0.1", &body);
+        let old_offer = UpdateOffer {
+            manifest: old_manifest,
+            signature_hex: old_sig,
+            installer_url: "https://github.com/chialecode/delta/releases/download/v0.0.1/x.exe"
+                .into(),
+        };
+        assert_eq!(
+            launch_installer(&release, &old_offer, &file_path, &root.join("u.log"), &[])
+                .unwrap_err()
+                .code(),
+            "UPDATE_NOT_NEWER"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn download_recovers_from_http_416_and_mismatched_content_range() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_m3_range_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let key = generate_signing_key().unwrap();
+        let body = b"full-installer-payload-0123456789abcdef".to_vec();
+        let (manifest, sig) = fixture(&key, "test", "9.9.1", &body);
+
+        // Minimal server: first request with Range returns 416; retry without Range returns 200.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body_server = body.clone();
+        let server_handle = std::thread::spawn(move || {
+            for mode in ["416", "200", "bad206", "200"] {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut req = [0u8; 4096];
+                let _ = stream.read(&mut req);
+                let (head, payload): (String, &[u8]) = match mode {
+                    "416" => (
+                        "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            .into(),
+                        b"",
+                    ),
+                    "bad206" => (
+                        format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body_server.len() - 1,
+                            body_server.len(),
+                            body_server.len()
+                        ),
+                        &body_server,
+                    ),
+                    _ => (
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body_server.len()
+                        ),
+                        &body_server,
+                    ),
+                };
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(payload);
+            }
+        });
+
+        let policy = UpdatePolicy::test(
+            format!("http://{addr}/repos/chialecode/delta/releases/latest"),
+            Some(key.verifying_key()),
+        );
+        let client = UpdateClient::new(policy).unwrap();
+        let offer = UpdateOffer {
+            manifest: manifest.clone(),
+            signature_hex: sig,
+            installer_url: format!("http://{addr}/download/{}", manifest.file),
+        };
+        let cancel = AtomicBool::new(false);
+
+        // Case 1: stale partial triggers HTTP 416 -> restarts from 0 and succeeds.
+        let partial = root.join(format!("{}.partial", manifest.file));
+        fs::write(&partial, &body[..10]).unwrap();
+        let path1 = client.download(&offer, &root, &cancel).unwrap();
+        assert_eq!(fs::read(&path1).unwrap(), body);
+        fs::remove_file(&path1).unwrap();
+
+        // Case 2: server answers 206 with wrong Content-Range start -> discards partial and restarts.
+        fs::write(&partial, &body[..10]).unwrap();
+        let path2 = client.download(&offer, &root, &cancel).unwrap();
+        assert_eq!(fs::read(&path2).unwrap(), body);
+
+        let _ = server_handle.join();
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn download_cancels_promptly_when_server_stalls() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_m3_cancel_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let key = generate_signing_key().unwrap();
+        let body = b"stalled-installer-body".to_vec();
+        let (manifest, sig) = fixture(&key, "test", "9.9.2", &body);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let release_server = Arc::new(AtomicBool::new(false));
+        let release_flag = Arc::clone(&release_server);
+        let server_handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                // Hold the socket open without sending headers until test releases us.
+                while !release_flag.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        });
+
+        let policy = UpdatePolicy::test(
+            format!("http://{addr}/repos/chialecode/delta/releases/latest"),
+            Some(key.verifying_key()),
+        );
+        let client = UpdateClient::new(policy).unwrap();
+        let offer = UpdateOffer {
+            manifest: manifest.clone(),
+            signature_hex: sig,
+            installer_url: format!("http://{addr}/download/{}", manifest.file),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_trigger = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            cancel_trigger.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let err = client.download(&offer, &root, &cancel).unwrap_err();
+        assert_eq!(err.code(), "UPDATE_NETWORK");
+        assert!(err.to_string().contains("cancelled"));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "cancel should abort promptly rather than waiting for 60s read_timeout"
+        );
+
+        release_server.store(true, Ordering::SeqCst);
+        let _ = server_handle.join();
+        fs::remove_dir_all(&root).unwrap();
     }
 }

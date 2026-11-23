@@ -1,6 +1,8 @@
 """Offline regressions for license selection, obligation coverage and cache identity."""
 
+import concurrent.futures
 import hashlib
+import http.client
 import json
 import tempfile
 import unittest
@@ -90,6 +92,64 @@ class LicenseAuditTests(unittest.TestCase):
                 output.mkdir()
                 with self.assertRaisesRegex(ValueError, "identity/hash"):
                     licenses.collect(package, output)
+
+    def test_license_file_fallback_when_license_is_null(self):
+        with tempfile.TemporaryDirectory(prefix="delta-license-regression-") as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            (source / "Cargo.toml").write_text("[package]\nname='custom'\n", encoding="utf-8")
+            (source / "CUSTOM-TERMS.txt").write_text("Custom license terms.\n", encoding="utf-8")
+            package = {
+                "id": "custom-id",
+                "name": "custom",
+                "version": "0.1.0",
+                "license": None,
+                "license_file": "CUSTOM-TERMS.txt",
+                "manifest_path": str(source / "Cargo.toml"),
+            }
+            output = base / "out"
+            output.mkdir()
+            result = licenses.collect(package, output)
+            self.assertEqual(result["selected_obligations"], ["LicenseRef-file:CUSTOM-TERMS.txt"])
+            self.assertFalse(result["standard_text_with_source_fallback"])
+            self.assertTrue((output / result["directory"] / "CUSTOM-TERMS.txt").is_file())
+
+            bad_pkg = dict(package, license_file="../escape.txt")
+            bad_out = base / "out2"
+            bad_out.mkdir()
+            with self.assertRaises(ValueError):
+                licenses.collect(bad_pkg, bad_out)
+
+    def test_fetch_catches_http_exception_and_atomic_cache_survives_concurrency(self):
+        licenses.fetch.cache_clear()
+        with patch.object(
+            licenses.urllib.request,
+            "urlopen",
+            side_effect=http.client.IncompleteRead(b"truncated"),
+        ):
+            self.assertIsNone(licenses.fetch("https://example.invalid/license"))
+
+        with tempfile.TemporaryDirectory(prefix="delta-license-regression-") as directory:
+            cache = Path(directory) / "cache" / "sid" / "MIT"
+            record = {
+                "origin_type": "standard-license-text",
+                "url": "https://example.invalid",
+                "source_id": "sid",
+                "spdx": "MIT",
+                "sha256": hashlib.sha256(MIT).hexdigest(),
+            }
+
+            def worker(_):
+                licenses._write_cache_atomic(cache, record, MIT)
+                hit = licenses._read_cache(cache, "sid", "MIT", "pkg")
+                self.assertIsNotNone(hit)
+                self.assertEqual(hit[1], MIT)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(worker, range(24)))
+            leftovers = [p.name for p in cache.iterdir() if p.name not in ("record.json", "text.txt")]
+            self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":

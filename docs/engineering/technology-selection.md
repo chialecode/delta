@@ -7,7 +7,7 @@
 1. **全项目 100% 纯 Rust 实现（D-22）**：
    - 采用 **纯 Rust 核心（`delta-core` / `delta-data` / `delta-app` / `delta-cli`）+ SQLite 单库（控制面、事务账本与日线行情）**；不引入 `workers/python` 或任何运行期 Python 子进程。
    - 调研中核查的 Python 库（如 `yfinance`、`akshare`、`exchange_calendars`）仅借用其**公开 HTTP 端点参数语义与日历规则对照**，在 DELTA 中全部由 Rust `reqwest` + `serde_json` 与 `chrono` + `chrono-tz` 原生实现。
-   - Parquet/DuckDB 推迟到 M5 批量扫描或实测性能不足时引入（`OSS-10`）。
+   - Parquet/DuckDB 推迟到 M6 批量扫描或实测性能不足时引入（`OSS-10`）。
 2. **优先解决金融数据来源与本地自动化数据平面（M1，D-20）**：
    - **M1 零桌面 GUI 依赖**：先把美股/ETF、加密现货、法币/稳定币汇率、公司行动（拆股/分红）、交易日历及券商/交易所账单导入与增量同步跑通并验证。
    - **与 M2 GPUI 兼容的异步边界**：`delta-app` 对外只提供同步命令/查询与后台作业句柄，不暴露 `tokio`/`reqwest` 类型；GPUI 自带执行器，可直接调用而无需桥接两个运行时。
@@ -35,9 +35,9 @@
 | 能力 | M1 首选 | 备选 / 取舍 | DELTA 自研边界 |
 | --- | --- | --- | --- |
 | 控制面、事务账本、日线行情 | **SQLite + rusqlite 0.41.1**（bundled，WAL，Backup API） | SQLx 0.9 适合多数据库后端，单机无需双驱动；不用 ORM 隐藏金额语义 | 迁移事务、幂等批次、冲销更正、水位线 `sync_checkpoint`、`dataset_version` / `dataset_partition`（M1 仅 `sqlite` 位置）与一致性备份恢复 |
-| 大规模批量扫描（M5+） | 推迟：**Parquet 60.1.0 + DuckDB 1.20000.1**（`OSS-10`） | Polars 0.55.2 | 通过 `dataset_partition.location_kind` 抽象接入，不改变上层查询契约；触发条件为 M5 扫描需求或实测性能不足 |
+| 大规模批量扫描（M6+） | 推迟：**Parquet 60.1.0 + DuckDB 1.20000.1**（`OSS-10`） | Polars 0.55.2 | 通过 `dataset_partition.location_kind` 抽象接入，不改变上层查询契约；触发条件为 M6 扫描需求或实测性能不足 |
 | 金额与十进制精度 | **rust_decimal 1.43.0** | bigdecimal 0.4.10 | FIFO 成本批次、费用分摊、第三资产扣费、跨账户搬移成本与多币种折算；禁止 SQL `REAL` 求和 |
-| 技术指标与策略评估 | **Rust 原生确定性实现**（MA/EMA/MACD/RSI，手算夹具；M5 受控类型化条件/策略引擎） | `ta 0.5.0` / `yata 0.7.0` | 固定数据版本起点计算，保证不同观察窗口同日期指标值完全一致；受控策略带步数/超时配额与取消隔离（AC-16） |
+| 技术指标与策略评估 | **Rust 原生确定性实现**（MA/EMA/MACD/RSI，手算夹具；M6 受控类型化条件/策略引擎） | `ta 0.5.0` / `yata 0.7.0` | 固定数据版本起点计算，保证不同观察窗口同日期指标值完全一致；受控策略带步数/超时配额与取消隔离（AC-16） |
 | 私有 Token 与模型密钥 | **数据目录内 DPAPI 加密文件**（`windows-sys` `CryptProtectData`，[D-32](../decisions/confirmed-decisions.md)，2026-11-09 起取代 `keyring` 与 Windows 凭据管理器） | 开发/CI 显式受控环境变量引用 | 不进命令行、配置明文与日志；加密不可用时拒绝保存 |
 
 ## 4. 桌面、CLI 与 AI 栈比较

@@ -14,7 +14,6 @@ delta-core = { path = "../delta-core" }
 delta-data = { path = "../delta-data" }
 delta-model = { path = "../delta-model" }
 delta-app = { path = "../delta-app" }
-delta-desktop = { path = "../delta-desktop" }
 rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,7 +23,6 @@ sha2.workspace = true
 hex.workspace = true
 rusqlite.workspace = true
 zip.workspace = true
-thiserror.workspace = true
 semver.workspace = true
 ed25519-dalek.workspace = true
 

@@ -4,7 +4,7 @@
 
 ## 1. 架构目标与决策
 
-1. **全项目 100% 纯 Rust 实现（D-22）**：M1～M6 不引入任何运行期 Python 子进程或外部脚本解释器。行情/汇率/公司行动连接器、交易日历、技术指标、十进制账本、应用编排、CLI、M2 GPUI 桌面工作台、AI 模型客户端、M4 训练与 M5 受控策略引擎全部在单一纯 Rust 代码库与二进制中完成。
+1. **全项目 100% 纯 Rust 实现（D-22）**：M1～M7 不引入任何运行期 Python 子进程或外部脚本解释器。行情/汇率/公司行动连接器、交易日历、技术指标、十进制账本、应用编排、CLI、M2 GPUI 桌面工作台、AI 模型客户端、M4 训练与 M6 受控策略引擎全部在单一纯 Rust 代码库与二进制中完成。
 2. **金融数据底座先行（Data-First，D-20）**：M1 优先交付可自动增量同步、多源交叉核验的本地金融数据平面（`delta-data`）、十进制账本核心（`delta-core`）与命令行工具（`delta-cli`），不绑定任何桌面 GUI 框架。
 3. **单一真相与 UI 分阶段衔接（D-21）**：M1 领域核心与数据平面不耦合 GUI；M2 桌面端直接采用长桥最新 **`gpui-kit`（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**，在同一个 Rust 进程内通过 `delta-app` 的同步命令/查询与作业句柄调用服务与不可变数据快照（`dataset_version`）。
 
@@ -71,13 +71,13 @@ MarketDataProvider
 ### 4.4 SQLite 单库存储与快照版本（M1）
 
 - **原始留痕**：保留导入 CSV 原始行与数据源响应正文（按内容哈希寻址，纳入备份清单），支持审计与重放。
-- **规范化层**：SQLite 保存事务账本、标的字典、交易日历、公司行动、汇率、日线 `bar`、水位线与 `dataset_version` / `dataset_partition` 清单。`dataset_partition.location_kind` 保留存储类型抽象，M1 仅为 `sqlite`；Parquet/DuckDB 在 M5 批量扫描或实测性能不足时经 `OSS-10` 接入，不改变上层查询契约。
+- **规范化层**：SQLite 保存事务账本、标的字典、交易日历、公司行动、汇率、日线 `bar`、水位线与 `dataset_version` / `dataset_partition` 清单。`dataset_partition.location_kind` 保留存储类型抽象，M1 仅为 `sqlite`；Parquet/DuckDB 在 M6 批量扫描或实测性能不足时经 `OSS-10` 接入，不改变上层查询契约。
 - **不可变 `dataset_version`**：每次增量同步事务提交后生成新的 `dataset_version`（含 `manifest_hash`、覆盖范围与质量等级）；版本是清单而非行情副本，`bar` 修订以有效版本区间保存，同步回看重叠窗口检出修订（M1 计划 S-09）。账本估值、图表窗口、训练回放（带 `visible_until` 截断）和 AI 问答均显式绑定 `dataset_version`，保证跨模块结果 100% 一致。
 
 ## 5. 并发、异步、容错与恢复模型
 
 - **SQLite 单写多读**：公开应用会话持资料库独占锁，后台 worker 共用该锁 lease；SQLite 写事务串行化，开启 `WAL` 与 `FOREIGN KEY`；金额/数量用规范化十进制文本存储并在 Rust `Decimal` 中聚合，禁用 SQL `REAL` 求和。
-- **异步边界与后台作业隔离（AC-16）**：`delta-core` 纯同步无 IO；`delta-data` 内部使用 `tokio` + `reqwest`；`delta-app` 私有持有运行时，对外只提供同步命令/查询与后台作业句柄（`JobId`、进度与取消经标准库通道或回调 trait），不暴露 `tokio`/`reqwest` 类型或 `async fn`。任何数据拉取或后续 M5 策略评估作业均绑定超时（deadline）、取消令牌与步数/资源上限；作业超时、取消或触发故障时由宿主安全中止并转为结构化错误（`PROVIDER_UNAVAILABLE` / `CANCELLED` / `INTERRUPTED`），主程序保持可用且不会把失败作业标为成功（AC-16）。M2 GPUI 自带执行器，可在 UI 线程直接调用；CLI 同样复用该接口。
+- **异步边界与后台作业隔离（AC-16）**：`delta-core` 纯同步无 IO；`delta-data` 内部使用 `tokio` + `reqwest`；`delta-app` 私有持有运行时，对外只提供同步命令/查询与后台作业句柄（`JobId`、进度与取消经标准库通道或回调 trait），不暴露 `tokio`/`reqwest` 类型或 `async fn`。任何数据拉取或后续 M6 策略评估作业均绑定超时（deadline）、取消令牌与步数/资源上限；作业超时、取消或触发故障时由宿主安全中止并转为结构化错误（`PROVIDER_UNAVAILABLE` / `CANCELLED` / `INTERRUPTED`），主程序保持可用且不会把失败作业标为成功（AC-16）。M2 GPUI 自带执行器，可在 UI 线程直接调用；CLI 同样复用该接口。
 - **一致性备份与恢复**：资料库目录即应用数据根（正式版 `%LOCALAPPDATA%\delta`、开发版 `%LOCALAPPDATA%\delta-dev`，见 [安装与数据位置](../dev-rules/data-and-security.md#install-and-data-locations)），包含 `manifest.json`、`delta.sqlite`、`raw/`（若原始响应正文存于文件）、`imports/`、`attachments/` 与 `backups/`。数据库使用 SQLite Backup API 创建一致性快照，恢复时先在独立新目录完整校验清单哈希、外键与引用后再原子切换（AC-09）。
 
 ## 6. M1 已实现边界
@@ -94,13 +94,23 @@ M1 的 AccountProvider 是离线录制实现：输入为 OKX/Binance 原生 data
 
 - **身份**：构建期 `DELTA_IDENTITY` 决定 AppId、显示名、可执行文件名、互斥量、控制管道与 AppUserModelID（`delta-app/src/identity.rs`）；版本由 Git 标签推算并经 `DELTA_VERSION` 注入，build-info、`VERSIONINFO` 与设置页“关于”读取同一值（`version.rs`）。源码构建没有安装身份，不注册单实例与控制管道。
 - **单实例与控制管道**（`instance.rs`）：已安装身份启动时创建命名互斥量 `<身份>-instance`（同时是安装器的 `AppMutex`）；第二个进程只经管道发送 `focus` 后退出。`\\.\pipe\<身份>-control` 只有一个实例、拒绝远程客户端，并逐连接核对客户端会话与用户 SID；管道线程把命令交给 UI 线程（`delta-desktop/src/lifecycle.rs`），60 s 内无应答回执 `busy`。
-- **保存后退出**：`quit-for-update` 与“应用更新”走同一序列：检查忙碌（进行中的同步作业或 AI 复盘）→ 自动保存未保存的笔记（保存失败回执 `save-failed`）→ 保存布局 → 回执 `ok` 并附带重启参数 → 退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消同步与 AI 再继续。
-- **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 原参数重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
-- **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，之前在运行则以脱离作业的方式按原参数重启。
+- **系统托盘与关闭行为**（`delta-desktop/src/tray.rs`，D-37）：交互桌面模式通过专用轻量线程调用 Win32 `Shell_NotifyIconW` 常驻通知区域图标（直接加载可执行文件内嵌资源 `1`，自动区分正式版与带 `DEV` 徽标的开发版图标），监听 `TaskbarCreated` 应对外壳重启，退出或 `WM_ENDSESSION` 时立即 `NIM_DELETE`；自动化验证模式永不建托盘。左键/双击恢复显示并激活主窗口，右键在托盘线程弹出原生菜单（“打开 / 退出”，不阻塞 GPUI）。窗口关闭按钮经 `on_window_should_close` 拦截：默认在托盘活跃时 `SW_HIDE` 隐藏到托盘，可在设置页切换为“直接退出”（保存于 `settings/layout.json` 的 `close_action`）；显式退出与更新退出从不拦截进托盘。
+- **保存后退出**：`quit-for-update`、“应用更新”与用户显式退出走同一生命周期序列：检查忙碌（进行中的同步作业、训练准备或 AI 复盘）→ 自动保存未保存的笔记 → 保存布局 → 移除托盘图标并退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消任务再继续；用户显式退出（托盘“退出”或关闭设为退出）会先取消进行中的后台任务（有界等待）并保存后退出。
+- **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，记录更新前主窗口是打开还是收在托盘（D-37：打开则重启不带 `--background`，收在托盘则重启附带 `--background`；验证常驻模式保持原始参数），以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
+- **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，安装成功后总启动（之前在运行的保留原参数）并加 `--background`：托盘可用时只显示托盘图标、不打开主窗口（不可用时回退最小化到任务栏、不抢焦点）；对真实 `delta-dev` 在作业对象里时先经桌面外壳启动（`process::spawn_via_desktop_shell`，成为 explorer 的子进程，并用 `process_in_active_job` 核对而非全局 `IsProcessInJob(NULL)`），测试身份或外壳不可用时走 `spawn_detached_app`，都不行时照常启动并在回执记 `in_job`（D-36）。
 
 ## 8. K 线训练与模拟架构（M4）
 
-- **纯函数模拟核心**（`delta-core::sim` 与 `sim_report`）：`SimState` + `step` / `step_multi_bars`（引擎版本 `m4-sim-1`）与 `compute_training_report`（报告版本 `m4-report-1`）全程使用 `rust_decimal::Decimal` 与 `BTreeMap`/`BTreeSet`，零浮点、零系统时钟读取、零 IO，保证相同命令序列在从头重放、检查点恢复与跨进程重放下 `state_hash` 逐字节一致；多标的固定排序接口已就绪供 M5 回测复用。
+- **纯函数模拟核心**（`delta-core::sim` 与 `sim_report`）：`SimState` + `step` / `step_multi_bars`（引擎版本 `m4-sim-1`）与 `compute_training_report`（报告版本 `m4-report-1`）全程使用 `rust_decimal::Decimal` 与 `BTreeMap`/`BTreeSet`，零浮点、零系统时钟读取、零 IO，保证相同命令序列在从头重放、检查点恢复与跨进程重放下 `state_hash` 逐字节一致；多标的固定排序接口已就绪供 M6 回测复用。
 - **SQL 截断端口与独立 Schema 5 存储**（`delta-data::m4_schema`）：`schema 4 → 5` 升级前先创建 `before-schema-4-*` 一致性备份，8 张模拟/训练表与真实账本完全物理分离（训练读写、归档、删除均不修改 `ledger_revision`）；`query_run_visible_final_bars` / `query_next_training_step_bar` / `query_training_visible_corporate_actions` 在 SQL 层执行 `is_final = 1` 与 `visible_until` 截断。
 - **单写者宿主编排与结束后 AI 网关**（`delta-app::training` 与 `ai`）：`TrainingDataPort` 维护可见 K 线、时点拆股复权与指标增量缓存；每步命令经 `commit_simulation_step_atomic` 单 savepoint 提交并定期/暂停/结束写检查点，恢复时经 `verify_or_mark_run_damaged` 校验状态哈希；`ScopeTarget::TrainingRun(run_id)` 仅对 `finished` 运行开放 5 个 `training.*` 只读工具并核验 `SIM-ORD-*`/`SIM-FILL-*`/`TRN-NOTE-*` 引用。
 - **桌面与 CLI 同源消费**：`delta-desktop::training_ui`（“训练”页，复用 `KlineViewport` 与自绘 K 线画布，`Ctrl+Enter` 提交与 `N`/`→` 推进严格分离，release 隐藏原生窗口退出执行速度节流后 1,000 根历史＋默认指标 300 步“下一根”延迟满足 `p95 <= 100 ms`）与 `delta-cli training` / `verify-stage --stage M4` 共享同一同步 `AppHost` 契约。
+
+## 9. 训练工作台架构（M5）
+
+- **默认训练数据准备**（`delta-app::training_data`，`S-48`/`S-49`）：`prepare_training_data` 按（标的，级别）逐批准备币安 `BTC/USDT`（月度归档 ZIP＋`.CHECKSUM` 回填历史，REST 补近期）与欧易 `BTC/USDT`（`history-candles` 分页）`1d`/`4h`/`1h`，每批先下载（不写资料库，原始报文暂存内存），再在一个 savepoint 内建 `dataset_version`、存原始报文、写 K 线与质量并发布，所以写锁只在几秒的提交阶段持有，准备期间开局、推进与划转照常可写；失败批次不留行，重试从水位线续传并回读重叠 3 根以发现修订；同期跨源偏离只记录质量问题、不改价。桌面经 `start_prepare_training_data` 后台作业（低优先级、可取消、带超时与进度）调用，CLI 为 `delta-cli training prepare-data`。归档成员只接受单个普通 `.csv` 文件（拒绝多成员、路径穿越、绝对路径、符号链接、目录与超过 16 MB 的成员）。稳定币汇率缺口不再阻塞加密 K 线发布，候选池只按影响价格的质量问题排除（`CandidateQualityFilter::PriceAffectingOnly`）。
+- **多级别截断端口**（`delta-data::m4_schema` / `m5_schema`，`S-50`）：`4h`/`1h` K 线按 UTC 对齐保存（行 ID 以开盘时刻为键），训练端口仍在 SQL 层按 `close_at <= visible_until` 截断，并以 `idx_bar_training_port` 与等价区间预过滤保持每步查询与窗口规模成正比；高一级别视图由 `delta-core::timeframe::aggregate` 只用已截断的基础 K 线在宿主聚合，未收完的一根标记为未完成，桌面不接触存储或引擎。
+- **`m5-sim-2` 与撤销**（`delta-core::sim`，`S-51`）：快捷单收盘成交、改单、单次撤销与日内 `DAY` 只在新运行启用；`SimReplayer` 为本根推进以来的每个有效命令保存命令前状态，撤销恢复该状态并只向前推进编号计数，因此在线、检查点恢复与从头重放三路逐步哈希一致；旧 `m4-sim-1` 运行按冻结版本重放。
+- **练习账户与分析**（`delta-data::m5_schema`、`delta-app::training_m5`、`delta-core::account_report`，`S-52`/`S-53`）：只追加分录、余额＝分录之和，开局划出与结束/放弃结算在同一事务内完成；`m5-account-report-1` 由冻结的各局报告与分录纯函数计算。
+- **工作台**（`delta-desktop::training_workbench` 纯交互模型＋`training_workbench_ui`，`S-54`）：键位、工具、播放、画线下单草稿、默认比例与拖动改单在纯模型中按构造保证“单击/拖动/单键/播放步不产生成交”，可无头测试；播放计时器使用 GPUI 执行器时钟，上一步提交完成前不排下一步。图表覆盖物（挂单线、成本线、画线、草稿、测量）由 `chart_canvas::ChartOverlay` 在同一画布绘制。
+- **门禁**：`delta-cli::verify_m5`（`verify-stage --stage M5 --plan-version 1.0 [--ui-smoke] [--ui-bench] [--live-data]`），见 [质量门禁](../dev-rules/quality-gates.md)。

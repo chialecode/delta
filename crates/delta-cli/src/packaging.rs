@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsStr,
     fs,
-    io::{Read, Write},
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -263,15 +263,20 @@ pub(crate) fn relative_file(name: &str) -> Result<PathBuf, ErrorEnvelope> {
     Ok(path)
 }
 
-fn checked_file(root: &Path, name: &str, expected: &str) -> Result<PathBuf, ErrorEnvelope> {
-    let path = root.join(relative_file(name)?);
-    let mut ancestor = path.as_path();
+pub(crate) fn reject_ancestors_links(root: &Path, path: &Path) -> Result<(), ErrorEnvelope> {
+    let mut ancestor = path;
     while ancestor != root {
         reject_link(ancestor)?;
         ancestor = ancestor
             .parent()
             .ok_or_else(|| failure("PACKAGE_PATH", "missing parent"))?;
     }
+    Ok(())
+}
+
+fn checked_file(root: &Path, name: &str, expected: &str) -> Result<PathBuf, ErrorEnvelope> {
+    let path = root.join(relative_file(name)?);
+    reject_ancestors_links(root, &path)?;
     let resolved = fs::canonicalize(&path).map_err(|e| failure("PACKAGE_PATH", e))?;
     if !resolved.starts_with(root)
         || !resolved.is_file()
@@ -285,36 +290,50 @@ fn checked_file(root: &Path, name: &str, expected: &str) -> Result<PathBuf, Erro
     Ok(resolved)
 }
 
-pub(crate) fn collect_files(
+/// Collect relative file paths under `directory` while rejecting links/junctions, without
+/// hashing file contents.
+pub(crate) fn collect_paths(
     root: &Path,
     directory: &Path,
-    files: &mut BTreeMap<String, String>,
+    paths: &mut Vec<String>,
 ) -> Result<(), ErrorEnvelope> {
     for entry in fs::read_dir(directory).map_err(|e| failure("PACKAGE_FILES", e))? {
         let path = entry.map_err(|e| failure("PACKAGE_FILES", e))?.path();
         reject_link(&path)?;
         if path.is_dir() {
-            collect_files(root, &path, files)?;
+            collect_paths(root, &path, paths)?;
         } else {
             let name = path
                 .strip_prefix(root)
                 .map_err(|e| failure("PACKAGE_FILES", e))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            files.insert(
-                name,
-                sha256_file(&path).map_err(|e| failure("PACKAGE_HASH", e))?,
-            );
+            paths.push(name);
         }
     }
     Ok(())
 }
 
+pub(crate) fn collect_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut BTreeMap<String, String>,
+) -> Result<(), ErrorEnvelope> {
+    let mut paths = Vec::new();
+    collect_paths(root, directory, &mut paths)?;
+    for name in paths {
+        let hash = sha256_file(&root.join(&name)).map_err(|e| failure("PACKAGE_HASH", e))?;
+        files.insert(name, hash);
+    }
+    Ok(())
+}
+
 pub(crate) fn copy_tree(source: &Path, target: &Path) -> Result<(), ErrorEnvelope> {
-    let mut files = BTreeMap::new();
-    collect_files(source, source, &mut files)?;
-    for name in files.keys() {
-        let destination = target.join(relative_file(name)?);
+    let mut paths = Vec::new();
+    collect_paths(source, source, &mut paths)?;
+    paths.sort();
+    for name in paths {
+        let destination = target.join(relative_file(&name)?);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|e| failure("PACKAGE_COPY", e))?;
         }
@@ -332,15 +351,118 @@ fn cleanup_staging(path: &Path, parent: &Path) -> Result<(), ErrorEnvelope> {
         ));
     }
     reject_link(path)?;
-    collect_files(path, path, &mut BTreeMap::new())?;
+    collect_paths(path, path, &mut Vec::new())?;
     fs::remove_dir_all(path).map_err(|e| failure("INSTALL_CLEANUP", e))
 }
 
-pub(crate) fn verify_binary(
-    path: &Path,
-    channel: &str,
-    expected_product: &str,
-) -> Result<(), ErrorEnvelope> {
+/// RAII wrapper for a collected third-party license scratch tree so failures never leak it.
+pub(crate) struct CollectedLicenses {
+    pub dir: PathBuf,
+}
+
+impl Drop for CollectedLicenses {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Run `cargo metadata --locked` and `scripts/collect_third_party_licenses.py` into a fresh
+/// scratch directory cleaned up automatically on drop.
+pub(crate) fn collect_workspace_licenses(
+    root: &Path,
+    output: &Path,
+    write_log: bool,
+) -> Result<CollectedLicenses, ErrorEnvelope> {
+    let metadata_path = output.join("metadata.json");
+    let metadata = run_quiet_command(
+        OsStr::new("cargo"),
+        ["metadata", "--locked", "--format-version", "1"],
+        Some(root),
+        &BTreeMap::new(),
+    )
+    .map_err(|e| failure("PACKAGE_METADATA", e))?;
+    if metadata.status_code != Some(0) || metadata.timed_out {
+        return Err(failure("PACKAGE_METADATA", "locked metadata failed"));
+    }
+    fs::write(&metadata_path, &metadata.stdout).map_err(|e| failure("PACKAGE_METADATA", e))?;
+    let guard = CollectedLicenses {
+        dir: output.join(format!("licenses-{}", uuid::Uuid::new_v4())),
+    };
+    let license_result = run_quiet_command(
+        OsStr::new("python"),
+        [
+            root.join("scripts/collect_third_party_licenses.py")
+                .display()
+                .to_string(),
+            "--metadata".into(),
+            metadata_path.display().to_string(),
+            "--output".into(),
+            guard.dir.display().to_string(),
+        ],
+        Some(root),
+        &BTreeMap::from([("PYTHONUTF8".into(), "1".into())]),
+    )
+    .map_err(|e| failure("PACKAGE_LICENSES", e))?;
+    if write_log {
+        fs::write(
+            output.join("license-collection-log.json"),
+            serde_json::to_vec_pretty(&license_result)
+                .map_err(|e| failure("PACKAGE_LICENSES", e))?,
+        )
+        .map_err(|e| failure("PACKAGE_LICENSES", e))?;
+    }
+    if license_result.status_code != Some(0) || license_result.timed_out {
+        return Err(failure(
+            "PACKAGE_LICENSES",
+            if write_log {
+                "license collection failed; inspect license-collection-log.json"
+            } else {
+                "license collection failed"
+            },
+        ));
+    }
+    Ok(guard)
+}
+
+/// Shared release build with static CRT (`x86_64-pc-windows-msvc`) for `delta-desktop` & `delta-cli`.
+pub(crate) fn run_static_crt_release_build(
+    root: &Path,
+    target: &Path,
+    mut extra_env: BTreeMap<String, String>,
+) -> Result<delta_app::QuietCommandResult, ErrorEnvelope> {
+    extra_env.insert("RUSTFLAGS".into(), "-C target-feature=+crt-static".into());
+    // Cargo gives this inherited variable precedence over RUSTFLAGS.
+    extra_env.insert(
+        "CARGO_ENCODED_RUSTFLAGS".into(),
+        "-C\u{1f}target-feature=+crt-static".into(),
+    );
+    extra_env.insert(
+        "CARGO_BUILD_JOBS".into(),
+        std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "4".into()),
+    );
+    run_quiet_command(
+        OsStr::new("cargo"),
+        [
+            "build".into(),
+            "--release".into(),
+            "--locked".into(),
+            "--target".into(),
+            "x86_64-pc-windows-msvc".into(),
+            "-p".into(),
+            "delta-desktop".into(),
+            "-p".into(),
+            "delta-cli".into(),
+            "--target-dir".into(),
+            target.display().to_string(),
+        ],
+        Some(root),
+        &extra_env,
+    )
+    .map_err(|e| failure("PACKAGE_BUILD", e))
+}
+
+/// Check PE runtime imports and execute `--build-info` on a built or installed product binary.
+pub(crate) fn inspect_product_binary(path: &Path) -> Result<Value, ErrorEnvelope> {
     if !path.is_file() {
         return Err(failure(
             "MISSING_PRODUCT_BINARY",
@@ -350,11 +472,23 @@ pub(crate) fn verify_binary(
     check_runtime_imports(&pe_imports(path)?)?;
     let result = run_quiet_command(path.as_os_str(), ["--build-info"], None, &BTreeMap::new())
         .map_err(|e| failure("PACKAGE_BINARY", e))?;
-    let info: Value = serde_json::from_str(&result.stdout)
-        .map_err(|_| failure("PACKAGE_BINARY", "binary did not return build information"))?;
-    if result.status_code != Some(0)
-        || result.timed_out
-        || info["product"] != expected_product
+    if result.status_code != Some(0) || result.timed_out {
+        return Err(failure(
+            "PACKAGE_BINARY",
+            format!("binary --build-info failed (exit {:?})", result.status_code),
+        ));
+    }
+    serde_json::from_str(&result.stdout)
+        .map_err(|_| failure("PACKAGE_BINARY", "binary did not return build information"))
+}
+
+pub(crate) fn verify_binary(
+    path: &Path,
+    channel: &str,
+    expected_product: &str,
+) -> Result<(), ErrorEnvelope> {
+    let info = inspect_product_binary(path)?;
+    if info["product"] != expected_product
         || info["channel"] != channel
         || info["version"] != env!("CARGO_PKG_VERSION")
     {
@@ -381,81 +515,16 @@ pub(crate) fn build_packages(
     let source_fingerprint = crate::verify::source_fingerprint(&root)?;
     fs::create_dir_all(output).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
     let output = fs::canonicalize(output).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
-    let metadata_path = output.join("metadata.json");
-    let metadata = run_quiet_command(
-        OsStr::new("cargo"),
-        ["metadata", "--locked", "--format-version", "1"],
-        Some(&root),
-        &BTreeMap::new(),
-    )
-    .map_err(|e| failure("PACKAGE_METADATA", e))?;
-    if metadata.status_code != Some(0) || metadata.timed_out {
-        return Err(failure("PACKAGE_METADATA", "locked metadata failed"));
-    }
-    fs::write(&metadata_path, &metadata.stdout).map_err(|e| failure("PACKAGE_METADATA", e))?;
-    let licenses = output.join(format!("licenses-{}", uuid::Uuid::new_v4()));
-    let license_result = run_quiet_command(
-        OsStr::new("python"),
-        [
-            root.join("scripts/collect_third_party_licenses.py")
-                .display()
-                .to_string(),
-            "--metadata".into(),
-            metadata_path.display().to_string(),
-            "--output".into(),
-            licenses.display().to_string(),
-        ],
-        Some(&root),
-        &BTreeMap::from([("PYTHONUTF8".into(), "1".into())]),
-    )
-    .map_err(|e| failure("PACKAGE_LICENSES", e))?;
-    fs::write(
-        output.join("license-collection-log.json"),
-        serde_json::to_vec_pretty(&license_result).map_err(|e| failure("PACKAGE_LICENSES", e))?,
-    )
-    .map_err(|e| failure("PACKAGE_LICENSES", e))?;
-    if license_result.status_code != Some(0) || license_result.timed_out {
-        return Err(failure(
-            "PACKAGE_LICENSES",
-            "license collection failed; inspect license-collection-log.json",
-        ));
-    }
+    let licenses = collect_workspace_licenses(&root, &output, true)?;
     let mut artifacts = Vec::new();
     for channel in ["release", "dev"] {
         let app = product(channel)?;
         let target = root.join(".local/target-packages");
-        let environment = BTreeMap::from([
-            ("DELTA_CHANNEL".into(), channel.into()),
-            ("RUSTFLAGS".into(), "-C target-feature=+crt-static".into()),
-            // Cargo gives this inherited variable precedence over RUSTFLAGS.
-            (
-                "CARGO_ENCODED_RUSTFLAGS".into(),
-                "-C\u{1f}target-feature=+crt-static".into(),
-            ),
-            (
-                "CARGO_BUILD_JOBS".into(),
-                std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "4".into()),
-            ),
-        ]);
-        let build = run_quiet_command(
-            OsStr::new("cargo"),
-            [
-                "build".into(),
-                "--release".into(),
-                "--locked".into(),
-                "--target".into(),
-                "x86_64-pc-windows-msvc".into(),
-                "-p".into(),
-                "delta-desktop".into(),
-                "-p".into(),
-                "delta-cli".into(),
-                "--target-dir".into(),
-                target.display().to_string(),
-            ],
-            Some(&root),
-            &environment,
-        )
-        .map_err(|e| failure("PACKAGE_BUILD", e))?;
+        let build = run_static_crt_release_build(
+            &root,
+            &target,
+            BTreeMap::from([("DELTA_CHANNEL".into(), channel.into())]),
+        )?;
         fs::write(
             output.join(format!("build-{channel}-log.json")),
             serde_json::to_vec_pretty(&build).map_err(|e| failure("PACKAGE_BUILD", e))?,
@@ -502,7 +571,7 @@ pub(crate) fn build_packages(
             fs::copy(root.join(name), directory.join(name))
                 .map_err(|e| failure("PACKAGE_COPY", e))?;
         }
-        copy_tree(&licenses, &directory.join("third-party-licenses"))?;
+        copy_tree(&licenses.dir, &directory.join("third-party-licenses"))?;
         fs::write(directory.join("README.txt"), format!(
             "DELTA {} ({channel})\r\n\r\nWindows x64; no Rust/MSVC/Python development tools or separately installed VC runtime required. The CRT is statically linked; binary-imports.json lists Windows DLL dependencies.\r\nRun {app}.exe to open the desktop.\r\nInstall for the current user from this extracted directory:\r\n{installer} package-install --channel {channel} --package-dir .\r\nClose the desktop, then uninstall using this extracted CLI outside Programs/{app}:\r\n{installer} package-uninstall --channel {channel}\r\nUninstall removes verified application files and preserves library data and unknown files. Running the installed CLI to uninstall refuses before removing files.\r\nThis package is unsigned. Clean-machine, IME, keyboard and scaling checks remain manual.\r\n", env!("CARGO_PKG_VERSION"),
             installer = if channel == "dev" { "delta-dev-cli.exe" } else { "delta-cli.exe" })) .map_err(|e| failure("PACKAGE_README", e))?;
@@ -531,13 +600,15 @@ pub(crate) fn build_packages(
         );
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        let mut archive_files = BTreeMap::new();
-        collect_files(&directory, &directory, &mut archive_files)?;
-        for name in archive_files.keys() {
+        let mut archive_files = Vec::new();
+        collect_paths(&directory, &directory, &mut archive_files)?;
+        archive_files.sort();
+        for name in archive_files {
             zip.start_file(format!("{app}/{name}"), options)
                 .map_err(|e| failure("PACKAGE_ZIP", e))?;
-            zip.write_all(&fs::read(directory.join(name)).map_err(|e| failure("PACKAGE_ZIP", e))?)
-                .map_err(|e| failure("PACKAGE_ZIP", e))?;
+            let mut src =
+                fs::File::open(directory.join(&name)).map_err(|e| failure("PACKAGE_ZIP", e))?;
+            std::io::copy(&mut src, &mut zip).map_err(|e| failure("PACKAGE_ZIP", e))?;
         }
         zip.finish().map_err(|e| failure("PACKAGE_ZIP", e))?;
         let zip_sha256 = sha256_file(&zip_path).map_err(|e| failure("PACKAGE_ZIP", e))?;
@@ -690,7 +761,8 @@ pub(crate) fn install(
     let installed = match staged {
         Ok(installed) => installed,
         Err(error) => {
-            cleanup_staging(&staging, &programs)?;
+            // Preserve the original installation error even if staging cleanup fails.
+            let _ = cleanup_staging(&staging, &programs);
             return Err(error);
         }
     };

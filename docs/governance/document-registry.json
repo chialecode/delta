@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "currentStage": "M4",
+  "currentStage": "M5",
   "documents": [
     {
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
@@ -80,7 +80,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "用户决定、配置、人工检查和授权的唯一入口",
-      "reviewed": "2026-11-12",
+      "reviewed": "2026-11-14",
       "basis": "M4 v1.0 B delivery: H-05 status pending (M4) with step-by-step training hands-on verification instructions"
     },
     {
@@ -89,7 +89,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 文档导航",
-      "reviewed": "2026-11-07",
+      "reviewed": "2026-11-14",
       "basis": "D-01～20；专题正本与最短阅读路径"
     },
     {
@@ -134,7 +134,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "已确认决定与设计默认值",
-      "reviewed": "2026-11-07",
+      "reviewed": "2026-11-14",
       "basis": "D-01～D-23 用户确认决定及 A-01～A-07 可逆设计默认值"
     },
     {
@@ -143,7 +143,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "集中事项台账",
-      "reviewed": "2026-11-12",
+      "reviewed": "2026-11-14",
       "basis": "M4 v1.0 B delivery: S-41 Futu/OKX fee verification recorded in LOOP-06, TEST-02 resolved via lock_probe ready handshake, LOOP-01 updated"
     },
     {
@@ -151,20 +151,29 @@
       "kind": "plan",
       "status": "active",
       "owner": "Agent A",
-      "scope": "M4 v1.0 K 线训练实施计划（回放时钟、模拟委托与费用、训练持久化/重放、训练报告、结束后 AI 复盘）",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0: A plan after M3 merge and v0.1.1 release; simulation/backtest open-source check dated 2026-11-12",
-      "retireAfter": "M4"
+      "scope": "M5 v1.0 训练工作台实施计划（默认比特币训练数据与加密 4H/1H、跨局练习账户与账户分析、连续播放与图上交易、单次撤销）",
+      "reviewed": "2026-11-14",
+      "basis": "M5 v1.0: A plan after M4 merge (PR #6) and gate tiers (PR #7); user decisions D-33/D-34; live BTC data spike and chart/data source check dated 2026-11-14",
+      "retireAfter": "M5"
     },
     {
       "path": "docs/delivery/stage-report.md",
       "kind": "evidence",
       "status": "active",
       "owner": "Agent B / Agent A",
-      "scope": "M4 v1.0 阶段验证与交付报告（回放时钟、模拟委托与费用、持久化/确定性重放、训练报告、结束后 AI 复盘）",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0 B 实现与自检：verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench 与 M1/M2/M3 同指纹回归实跑结果",
-      "retireAfter": "M4"
+      "scope": "M5 v1.0 阶段验证与交付报告（默认比特币训练数据、加密 4H/1H、m5-sim-2 快捷成交/改单/撤销、练习账户与分析、训练工作台、依赖升级）",
+      "reviewed": "2026-11-15",
+      "basis": "M5 v1.0 B 实现与自检：verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench --live-data 与 M1～M4 同指纹回归实跑结果",
+      "retireAfter": "M5"
+    },
+    {
+      "path": "docs/evidence/2026-11-14-m4-stage-report.md",
+      "kind": "evidence",
+      "status": "reference",
+      "owner": "Agent B / Agent A",
+      "scope": "M4 v1.0 阶段验证与交付报告（已经 PR #6 集成；M5 开始时自 docs/delivery/stage-report.md 迁入证据）",
+      "reviewed": "2026-11-14",
+      "basis": "M4 v1.0 B 实现与 A 审核，最终源码指纹 02d0f1bd；ACT-13 合并为 main 0ba6010；两级门禁 PR #7 合并为 main a44f86f"
     },
     {
       "path": "docs/evidence/2026-11-12-m3-stage-report.md",
@@ -199,8 +208,8 @@
       "status": "active",
       "owner": "Agent A / Agent B",
       "scope": "当前执行状态",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0 B implemented and self-checked (pending A review); M1..M4 gates bound to final source fingerprint"
+      "reviewed": "2026-11-14",
+      "basis": "M5 v1.0 A plan; M4 merged as main 0ba6010"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
@@ -361,8 +370,8 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 实施路线与验收计划",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0 B implemented: M4 K-line training gate and stage-report linkage"
+      "reviewed": "2026-11-14",
+      "basis": "D-33 inserts M5 training workbench; strategy research M6, extension M7; AC-31..AC-33"
     },
     {
       "path": "docs/engineering/technology-selection.md",
@@ -442,7 +451,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "项目关键事实与接续入口",
-      "reviewed": "2026-11-07",
+      "reviewed": "2026-11-14",
       "basis": "D-01～20；从文档治理基线重建后的关键入口与接续规则"
     },
     {
@@ -451,7 +460,7 @@
       "status": "active",
       "owner": "Agent A / 维护者",
       "scope": "DELTA 产品需求文档",
-      "reviewed": "2026-11-08",
+      "reviewed": "2026-11-14",
       "basis": "M2 B review: autosave drafts/scope, period/cutoff search, per-library credentials, log privacy and standalone Windows package dependencies"
     },
     {

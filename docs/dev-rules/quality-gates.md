@@ -1,6 +1,6 @@
 # 验证与交付门禁
 
-只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁已建立（结论见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）；M4 的训练门禁已建立（结论见 [M4 阶段报告](../delivery/stage-report.md)）。当前阶段的运行结论和源码指纹只维护在当前阶段报告，本规范不预先宣称某版本通过。
+只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁已建立（结论见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）；M4 的训练门禁已建立（结论见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）。当前阶段的运行结论和源码指纹只维护在当前阶段报告，本规范不预先宣称某版本通过。
 
 ## 1. 当前已存在并可运行的检查
 
@@ -8,6 +8,7 @@
 
 - `python scripts/check_docs.py`
 - `python scripts/quick_gate.py [--all]`：日常的快速门禁，见下方[两级门禁](#gate-tiers)
+- `python scripts/deps.py [--audit]`：依赖盘点与已知漏洞，见下方[依赖盘点](#dependencies)
 - `git diff --check`
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
@@ -15,7 +16,8 @@
 - `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 [--live]`
 - `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`
 - `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（**已建立**，结果见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M3-G-01～05）、`.iss` 与身份契约（M3-G-06）和命名单元测试映射（M3-A-01/02/07）；`--installer` 需要 Inno Setup 7.1.x，构建四个测试身份安装包与一个测试签名发布，只真实静默安装/升级/卸载 `delta-test` / `delta-dev-test`（数据根在本次临时目录），全程采样可见与前台窗口，比对开发者 `delta` / `delta-dev` 安装文件哈希、HKCU 卸载键、开始菜单快捷方式与数据根目录树，并要求同一源码指纹下 M1 v2.6、M2 v1.0 报告已通过。缺 `--installer` 时安装/更新用例与 overall 保持 not-run；`DELTA_GATE_SKIP_MECHANICAL=1` 只用于调试安装用例，跳过的必需项使 overall 不可能为 passed
-- `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（`H-05`）与真实模型 `M4-L-01`（`ACT-01`）保持 not-run
+- `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（`H-05`）与真实模型 `M4-L-01`（`ACT-01`）保持 not-run
+- `cargo run -p delta-cli -- verify-stage --stage M5 --plan-version 1.0 [--ui-smoke] [--ui-bench] [--live-data]`（**已建立**，结果见 [M5 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、全量测试、依赖漏洞审计与盘点（`deps.py --audit` 退出码 2 记为 not-run）、架构检查（`M5-G-01～07`），以门禁进程跨进程驱动 `delta-cli training` 在回环行情夹具上完成准备数据→练习账户开局→快捷成交/限价/改单/撤销→推进→CLI 与宿主四路重放哈希一致与 DTO 一致→放弃结算（`M5-K03`），并把 `M5-A-01～14、17` 映射到实际测试结果；`--ui-smoke` 跑 release 隐藏窗口冒烟，`--ui-bench` 跑 `M5-K02` 连续播放（每步 p95 ≤ 100 ms、实际间隔 p95 ≤ 200 ms，门禁按原始样本重算）；`--live-data` 在临时资料库对真实公开源跑一次比特币 `1d`/`4h`/`1h` 全量准备、增量与 `1h` 候选池计时（`M5-K01` / `M5-L-01`），结果与录制夹具分开声明，网络不可用记 not-run。`M5-A-16` 要求同指纹 M1～M4 回归报告。建议用 release 构建运行（`cargo run --release -p delta-cli -- verify-stage --stage M5 ...`），使真实数据准备耗时反映产品构建。
 
 <a id="gate-tiers"></a>**两级门禁（2026-11-14 用户决定）。** M1～M4 的 `verify-stage` 合起来约 20 分钟，所以不再在每次修改后跑：
 
@@ -26,10 +28,19 @@
 - 快速门禁超过 300 秒会提示；它不写证据，不能代替整套 `verify-stage`。
 - 交付报告写清楚：整套门禁对应哪个源码指纹，之后的修改用快速门禁验证了什么。
 
+<a id="dependencies"></a>**依赖盘点（D-35）。** 每个阶段开始时 A 的计划列出这一项，B 在本阶段完成，作为阶段提交的一部分：
+
+1. **还开着的 Dependabot PR**：平时只开不合；阶段开始时逐个处理，内容并入本阶段提交，PR 合并后关闭，不采用的写明原因关闭。安全修复 PR 例外，有就尽快评审合并。
+2. **盘点** `python scripts/deps.py`：列出工作区直接依赖的 crates.io 包与 `rust-toolchain.toml` 满 7 天（与 Dependabot 冷却期相同）的新版本，分兼容（`cargo update -p` 可取）与不兼容（要改 `Cargo.toml`）。兼容的默认全部升级；不兼容的单独升级并跑回归，失败回退，在阶段报告写明尝试的版本、失败命令与复查条件。工具链升级同时核对 `clippy`。
+3. **漏洞** `python scripts/deps.py --audit`：用 OSV（含 RustSec 数据库）查 `Cargo.lock` 里的全部 crates.io 包。有修复版本的先升级；确实无法修复或不适用的登记到 `scripts/deps-exceptions.json`，写明原因和复查日期 `reviewBy`，同时写进阶段报告。RustSec 的“停止维护”“不健全”类告警只列出，不算失败。
+4. **交付前复跑**：B 交付整个阶段、跑整套 `verify-stage` 时一并复跑盘点和 `--audit`；`--audit` 退出码 1（有未登记的漏洞或过期例外）时不能交付。新版本没升只在报告里说明。
+
+两个命令都要联网（crates.io 索引、GitHub 发行记录、OSV），跑不起来退出码 2，记为 not-run，不写成通过。快速门禁不包含这两项。
+
 要求 Python 3.12+ 标准库，无第三方包依赖。`check_docs.py` 校验：
 
 1. 全部自有 Markdown 均已在 [document-registry.json](../governance/document-registry.json) 登记，且 `kind/status/owner/scope/reviewed/basis` 合法；
-2. `currentStage` 与 `retireAfter` 按里程碑序（`M1 < M2 < M3 < M4 < M5 < M6`）一致，防止跨阶段遗留过程文档；
+2. `currentStage` 与 `retireAfter` 按里程碑序（`M1 < M2 < M3 < M4 < M5 < M6 < M7`）一致，防止跨阶段遗留过程文档；
 3. 全仓 `active`/`draft` 正本无旧 `S0`–`S4` 或 `R1`–`R2` 阶段名回流；
 4. 内联相对链接、文件存在性与标题/显式 HTML 锚点有效；
 5. `CLAUDE.md` 仅包含 `@AGENTS.md`；
@@ -94,6 +105,6 @@ M2-K04 用真实两通道静态 CRT 包执行包内 CLI 安装、外部 CLI 卸�
 
 | 判断 | 必须满足的条件 |
 | --- | --- |
-| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M4 为 M4-W01～W07）与自动检查通过，无工程缺口转交用户 |
+| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M5 为 M5-W01～W08）与自动检查通过，无工程缺口转交用户 |
 | A 技术审核通过（Agent 侧阶段完成） | A 核对实际 diff、代码、测试与数据质量边界，工程阻断为零；按 D-18 转入 [USER-ACTIONS](../../USER-ACTIONS.md) 请求具体远端授权 |
 | 真实私有账户/Key 验收 | 用户按 `ACT-03` 提供真实配置后独立验证；未测前保持 not-run，不冒充已通过 |

@@ -281,10 +281,20 @@ pub fn query_calendar_session(venue: &str, session_date: NaiveDate) -> CalendarS
         };
     }
 
-    let canonical_venue = if norm_venue == "XNAS" || norm_venue == "NASDAQ" {
-        "XNAS"
-    } else {
-        "XNYS"
+    let canonical_venue = match norm_venue.as_str() {
+        "XNAS" | "NASDAQ" => "XNAS",
+        "XNYS" | "NYSE" => "XNYS",
+        _ => {
+            return CalendarSession {
+                venue: norm_venue,
+                session_date,
+                timezone: "UTC".to_string(),
+                open_at: None,
+                close_at: None,
+                kind: CalendarSessionKind::CalendarUnknown,
+                version: special_table().version_tag.clone(),
+            };
+        }
     };
     let table = special_table();
 
@@ -370,9 +380,9 @@ pub fn generate_calendar_range(
 /// `America/New_York` local date, never inferred blindly from UTC date).
 pub fn resolve_exchange_session_date(venue: &str, timestamp_utc: DateTime<Utc>) -> NaiveDate {
     let norm = venue.to_ascii_uppercase();
-    if norm == "CRYPTO_24_7" || norm == "OKX" || norm == "BINANCE" {
-        timestamp_utc.date_naive()
-    } else {
+    if matches!(norm.as_str(), "XNYS" | "NYSE" | "XNAS" | "NASDAQ") {
         timestamp_utc.with_timezone(&New_York).date_naive()
+    } else {
+        timestamp_utc.date_naive()
     }
 }

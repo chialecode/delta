@@ -297,6 +297,97 @@ pub struct DataQualityIssue {
     pub detail: String,
 }
 
+/// Whether a quality kind undermines the bar prices themselves or only valuation (`S-49` ③).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityImpact {
+    /// Gaps, cross-source price deviation, unfinished bars, missing corporate actions, revisions
+    /// and every kind not explicitly listed: training candidate pools exclude these dates.
+    AffectsPrice,
+    /// Fee-asset or stablecoin FX: ledger valuation shows "unavailable"; bar prices are intact.
+    ValuationOnly,
+    /// Provenance note (e.g. the Binance archive was unavailable and the same bars came from the
+    /// official REST API): prices are intact and verified by the usual checks.
+    SourceNote,
+}
+
+/// Provenance-only kinds.
+pub const SOURCE_NOTE_QUALITY_KINDS: &[&str] = &["archive_unavailable_rest_fallback"];
+
+/// Kinds registered as valuation-only; any other kind is treated conservatively as price-affecting.
+pub const VALUATION_ONLY_QUALITY_KINDS: &[&str] = &[
+    "missing_fee_asset_fx",
+    "missing_fee_market",
+    "missing_stablecoin_fx",
+    "missing_fx",
+    "fx_price_mismatch",
+    "fx_crosscheck_unavailable",
+    "fx_crosscheck_outside_coverage",
+    "fx_primary_unavailable",
+];
+
+pub fn quality_kind_impact(kind: &str) -> QualityImpact {
+    let trimmed = kind.trim();
+    if VALUATION_ONLY_QUALITY_KINDS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(trimmed))
+    {
+        QualityImpact::ValuationOnly
+    } else if SOURCE_NOTE_QUALITY_KINDS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(trimmed))
+    {
+        QualityImpact::SourceNote
+    } else {
+        QualityImpact::AffectsPrice
+    }
+}
+
+pub(crate) fn corporate_action_source_priority(source: &str) -> u8 {
+    match source {
+        "tiingo" => 3,
+        "yahoo" => 2,
+        _ => 1,
+    }
+}
+
+/// Deterministically deduplicate corporate actions by `(instrument_id, ex_date, action_type)`,
+/// keeping the highest `(factor_version, source_priority, id)` record.
+pub(crate) fn deduplicate_corporate_actions<'a>(
+    actions: &'a [CorporateActionRecord],
+) -> Vec<&'a CorporateActionRecord> {
+    let mut dedup: std::collections::BTreeMap<(String, NaiveDate, u8), &'a CorporateActionRecord> =
+        std::collections::BTreeMap::new();
+    for action in actions {
+        let type_disc = match action.action_type {
+            CorporateActionType::Split => 0,
+            CorporateActionType::CashDividend => 1,
+        };
+        let key = (action.instrument_id.clone(), action.ex_date, type_disc);
+        match dedup.get(&key) {
+            Some(existing) => {
+                let new_rank = (
+                    action.factor_version,
+                    corporate_action_source_priority(&action.source),
+                    &action.id,
+                );
+                let old_rank = (
+                    existing.factor_version,
+                    corporate_action_source_priority(&existing.source),
+                    &existing.id,
+                );
+                if new_rank > old_rank {
+                    dedup.insert(key, action);
+                }
+            }
+            None => {
+                dedup.insert(key, action);
+            }
+        }
+    }
+    dedup.into_values().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageGap {
     pub id: String,

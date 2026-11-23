@@ -1,4 +1,5 @@
 use super::*;
+use crate::training::test_support::TestSandbox;
 use chrono::{NaiveDate, TimeZone, Utc};
 use delta_core::{
     parse_decimal_lossless as dec, AdjustmentKind, EconomicEventType, LedgerEventInput,
@@ -8,54 +9,15 @@ use delta_data::{CannedHttpResponse, LoopbackTestServer, StatementPreset};
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-static NEXT_SANDBOX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-struct Sandbox(PathBuf);
+struct Sandbox(PathBuf, TestSandbox);
 impl Sandbox {
     fn new() -> Self {
-        apply_process_quiet_guards();
-        let id = NEXT_SANDBOX_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::var_os("DELTA_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let path = base.join(format!(
-            "delta-regression-{}-{}-{}",
-            std::process::id(),
-            id,
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let inner = TestSandbox::new("regression");
+        let root = inner.root().to_path_buf();
+        Self(root, inner)
     }
     fn app(&self) -> AppService {
-        let data = self.0.join("data");
-        let docs = self.0.join("docs");
-        AppService::open(
-            ResolvedAppPaths {
-                channel: BuildChannel::Source,
-                data_dir: data,
-                documents_dir: docs.clone(),
-                default_export_dir: docs.join("exports"),
-                default_backup_dir: docs.join("backups"),
-                credential_prefix: "delta-dev".into(),
-            },
-            "USD",
-            "USD",
-            "UTC",
-            true,
-        )
-        .unwrap()
-    }
-}
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        for _ in 0..40 {
-            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        fs::remove_dir_all(&self.0).unwrap();
+        self.1.open_service()
     }
 }
 fn fixture_root() -> PathBuf {
@@ -247,8 +209,124 @@ fn multi_page_sync_retries_429_and_persists_the_subscription_id() {
         .query_bars_at_version("BINANCE:BTC/USDT", "1d", AdjustmentKind::Raw, None, 1, None)
         .unwrap();
     assert_eq!(bars.len(), 102);
+    // `S-49` ②: the USDT/USD rates written earlier in this same (still pending) version cover
+    // the BTC fee asset, so no `missing_fee_asset_fx` false positive is recorded.
+    let fee_fx_issues: i64 = app
+        .store()
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM data_quality_issue WHERE kind = 'missing_fee_asset_fx'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(fee_fx_issues, 0);
     let again = app.sync_market_data(&request).unwrap();
     assert_eq!(again.bars_committed, 0);
+}
+
+/// `S-49` ①③: a stablecoin outage is a valuation gap. Crypto history is still committed and
+/// published, the gap is recorded as a valuation-only issue, and M5 candidate pools (price-only
+/// filter) still offer windows while M4 pools (all kinds) keep their old exclusion rule.
+#[test]
+fn stablecoin_outage_keeps_crypto_history_and_m5_pool_ignores_valuation_issues() {
+    let sandbox = Sandbox::new();
+    let mut app = sandbox.app();
+    let server = LoopbackTestServer::start().unwrap();
+    let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let mut rows = Vec::new();
+    for i in 0..102 {
+        let timestamp = (start + chrono::Duration::days(i))
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        rows.push(serde_json::json!([
+            timestamp * 1000,
+            "100",
+            "110",
+            "90",
+            "105",
+            "20",
+            timestamp * 1000 + 86399999,
+            "2000",
+            100,
+            "10",
+            "1000",
+            "0"
+        ]));
+    }
+    server.register_sequence(
+        "/api/v3/klines",
+        vec![
+            CannedHttpResponse::json(200, serde_json::to_string(&rows[..100]).unwrap()),
+            CannedHttpResponse::json(200, serde_json::to_string(&rows[100..]).unwrap()),
+        ],
+    );
+    // Both stablecoin sources fail (no route registered -> 404).
+    let mut urls = BTreeMap::new();
+    for key in ["binance", "binance_archive", "bitstamp", "coinbase"] {
+        urls.insert(key.to_string(), server.base_url().to_string());
+    }
+    let request = SyncRequest {
+        start,
+        end: start + chrono::Duration::days(102),
+        instruments: vec!["BINANCE:BTC/USDT".into()],
+        fx_pairs: vec![],
+        use_configured_credentials: false,
+        base_urls: urls,
+    };
+    let result = app.sync_market_data(&request).unwrap();
+    assert_eq!(result.bars_committed, 102);
+    let version = result.dataset_version.version_num;
+    let kinds: Vec<String> = {
+        let mut stmt = app
+            .store()
+            .conn()
+            .prepare("SELECT DISTINCT kind FROM data_quality_issue ORDER BY kind")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert!(
+        kinds.contains(&"missing_stablecoin_fx".to_string()),
+        "{kinds:?}"
+    );
+    for kind in &kinds {
+        assert_ne!(
+            delta_core::quality_kind_impact(kind),
+            delta_core::QualityImpact::AffectsPrice,
+            "{kind} must not affect training prices"
+        );
+    }
+    let query = |filter| delta_data::CandidatePoolQuery {
+        dataset_version: version,
+        market_category: "crypto_spot".into(),
+        instrument_id: Some("BINANCE:BTC/USDT".into()),
+        start_date: None,
+        end_date: None,
+        warmup_bars: 10,
+        history_len: 10,
+        train_len: 30,
+        reveal_len: 10,
+        timeframe: "1d".into(),
+        quality_filter: filter,
+    };
+    let m5 = app
+        .store()
+        .query_training_candidate_pool(&query(
+            delta_data::CandidateQualityFilter::PriceAffectingOnly,
+        ))
+        .unwrap();
+    assert!(!m5.candidates.is_empty());
+    let m4 = app
+        .store()
+        .query_training_candidate_pool(&query(delta_data::CandidateQualityFilter::AllKinds))
+        .unwrap();
+    assert!(m4.candidates.len() <= m5.candidates.len());
+    assert_ne!(m4.candidate_pool_hash, m5.candidate_pool_hash);
 }
 
 #[test]
@@ -470,20 +548,18 @@ fn cancelled_sync_publishes_no_version() {
         .wait_job(id, std::time::Duration::from_secs(1))
         .unwrap();
     assert!(matches!(snapshot.state, JobState::TimedOut(_)));
-    // The worker may still be closing its SQLite savepoint. The lock lease outlives AppService.
-    let start = std::time::Instant::now();
-    loop {
-        let count: i64 = app
-            .store()
-            .conn()
-            .query_row("SELECT COUNT(*) FROM dataset_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-        if start.elapsed() > std::time::Duration::from_millis(50) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    // Wait for the worker thread to finish rolling back its SQLite savepoint and release its lease.
+    let finished = app
+        .jobs()
+        .wait_finished(id, std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(finished.worker_finished);
+    let count: i64 = app
+        .store()
+        .conn()
+        .query_row("SELECT COUNT(*) FROM dataset_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]

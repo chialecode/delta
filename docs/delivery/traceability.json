@@ -159,7 +159,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1/M2 pure-Rust SMA/EMA/MACD/RSI with warmup handling and M4 TrainingDataPort SQL-truncated visible_until + PIT split-adjusted indicator slice verified with future sentinels (M4-K01, M4-A-01)."
     },
@@ -212,7 +212,7 @@
     },
     {
       "id": "FR-MKT-06",
-      "stage": "M6",
+      "stage": "M7",
       "status": "planned",
       "design": [
         "docs/design/interaction-and-workflows.md",
@@ -470,7 +470,7 @@
         "AC-15"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: SQL-truncated training data port (delta-data::m4_schema::query_run_visible_final_bars / query_next_training_step_bar / query_training_visible_corporate_actions, delta-app::training::TrainingDataPort), PIT split adjustment (delta-core::sim::derive_point_in_time_split_adjusted_bars), SHA-256 deterministic candidate-pool sampling with pre-start redraws, and hidden-mode DTO scrubbing across desktop, CLI and AI until explicit post-finish reveal (M4-K01, M4-A-01..03, M4-A-16, M4-A-18; H-05 manual check not-run)."
     },
@@ -489,7 +489,7 @@
         "AC-23"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: pure Decimal spot long-only matching engine delta-core::sim (m4-sim-1) supporting Market, Limit, StopMarket, OCO and entry orders with AttachedBracket (DAY/GTC), t+1 open eligibility, fixed O->L->H->C path with ambiguous-fill counting, 1.10x market buy cash buffer, shared OCO reservation, INSUFFICIENT_FUNDS / INSUFFICIENT_POSITION / whole-order INSUFFICIENT_FUNDS_AT_FILL rejections, tick/lot nearest-valid hints, pre-open split adjustment & corporate_action_split cancellation, and ex-date cash dividend credit (M4-A-03..06, M4-A-15, M4-A-16)."
     },
@@ -507,7 +507,7 @@
         "AC-15"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: composable FeeProfileVersion and settle_order_fees (notional rate, per-unit, fixed per-order, per-order min/max settled once at order end across partial fills, quote or received_asset fee currency, HalfUp/HalfEven/Up/Down rounding, PerFill/PerOrder tier, independent directional slippage and half-spread), immutable SQLite/Rust version freezing on run start, and 3 explicit scenario-assumption built-ins (zero_cost, us_equity_per_share_example, crypto_rate_example; Futu/OKX presets deferred in LOOP-06) (M4-A-04, M4-A-07, M4-A-08)."
     },
@@ -527,7 +527,7 @@
         "AC-20"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: Schema 5 migration with pre-migration consistency backup (before-schema-4-*), 8 simulation/training tables isolated from real ledger (ledger_revision unchanged), single-savepoint commit_simulation_step_atomic, Initial/Periodic20/Pause/Finish checkpoints, subprocess crash_mid_advance recovery, 3-way bit-for-bit state_hash deterministic replay (Scratch / FromCheckpoint / second process), tamper detection marking runs damaged, child retry runs (parent_run_id), backup/restore, simulation export and delete preview (M4-K02, M4-A-02, M4-A-08..11, M4-A-18)."
     },
@@ -545,7 +545,7 @@
         "AC-23"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: pure Decimal training report delta-core::sim_report (m4-report-1) computing return, realized/unrealized PnL, total fees, close-to-close equity curve & max drawdown, exposure, closed trade group win rate (zero-PnL separated), profit factor & payoff ratio (explicit NoClosedTrades/NoLosses/NoWins states), expectancy with sample count, post-entry/pre-exit path-bounded MAE/MFE, PlanExecutionSummary, identical-cost Buy-and-Hold benchmark and structured SampleLimitations across UI and CLI (M4-A-12, M4-A-15; H-05 manual check not-run)."
     },
@@ -563,13 +563,73 @@
         "AC-19"
       ],
       "evidence": [
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M4 v1.0: in-session training_note recording with or without orders, post-finish archive to journal labelled 来自模拟训练 (real ledger untouched), separate user self-evaluation, post-finish-only ScopeTarget::TrainingRun read-only AI gateway (5 training.* tools) with openable SIM-ORD-*/SIM-FILL-*/TRN-NOTE-* citations, fabricated-citation & financial-number verification across both protocols on loopback SSE, prompt-injection defense and offline resilience (M4-A-13, M4-A-14, M4-A-16; real model M4-L-01 awaits optional ACT-01)."
     },
     {
-      "id": "FR-STR-01",
+      "id": "FR-TRN-07",
       "stage": "M5",
+      "status": "implemented",
+      "design": [
+        "docs/design/financial-engine.md",
+        "docs/design/data-model.md",
+        "docs/design/interaction-and-workflows.md"
+      ],
+      "acceptance": [
+        "AC-14",
+        "AC-31"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M5 v1.0 B implementation: schema 6 append-only practice_account / practice_account_entry (PRACTICE:USD|USDT, opening 100,000), transfers bounded by available balance, allocation at start and settlement at finish/abandon, delete reversal, training history and m5-account-report-1 analysis in UI side panel and CLI (training_m5.rs, account_report.rs; M5-A-10, M5-A-11, M5-A-14)."
+    },
+    {
+      "id": "FR-TRN-08",
+      "stage": "M5",
+      "status": "implemented",
+      "design": [
+        "docs/design/interaction-and-workflows.md",
+        "docs/design-rules/DESIGN.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-12",
+        "AC-15",
+        "AC-26",
+        "AC-33"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M5 v1.0 B implementation: m5-sim-2 visible-close quick fill, ModifyOrder, UndoLast via SimReplayer and intraday DAY expiry; training workbench pure model (training_workbench.rs) plus UI (continuous playback with auto-pause, order/cost lines, drag-to-modify with lock, draw-to-order drafts with explicit confirm, ray/horizontal/segment drawings, measure); release M5-K02 playback benchmark (M5-A-06..09, M5-A-13, M5-A-15)."
+    },
+    {
+      "id": "FR-TRN-09",
+      "stage": "M5",
+      "status": "implemented",
+      "design": [
+        "docs/design/system-architecture.md",
+        "docs/design/data-model.md",
+        "docs/design/financial-engine.md"
+      ],
+      "acceptance": [
+        "AC-11",
+        "AC-16",
+        "AC-17",
+        "AC-21",
+        "AC-32"
+      ],
+      "evidence": [
+        "docs/delivery/stage-report.md"
+      ],
+      "implementation_scope": "M5 v1.0 B implementation: prepare_training_data job for BINANCE/OKX BTC/USDT 1d/4h/1h (monthly archives with checksum, REST, per-batch atomic dataset_version, watermark retry), stablecoin FX decoupled, missing_fee_asset_fx false positive removed, price-affecting-only candidate pool, UTC-aligned intraday bars with idx_bar_training_port and host-side higher-timeframe aggregation; real public sources measured separately by --live-data (M5-A-01..05, M5-L-01)."
+    },
+    {
+      "id": "FR-STR-01",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -581,7 +641,7 @@
     },
     {
       "id": "FR-STR-02",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -593,7 +653,7 @@
     },
     {
       "id": "FR-STR-03",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -606,7 +666,7 @@
     },
     {
       "id": "FR-STR-04",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -619,7 +679,7 @@
     },
     {
       "id": "FR-STR-05",
-      "stage": "M5",
+      "stage": "M6",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -632,7 +692,7 @@
     },
     {
       "id": "FR-STR-06",
-      "stage": "M6",
+      "stage": "M7",
       "status": "planned",
       "design": [
         "docs/design/financial-engine.md",
@@ -742,7 +802,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M2/M4 local-first independence: ledger, charts, journal, K-line training and deterministic m4-report-1 reports continue offline or when model endpoints are stopped (M2-A-14, M4-A-14)."
     },
@@ -778,7 +838,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M2/M4 unified capability and model contracts: UI, CLI and AI read-only tools share synchronous AppHost projections across real scopes and ScopeTarget::TrainingRun on both openai-responses and openai-chat-completions protocols (M2-A-01, M2-A-13, M4-A-14, M4-A-15)."
     },
@@ -796,7 +856,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 consistent SQLite Backup API snapshots, pre-migration backups (including before-schema-4-* before Schema 5 DDL) and staged restore verifying manifest hashes and table_row_counts across all ledger, journal, AI and 8 simulation/training tables (M4-A-11)."
     },
@@ -814,7 +874,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 coherent open-format library export covering ledger CSV/JSON, Markdown notes, attachments, settings and M4 simulation/simulation_bundle.json + 8 simulation/*.csv tables (M4-A-11)."
     },
@@ -851,7 +911,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 library delete preview/confirmation plus M4 preview_delete_training_run / delete_training_run single-transaction scoped deletion without touching real ledger or other runs (M4-A-11)."
     },
@@ -873,7 +933,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 fixed-precision Decimal accounting, FIFO cost lots, cash_exchange, m4-sim-1 simulated matching/reservations/composable fees and m4-report-1 training report verified against hand-calculated fixtures (M4-A-04..07, M4-A-12, M4-A-18)."
     },
@@ -895,7 +955,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 versioned reports binding dataset_version, ledger_revision / state_hash, m1-ledger-3 / m2-ledger-1 / m4-sim-1 / m4-report-1 and frozen fee_profile_version_id across UI, CLI and AI (M4-A-08, M4-A-15)."
     },
@@ -912,7 +972,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M2 first-screen & navigation latency plus M4 release hidden-HWND execution_speed_opt_out 1,000-bar + default indicators 300-step next-bar latency meeting p95 <= 100 ms with raw samples recorded (M2-A-20, M4-K03, M4-A-17)."
     },
@@ -967,7 +1027,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 atomic SQLite savepoints, pre-migration backups, single-step commit_simulation_step_atomic, subprocess crash_mid_advance rollback with zero half-steps, and verify_or_mark_run_damaged hash checks (M4-A-09, M4-A-11)."
     },
@@ -1023,7 +1083,7 @@
       ],
       "evidence": [
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M2–M4 Chinese-first i18n, focus & Escape handling, colorblind-safe up/down symbols, persistent 模拟训练 badge and M4 shortcut separation (N/→ next-bar vs Ctrl+Enter order submit, P/O/J/Esc) verified headlessly (M4-A-16); manual H-01/H-02/H-05 remain not-run."
     },
@@ -1044,7 +1104,7 @@
       "evidence": [
         "docs/evidence/2026-11-08-m1-stage-report.md",
         "docs/evidence/2026-11-09-m2-stage-report.md",
-        "docs/delivery/stage-report.md"
+        "docs/evidence/2026-11-14-m4-stage-report.md"
       ],
       "implementation_scope": "M1–M4 local-only default storage, explicit AI scope boundaries (including post-finish-only ScopeTarget::TrainingRun and pre-reveal masking), prompt-injection defense and redacted diagnostics (M4-A-14)."
     },

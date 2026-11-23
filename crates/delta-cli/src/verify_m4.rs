@@ -8,197 +8,42 @@
 //! regression verification (`M4-A-18`).
 
 use super::{
-    verify::{
-        directory_snapshot, failure, owned_test_directories, record_tests, source_files,
-        source_fingerprint,
+    verify::{directory_snapshot, failure, owned_test_directories, source_fingerprint},
+    verify_common::{
+        build_gate_env, build_release_desktop_exe, check_delta_app_boundary,
+        check_delta_core_purity, check_desktop_metadata_deps, check_desktop_source_boundary,
+        check_workspace_source_hygiene, default_gate_jobs, finalize_and_write_report,
+        make_initial_report, percentile_ms, record_execution_outcome, record_mapped_case, rel_path,
+        run_logged_command, run_mechanical_gates, stamp_path, verify_prior_stage_regressions,
+        MechanicalGateConfig, QuietnessMonitor,
     },
     CaseResultRecord, PocResultRecord, VerifyStageReport,
 };
 use chrono::{Days, NaiveDate, Utc};
 use delta_app::{
-    count_visible_windows_for_current_process, current_process_priority, observed_window_details,
-    resolve_app_paths, resolve_user_documents_root, run_quiet_command,
-    run_quiet_command_with_timeout, sanitize_terminal_output, AdjustmentKind, AppHost, AppService,
-    BarRecord, BuildChannel, CorporateActionType, ErrorEnvelope, QuietJobObject,
+    count_visible_windows_for_current_process, observed_window_details, resolve_app_paths,
+    resolve_user_documents_root, run_quiet_command_with_timeout, AdjustmentKind, AppHost,
+    AppService, BarRecord, BuildChannel, CorporateActionType, ErrorEnvelope, QuietJobObject,
     TrainingReplayMode, TrainingReplayResultDto, TrainingReportDto, TrainingRevealDto,
-    TrainingWorkspaceSnapshotDto, EXECUTION_SPEED_OPT_OUT, SIMULATED_TRAINING_BADGE,
+    TrainingWorkspaceSnapshotDto, EXECUTION_SPEED_OPT_OUT, M4_K03_P95_BUDGET_MS,
+    SIMULATED_TRAINING_BADGE,
 };
 use delta_core::{parse_decimal_lossless, CalendarSessionKind};
 use delta_data::{query_calendar_session, SqliteStore};
-use delta_desktop::M4_K03_P95_BUDGET_MS;
 use rusqlite::params;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    env,
-    ffi::OsStr,
-    fs,
+    collections::BTreeMap,
+    env, fs,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
     time::{Duration, Instant},
 };
 
 fn ensure(condition: bool, message: impl std::fmt::Display) -> Result<(), ErrorEnvelope> {
-    if condition {
-        Ok(())
-    } else {
-        Err(failure("M4_CHECK", message))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Quietness monitor (`D-25`, `M4-A-18`): observes the gate process and any
-// test/release child process spawned from the workspace `target/` directory.
-// ---------------------------------------------------------------------------
-
-struct M4QuietnessMonitor {
-    stop: Arc<AtomicBool>,
-    findings: Arc<Mutex<BTreeSet<String>>>,
-    samples: Arc<Mutex<u64>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-#[cfg(windows)]
-fn process_image(pid: u32) -> Option<String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return None;
-        }
-        let mut buffer = [0u16; 1024];
-        let mut size = buffer.len() as u32;
-        let ok = QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size);
-        CloseHandle(process);
-        (ok != 0).then(|| String::from_utf16_lossy(&buffer[..size as usize]))
-    }
-}
-
-#[cfg(windows)]
-fn sample_m4_windows(target_prefix_lower: &str, findings: &Mutex<BTreeSet<String>>) {
-    use windows_sys::Win32::Foundation::{HWND, LPARAM};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-    };
-
-    struct VisitCtx<'a> {
-        self_pid: u32,
-        target_prefix_lower: &'a str,
-        findings: &'a Mutex<BTreeSet<String>>,
-    }
-
-    fn describe_owned(hwnd: HWND, ctx: &VisitCtx<'_>) -> Option<String> {
-        unsafe {
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == 0 {
-                return None;
-            }
-            let image = process_image(pid).unwrap_or_default();
-            let norm = image.replace('/', "\\").to_ascii_lowercase();
-            let owned = pid == ctx.self_pid
-                || (!ctx.target_prefix_lower.is_empty()
-                    && norm.starts_with(ctx.target_prefix_lower));
-            if !owned {
-                return None;
-            }
-            let mut title = [0u16; 256];
-            let length = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32).max(0);
-            Some(format!(
-                "pid={pid} {} \"{}\"",
-                image.rsplit(['\\', '/']).next().unwrap_or(&image),
-                String::from_utf16_lossy(&title[..length as usize])
-            ))
-        }
-    }
-
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> i32 {
-        let ctx = &*(lparam as *const VisitCtx<'_>);
-        if delta_app::window_is_perceivable(hwnd as isize) {
-            if let Some(text) = describe_owned(hwnd, ctx) {
-                ctx.findings
-                    .lock()
-                    .unwrap()
-                    .insert(format!("visible window: {text}"));
-            }
-        }
-        1
-    }
-
-    let ctx = VisitCtx {
-        self_pid: std::process::id(),
-        target_prefix_lower,
-        findings,
-    };
-    unsafe {
-        let foreground = GetForegroundWindow();
-        if !foreground.is_null() {
-            if let Some(text) = describe_owned(foreground, &ctx) {
-                findings
-                    .lock()
-                    .unwrap()
-                    .insert(format!("foreground stolen: {text}"));
-            }
-        }
-        EnumWindows(Some(visit), &ctx as *const VisitCtx<'_> as LPARAM);
-    }
-}
-
-#[cfg(not(windows))]
-fn sample_m4_windows(_target_prefix_lower: &str, _findings: &Mutex<BTreeSet<String>>) {}
-
-impl M4QuietnessMonitor {
-    fn start(root: &Path) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let findings = Arc::new(Mutex::new(BTreeSet::new()));
-        let samples = Arc::new(Mutex::new(0u64));
-        let target_prefix_lower = root
-            .join("target")
-            .display()
-            .to_string()
-            .replace('/', "\\")
-            .trim_start_matches("\\\\?\\")
-            .to_ascii_lowercase();
-        let thread = {
-            let (stop, findings, samples) = (
-                Arc::clone(&stop),
-                Arc::clone(&findings),
-                Arc::clone(&samples),
-            );
-            std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    sample_m4_windows(&target_prefix_lower, &findings);
-                    *samples.lock().unwrap() += 1;
-                    std::thread::sleep(Duration::from_millis(150));
-                }
-            })
-        };
-        Self {
-            stop,
-            findings,
-            samples,
-            thread: Some(thread),
-        }
-    }
-
-    fn finish(mut self) -> (u64, Vec<String>) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-        let samples = *self.samples.lock().unwrap();
-        let findings = self.findings.lock().unwrap().iter().cloned().collect();
-        (samples, findings)
-    }
+    super::verify_common::ensure("M4_CHECK", condition, message)
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +122,7 @@ pub(crate) fn validate_m4_next_bar_bench(bench: &Value) -> Result<ValidatedM4Ben
     let Some(ms_arr) = bench["step_times_ms"].as_array() else {
         return Err("missing step_times_ms array".into());
     };
-    let Some(mut times_us) = us_arr
+    let Some(times_us) = us_arr
         .iter()
         .map(Value::as_u64)
         .collect::<Option<Vec<u64>>>()
@@ -292,12 +137,10 @@ pub(crate) fn validate_m4_next_bar_bench(bench: &Value) -> Result<ValidatedM4Ben
         ));
     }
 
-    times_us.sort_unstable();
-    let pct_us = |percent: usize| -> u64 { times_us[(times_us.len() * percent).div_ceil(100) - 1] };
-    let p50_ms = (pct_us(50) as f64) / 1000.0;
-    let p95_ms = (pct_us(95) as f64) / 1000.0;
-    let p99_ms = (pct_us(99) as f64) / 1000.0;
-    let max_ms = (*times_us.last().unwrap_or(&0) as f64) / 1000.0;
+    let p50_ms = percentile_ms(&times_us, 50);
+    let p95_ms = percentile_ms(&times_us, 95);
+    let p99_ms = percentile_ms(&times_us, 99);
+    let max_ms = percentile_ms(&times_us, 100);
 
     for (field, recomputed) in [
         ("p50_ms", p50_ms),
@@ -308,7 +151,7 @@ pub(crate) fn validate_m4_next_bar_bench(bench: &Value) -> Result<ValidatedM4Ben
         let Some(reported) = bench[field].as_f64() else {
             return Err(format!("missing numeric {field}"));
         };
-        if (reported - recomputed).abs() > 1e-6 {
+        if !reported.is_finite() || (reported - recomputed).abs() > 1e-6 {
             return Err(format!(
                 "{field} mismatch: reported {reported} vs recomputed {recomputed}"
             ));
@@ -583,7 +426,6 @@ fn run_in_gate_m4_e2e_probe(
                 dates.len()
             ),
         )?;
-        // Poison a bar strictly after the training + reveal window with extreme sentinels
         let poison_date_str = dates.last().unwrap().clone();
         store
             .conn()
@@ -801,271 +643,54 @@ fn run_m4_architecture_and_hygiene_check(
         ),
     )?;
 
-    // 1. `delta-core` purity: 0 IO/UI crates; `sim.rs` & `sim_report.rs` 0 f64/f32/HashMap/HashSet
-    let mut core_files = Vec::new();
-    source_files(&root.join("crates/delta-core/src"), &mut core_files)
-        .map_err(|e| failure("M4_G06", e))?;
-    for file in &core_files {
-        let text = fs::read_to_string(file).map_err(|e| failure("M4_G06", e))?;
-        for forbidden in ["tokio", "reqwest", "gpui", "rusqlite"] {
-            ensure(
-                !text.contains(forbidden),
-                format!(
-                    "delta-core {:?} contains forbidden '{forbidden}'",
-                    file.file_name()
-                ),
-            )?;
-        }
-        let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if matches!(fname, "sim.rs" | "sim_report.rs") {
-            for (lineno, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("//") {
-                    continue;
-                }
-                for tok in ["f64", "f32", "HashMap", "HashSet"] {
-                    ensure(
-                        !trimmed.contains(tok),
-                        format!("delta-core {fname}:{} contains '{tok}'", lineno + 1),
-                    )?;
-                }
-            }
-        }
-    }
+    // 1. `delta-core` purity: 0 IO/UI crates; `sim.rs`, `sim/*.rs` & `sim_report.rs` 0 f64/f32/HashMap/HashSet
+    let strict_tokens = ["f64", "f32", "HashMap", "HashSet"];
+    check_delta_core_purity(
+        root,
+        "M4_G06",
+        "crates/delta-core/src",
+        &["tokio", "reqwest", "gpui", "rusqlite"],
+        &[
+            ("sim.rs", &strict_tokens),
+            ("prng.rs", &strict_tokens),
+            ("fees.rs", &strict_tokens),
+            ("matching.rs", &strict_tokens),
+            ("sim_report.rs", &strict_tokens),
+        ],
+    )?;
 
-    // 2. `delta-app` boundary: 0 `pub async fn`; 0 raw `FROM bar` SQL in training/ai/host prod code (`S-37`)
-    let mut app_files = Vec::new();
-    source_files(&root.join("crates/delta-app/src"), &mut app_files)
-        .map_err(|e| failure("M4_G06", e))?;
-    for file in &app_files {
-        let text = fs::read_to_string(file).map_err(|e| failure("M4_G06", e))?;
-        ensure(
-            !text.contains("pub async fn"),
-            format!("delta-app {:?} leaks pub async fn", file.file_name()),
-        )?;
-        let fname = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !matches!(fname, "export.rs" | "sync.rs") {
-            let prod = text
-                .split_once("#[cfg(test)]")
-                .map_or(text.as_str(), |(p, _)| p);
-            ensure(
-                !prod.to_ascii_lowercase().contains("from bar"),
-                format!("delta-app {fname} queries `FROM bar` directly outside SqliteStore port"),
-            )?;
-        }
-    }
+    // 2. `delta-app` boundary: 0 `pub async fn`; 0 raw `FROM bar` SQL outside SqliteStore port (`S-37`)
+    check_delta_app_boundary(root, "M4_G06", Some(&["export.rs", "sync.rs"]))?;
 
     // 3. `delta-desktop` dependency boundary (`cargo metadata --locked` + source scan)
-    let meta_res = run_quiet_command(
-        OsStr::new("cargo"),
-        ["metadata", "--locked", "--format-version", "1"],
-        Some(root),
-        gate_env,
-    )
-    .map_err(|e| failure("M4_G06_META", e))?;
-    ensure(
-        meta_res.status_code == Some(0) && !meta_res.timed_out,
-        "cargo metadata --locked failed",
-    )?;
-    let meta_json: Value =
-        serde_json::from_str(&meta_res.stdout).map_err(|e| failure("M4_G06_META", e))?;
-    let packages = meta_json["packages"]
-        .as_array()
-        .ok_or_else(|| failure("M4_G06_META", "missing packages"))?;
-    let desktop_pkg = packages
-        .iter()
-        .find(|p| p["name"].as_str() == Some("delta-desktop"))
-        .ok_or_else(|| failure("M4_G06_META", "delta-desktop missing"))?;
-    let desktop_deps: Vec<String> = desktop_pkg["dependencies"]
-        .as_array()
-        .map(|deps| {
-            deps.iter()
-                .filter_map(|d| d["name"].as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    ensure(
-        desktop_deps.iter().any(|d| d == "delta-app"),
-        "delta-desktop must depend on delta-app",
-    )?;
-    for forbidden_dep in [
-        "delta-data",
-        "delta-core",
-        "delta-model",
-        "rusqlite",
-        "tokio",
-        "reqwest",
-    ] {
-        ensure(
-            !desktop_deps.iter().any(|d| d == forbidden_dep),
-            format!("delta-desktop directly depends on forbidden crate '{forbidden_dep}'"),
-        )?;
-    }
-    let mut desktop_files = Vec::new();
-    source_files(&root.join("crates/delta-desktop/src"), &mut desktop_files)
-        .map_err(|e| failure("M4_G06", e))?;
-    for file in &desktop_files {
-        let text = fs::read_to_string(file).map_err(|e| failure("M4_G06", e))?;
-        for forbidden_use in [
+    let (_, desktop_deps) = check_desktop_metadata_deps(root, gate_env, "M4_G06_META", None)?;
+    check_desktop_source_boundary(
+        root,
+        "M4_G06",
+        &[
             "delta_core::",
             "delta_data::",
             "rusqlite::",
             "tokio::",
             "reqwest::",
-        ] {
-            ensure(
-                !text.contains(forbidden_use),
-                format!(
-                    "delta-desktop {:?} references '{forbidden_use}'",
-                    file.file_name()
-                ),
-            )?;
-        }
-    }
+        ],
+        false,
+    )?;
 
-    // 4. Workspace-wide `Command::new` & `0.0.0.0` scan
-    let forbidden_bind = ["0.0", ".0.0"].concat();
-    let forbidden_cmd = ["Command", "::new"].concat();
-    let mut all_crate_files = Vec::new();
-    source_files(&root.join("crates"), &mut all_crate_files).map_err(|e| failure("M4_G06", e))?;
-    let mut rs_scanned = 0usize;
-    for file in &all_crate_files {
-        if !file.extension().is_some_and(|e| e == "rs") {
-            continue;
-        }
-        rs_scanned += 1;
-        let is_process_rs = file
-            .to_string_lossy()
-            .replace('\\', "/")
-            .ends_with("crates/delta-app/src/process.rs");
-        let text = fs::read_to_string(file).map_err(|e| failure("M4_G06", e))?;
-        for (lineno, line) in text.lines().enumerate() {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            ensure(
-                !trimmed.contains(&forbidden_bind),
-                format!(
-                    "{:?}:{} non-loopback bind address found",
-                    file.file_name(),
-                    lineno + 1
-                ),
-            )?;
-            if !is_process_rs {
-                ensure(
-                    !trimmed.contains(&forbidden_cmd),
-                    format!(
-                        "{:?}:{} unauthorized process spawn outside process.rs",
-                        file.file_name(),
-                        lineno + 1
-                    ),
-                )?;
-            }
-        }
-    }
+    // 4. Workspace-wide unauthorized process-spawn & non-loopback bind scan
+    let rs_scanned = check_workspace_source_hygiene(root, "M4_G06", true)?;
 
     Ok((desktop_deps, rs_scanned))
 }
 
-// ---------------------------------------------------------------------------
-// Same-fingerprint M1 / M2 / M3 regression check (`M4-A-18`)
-// ---------------------------------------------------------------------------
-
-fn verify_prior_stage_regressions(
-    root: &Path,
-    expected_fingerprint: &str,
-) -> Result<String, ErrorEnvelope> {
-    let mut summaries = Vec::new();
-    for (dir_stage, expected_stage, expected_plan) in [
-        ("m1", "M1", "2.6"),
-        ("m2", "M2", "1.0"),
-        ("m3", "M3", "1.0"),
-    ] {
-        let path = root.join(format!(
-            ".local/reports/{dir_stage}/verify-stage-report.json"
-        ));
-        let raw = fs::read(&path).map_err(|e| {
-            failure(
-                "REGRESSION_MISSING",
-                format!(
-                    "{expected_stage} report missing at {} ({e}); run verify-stage --stage {expected_stage} first",
-                    path.display()
-                ),
-            )
-        })?;
-        let rep: Value = serde_json::from_slice(&raw).map_err(|e| failure("REGRESSION_JSON", e))?;
-        ensure(
-            rep["stage"].as_str() == Some(expected_stage)
-                && rep["plan_version"].as_str() == Some(expected_plan)
-                && rep["overall_status"].as_str() == Some("passed")
-                && rep["source_fingerprint"].as_str() == Some(expected_fingerprint),
-            format!(
-                "{expected_stage} regression mismatch: stage={:?} plan={:?} status={:?} fp={:?} (expected fp={expected_fingerprint})",
-                rep["stage"], rep["plan_version"], rep["overall_status"], rep["source_fingerprint"]
-            ),
-        )?;
-        if expected_stage == "M2" {
-            let has_bench = rep["case_results"].as_array().is_some_and(|arr| {
-                arr.iter()
-                    .any(|c| c["case_id"] == "M2-A-20" && c["status"] == "passed")
-            });
-            let has_smoke = rep["poc_results"].as_array().is_some_and(|arr| {
-                arr.iter()
-                    .any(|p| p["id"] == "M2-K06" && p["status"] == "passed")
-            });
-            ensure(
-                has_bench && has_smoke,
-                "M2 regression report must include passed --ui-smoke (M2-K06) and --ui-bench (M2-A-20)",
-            )?;
-        }
-        if expected_stage == "M3" {
-            let has_installer_and_smoke = rep["case_results"].as_array().is_some_and(|arr| {
-                arr.iter().any(|c| {
-                    c["case_id"] == "M3-A-03"
-                        && c["status"] == "passed"
-                        && c["evidence"]
-                            .as_str()
-                            .is_some_and(|ev| ev.contains("installed --ui-smoke passed"))
-                })
-            });
-            ensure(
-                has_installer_and_smoke,
-                "M3 regression report must include passed --installer and --ui-smoke (M3-A-03)",
-            )?;
-        }
-        summaries.push(format!(
-            "{expected_stage} v{expected_plan} passed @ {}",
-            rep["executed_at"].as_str().unwrap_or("?")
-        ));
-    }
-    Ok(summaries.join("; "))
-}
-
-fn record_mapped_case(
+fn record_m4_case(
     report: &mut VerifyStageReport,
     id: &str,
     package: &str,
     names: &[&str],
-    extra_evidence: Option<&str>,
+    extra: Option<&str>,
 ) {
-    let all_passed = names
-        .iter()
-        .all(|n| report.test_results.get(*n).is_some_and(|s| s == "passed"));
-    let status = if all_passed { "passed" } else { "failed" };
-    let mut evidence = format!("M4-G-05 captured test results: {}", names.join(", "));
-    if let Some(extra) = extra_evidence {
-        evidence.push_str("; ");
-        evidence.push_str(extra);
-    }
-    report.case_results.push(CaseResultRecord {
-        case_id: id.into(),
-        work_package: package.into(),
-        tier: "required".into(),
-        status: status.into(),
-        elapsed_ms: 0,
-        evidence,
-    });
+    record_mapped_case(report, "M4-G-05", id, package, "required", names, extra);
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,45 +723,19 @@ pub(crate) fn run_verify_stage_m4(
     let before = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     let test_directories_before =
         owned_test_directories().map_err(|e| failure("temp_snapshot", e))?;
-    let release_before = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
+    let release_before = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
 
-    let jobs = env::var("DELTA_GATE_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().saturating_sub(2).max(1))
-                .unwrap_or(1)
-        });
+    let jobs = default_gate_jobs();
+    let mut report = make_initial_report(
+        "M4",
+        "1.0",
+        false,
+        fingerprint,
+        jobs,
+        "directory metadata under real LOCALAPPDATA/delta, delta-dev and Documents/delta, delta-dev; all gate and test roots isolated in TEMP; EnumWindows + GetForegroundWindow quietness monitor active",
+    );
 
-    let mut report = VerifyStageReport {
-        stage: "M4".into(),
-        plan_version: "1.0".into(),
-        executed_at: Utc::now().to_rfc3339(),
-        live_mode: false,
-        source_fingerprint: fingerprint,
-        visible_window_count: 0,
-        window_details: Vec::new(),
-        temp_residual_dirs: 0,
-        outside_temp_created_dirs: 0,
-        path_observation_scope: "directory metadata under real LOCALAPPDATA/delta, delta-dev and Documents/delta, delta-dev; all gate and test roots isolated in TEMP; EnumWindows + GetForegroundWindow quietness monitor active".into(),
-        release_data_dir_touched: false,
-        poc_results: Vec::new(),
-        case_results: Vec::new(),
-        live_probes: Vec::new(),
-        overall_status: "running".into(),
-        gate_jobs: jobs,
-        process_priority: current_process_priority(),
-        test_results: BTreeMap::new(),
-        log_files: BTreeMap::new(),
-        errors: Vec::new(),
-    };
-
-    let monitor = M4QuietnessMonitor::start(&root);
+    let monitor = QuietnessMonitor::for_target_prefixes(&root);
     let mut ui_smoke_summary: Option<String> = None;
 
     let execution = catch_unwind(AssertUnwindSafe(|| -> Result<(), ErrorEnvelope> {
@@ -1144,85 +743,21 @@ pub(crate) fn run_verify_stage_m4(
         job.assign_current_process()
             .map_err(|e| failure("job_object", e))?;
 
-        let gate_env = BTreeMap::from([
-            (
-                "DELTA_DATA_DIR".into(),
-                temp.join("gate-data").display().to_string(),
-            ),
-            (
-                "DELTA_DOCUMENTS_DIR".into(),
-                temp.join("gate-documents").display().to_string(),
-            ),
-            (
-                "LOCALAPPDATA".into(),
-                temp.join("gate-localappdata").display().to_string(),
-            ),
-            (
-                "DELTA_TEST_ROOT".into(),
-                temp.join("tests").display().to_string(),
-            ),
-            ("CARGO_BUILD_JOBS".into(), jobs.to_string()),
-            ("CARGO_INCREMENTAL".into(), "0".into()),
-            ("PYTHONUTF8".into(), "1".into()),
-            ("RUST_TEST_THREADS".into(), jobs.to_string()),
-        ]);
+        let gate_env = build_gate_env(&temp, jobs);
 
         // 1. Fast-fail Mechanical Gates (`M4-G-01`..`M4-G-05`)
-        for (id, program, args) in [
-            ("M4-G-01", "python", vec!["scripts/check_docs.py"]),
-            ("M4-G-02", "git", vec!["diff", "--check"]),
-            ("M4-G-03", "cargo", vec!["fmt", "--all", "--check"]),
-            (
-                "M4-G-04",
-                "cargo",
-                vec![
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
-            ("M4-G-05", "cargo", vec!["test", "--workspace", "--locked"]),
-        ] {
-            let started = Instant::now();
-            let result =
-                run_quiet_command(OsStr::new(program), args.clone(), Some(&root), &gate_env)
-                    .map_err(|e| failure("gate_command", e))?;
-            let path = logs.join(format!("{id}.json"));
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&result).map_err(|e| failure("gate_log", e))?,
-            )
-            .map_err(|e| failure("gate_log", e))?;
-            let rel_log = path
-                .strip_prefix(&root)
-                .unwrap_or(&path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
-            report.log_files.insert(id.into(), rel_log.clone());
-            if id == "M4-G-05" {
-                record_tests(&result.stdout, &mut report.test_results);
-            }
-            let passed = result.status_code == Some(0) && !result.timed_out;
-            report.case_results.push(CaseResultRecord {
-                case_id: id.into(),
-                work_package: "M4-W07".into(),
-                tier: "required".into(),
-                status: if passed { "passed" } else { "failed" }.into(),
-                elapsed_ms: started.elapsed().as_millis() as u64,
-                evidence: format!(
-                    "{program} {}; exit={:?}; captured log {rel_log}",
-                    args.join(" "),
-                    result.status_code
-                ),
-            });
-            if !passed {
-                return Err(failure("gate_failed", format!("{id}: see {rel_log}")));
-            }
-        }
+        run_mechanical_gates(
+            &root,
+            &logs,
+            &mut report,
+            &gate_env,
+            MechanicalGateConfig {
+                stage_prefix: "M4",
+                work_package: "M4-W07",
+                clippy_locked: false,
+                test_locked: true,
+            },
+        )?;
 
         // 2. `M4-G-06`: Architecture, SQL port, Packager.toml retirement & hygiene check
         let g06_start = Instant::now();
@@ -1243,81 +778,32 @@ pub(crate) fn run_verify_stage_m4(
 
         // 4. Optional release `delta.exe` build + `--m4-ui-smoke`
         let release_delta_exe = if ui_smoke || ui_bench {
-            let build_start = Instant::now();
-            let build_res = run_quiet_command(
-                OsStr::new("cargo"),
-                [
-                    "build",
-                    "--release",
-                    "-p",
-                    "delta-desktop",
-                    "--bin",
-                    "delta",
-                    "--locked",
-                ],
-                Some(&root),
+            Some(build_release_desktop_exe(
+                &root,
+                &logs,
+                &mut report,
                 &gate_env,
-            )
-            .map_err(|e| failure("release_build_desktop", e))?;
-            let build_log = logs.join("cargo-build-release-desktop.json");
-            fs::write(
-                &build_log,
-                serde_json::to_vec_pretty(&build_res).map_err(|e| failure("gate_log", e))?,
-            )
-            .map_err(|e| failure("gate_log", e))?;
-            report.log_files.insert(
-                "cargo-build-release-desktop".into(),
-                build_log
-                    .strip_prefix(&root)
-                    .unwrap_or(&build_log)
-                    .display()
-                    .to_string()
-                    .replace('\\', "/"),
-            );
-            ensure(
-                build_res.status_code == Some(0) && !build_res.timed_out,
-                format!(
-                    "cargo build --release -p delta-desktop failed ({} ms): {}",
-                    build_start.elapsed().as_millis(),
-                    build_res.stderr
-                ),
-            )?;
-            let exe_path = root.join("target/release/delta.exe");
-            ensure(
-                exe_path.is_file(),
-                format!("expected release binary at {}", exe_path.display()),
-            )?;
-            Some(exe_path)
+                "release_build_desktop",
+            )?)
         } else {
             None
         };
 
         if ui_smoke {
             let desktop_exe = release_delta_exe.as_ref().unwrap();
-            let smoke_res = run_quiet_command(
+            let smoke_res = run_logged_command(
+                &root,
+                &logs,
+                &mut report,
+                "m4-ui-smoke",
                 desktop_exe.as_os_str(),
-                [
-                    "--m4-ui-smoke",
-                    "--data-dir",
-                    &temp.join("m4-ui-smoke-data").display().to_string(),
+                vec![
+                    "--m4-ui-smoke".into(),
+                    "--data-dir".into(),
+                    temp.join("m4-ui-smoke-data").display().to_string(),
                 ],
-                Some(&root),
                 &gate_env,
-            )
-            .map_err(|e| failure("m4_ui_smoke", e))?;
-            let log_path = logs.join("m4-ui-smoke.json");
-            fs::write(
-                &log_path,
-                serde_json::to_vec_pretty(&smoke_res).map_err(|e| failure("smoke_log", e))?,
-            )
-            .map_err(|e| failure("smoke_log", e))?;
-            let rel_log = log_path
-                .strip_prefix(&root)
-                .unwrap_or(&log_path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
-            report.log_files.insert("m4-ui-smoke".into(), rel_log);
+            )?;
             let smoke_report_path = reports.join("m4-ui-smoke-report.json");
             fs::write(&smoke_report_path, &smoke_res.stdout)
                 .map_err(|e| failure("smoke_report", e))?;
@@ -1388,14 +874,14 @@ pub(crate) fn run_verify_stage_m4(
             "in-gate cross-process sentinel probe ({} ms, 0 sentinel/identity leaks)",
             e2e.elapsed_ms
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-01",
             "M4-W01",
             &k01_tests,
             Some(&e2e_note_a01),
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-02",
             "M4-W01",
@@ -1407,7 +893,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             Some(&format!("candidate_pool_hash={}", e2e.candidate_pool_hash)),
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-03",
             "M4-W01,M4-W02",
@@ -1417,7 +903,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-04",
             "M4-W02",
@@ -1428,7 +914,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-05",
             "M4-W02",
@@ -1438,21 +924,21 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-06",
             "M4-W02",
             &["sim::tests::m4_a_06_reservations_insufficient_funds_at_fill_and_zero_volume_bars"],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-07",
             "M4-W02",
             &["sim::tests::m4_a_07_and_08_composable_fees_synthetic_partials_received_asset_and_versioning"],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-08",
             "M4-W02,M4-W03",
@@ -1463,7 +949,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-09",
             "M4-W03",
@@ -1473,7 +959,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-10",
             "M4-W03",
@@ -1483,7 +969,7 @@ pub(crate) fn run_verify_stage_m4(
                 e2e.final_state_hash, e2e.checkpoint_started_seq
             )),
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-11",
             "M4-W03",
@@ -1497,7 +983,7 @@ pub(crate) fn run_verify_stage_m4(
                 e2e.ledger_revision
             )),
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-12",
             "M4-W04",
@@ -1508,7 +994,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-13",
             "M4-W05",
@@ -1518,14 +1004,14 @@ pub(crate) fn run_verify_stage_m4(
             ],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-14",
             "M4-W05",
             &["training::tests::test_m4_a14_ai_review_finished_only_both_protocols_citations_injection_and_offline"],
             None,
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-15",
             "M4-W06",
@@ -1535,7 +1021,7 @@ pub(crate) fn run_verify_stage_m4(
             ],
             Some("in-gate CLI show/report == AppHost workspace/report DTO parity verified"),
         );
-        record_mapped_case(
+        record_m4_case(
             &mut report,
             "M4-A-16",
             "M4-W06",
@@ -1560,54 +1046,41 @@ pub(crate) fn run_verify_stage_m4(
         if ui_bench {
             let b_start = Instant::now();
             let desktop_exe = release_delta_exe.as_ref().unwrap();
-            let bench_res = run_quiet_command(
+            let bench_res = run_logged_command(
+                &root,
+                &logs,
+                &mut report,
+                "m4-ui-bench",
                 desktop_exe.as_os_str(),
-                [
-                    "--m4-ui-bench",
-                    "--data-dir",
-                    &temp.join("m4-ui-bench-data").display().to_string(),
+                vec![
+                    "--m4-ui-bench".into(),
+                    "--data-dir".into(),
+                    temp.join("m4-ui-bench-data").display().to_string(),
                 ],
-                Some(&root),
                 &gate_env,
-            )
-            .map_err(|e| failure("m4_ui_bench", e))?;
-            let log_path = logs.join("m4-ui-bench.json");
-            fs::write(
-                &log_path,
-                serde_json::to_vec_pretty(&bench_res).map_err(|e| failure("bench_log", e))?,
-            )
-            .map_err(|e| failure("bench_log", e))?;
-            let rel_log = log_path
-                .strip_prefix(&root)
-                .unwrap_or(&log_path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
-            report.log_files.insert("m4-ui-bench".into(), rel_log);
+            )?;
 
             let bench_report_path = reports.join("m4-next-bar-bench-report.json");
             fs::write(&bench_report_path, &bench_res.stdout)
                 .map_err(|e| failure("write_bench", e))?;
-            let rel_bench_report = bench_report_path
-                .strip_prefix(&root)
-                .unwrap_or(&bench_report_path)
-                .display()
-                .to_string()
-                .replace('\\', "/");
+            let rel_bench_report = rel_path(&root, &bench_report_path);
 
-            let bench_val: Value =
-                serde_json::from_str(&bench_res.stdout).map_err(|e| failure("parse_bench", e))?;
-            let validated = if bench_res.status_code == Some(0) && !bench_res.timed_out {
-                validate_m4_next_bar_bench(&bench_val)
-            } else {
-                Err(format!(
-                    "delta.exe --m4-ui-bench exited {:?} (timed_out={}): {}",
-                    bench_res.status_code, bench_res.timed_out, bench_res.stderr
-                ))
-            };
+            let parsed: Result<Value, String> = serde_json::from_str(&bench_res.stdout)
+                .map_err(|e| format!("bench output is not JSON: {e}; stderr={}", bench_res.stderr));
+            let validated = parsed.as_ref().map_err(Clone::clone).and_then(|bench_val| {
+                if bench_res.status_code == Some(0) && !bench_res.timed_out {
+                    validate_m4_next_bar_bench(bench_val)
+                } else {
+                    Err(format!(
+                        "delta.exe --m4-ui-bench exited {:?} (timed_out={}): {}",
+                        bench_res.status_code, bench_res.timed_out, bench_res.stderr
+                    ))
+                }
+            });
 
             match validated {
                 Ok(v) => {
+                    let bench_val = parsed.unwrap_or_default();
                     let mut k03_metrics = BTreeMap::new();
                     k03_metrics.insert("p50_ms".into(), json!(v.p50_ms));
                     k03_metrics.insert("p95_ms".into(), json!(v.p95_ms));
@@ -1699,20 +1172,7 @@ pub(crate) fn run_verify_stage_m4(
         Ok(())
     }));
 
-    match execution {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => report
-            .errors
-            .push(format!("{}: {}", error.code, error.message)),
-        Err(payload) => report.errors.push(format!(
-            "gate panic: {}",
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic")
-        )),
-    }
+    record_execution_outcome(&mut report, execution);
 
     // Cleanup temp directory & evaluate quietness, isolation, and regressions (`M4-A-18`)
     let a18_start = Instant::now();
@@ -1722,11 +1182,11 @@ pub(crate) fn run_verify_stage_m4(
             .errors
             .push(format!("temporary cleanup failed: {error}"));
     }
-    report.temp_residual_dirs = usize::from(temp.exists());
-    report.temp_residual_dirs += owned_test_directories()
-        .map_err(|e| failure("temp_snapshot", e))?
-        .difference(&test_directories_before)
-        .count();
+    report.temp_residual_dirs = usize::from(temp.exists())
+        + owned_test_directories()
+            .map_err(|e| failure("temp_snapshot", e))?
+            .difference(&test_directories_before)
+            .count();
     if report.temp_residual_dirs > 0 {
         report
             .errors
@@ -1735,10 +1195,7 @@ pub(crate) fn run_verify_stage_m4(
 
     let after = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     report.outside_temp_created_dirs = after.difference(&before).count();
-    let release_after = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
+    let release_after = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
     report.release_data_dir_touched = release_before != release_after;
     report.visible_window_count = count_visible_windows_for_current_process();
     report.window_details = observed_window_details();
@@ -1798,7 +1255,16 @@ pub(crate) fn run_verify_stage_m4(
             evidence: format!("FAILED {}: {}", err.code, err.message),
         });
     } else if ui_smoke && ui_bench {
-        match verify_prior_stage_regressions(&root, &report.source_fingerprint) {
+        match verify_prior_stage_regressions(
+            &root,
+            &report.source_fingerprint,
+            &[
+                ("m1", "M1", "2.6"),
+                ("m2", "M2", "1.0"),
+                ("m3", "M3", "1.0"),
+            ],
+            true,
+        ) {
             Ok(reg_summary) => {
                 report.case_results.push(CaseResultRecord {
                     case_id: "M4-A-18".into(),
@@ -1865,24 +1331,12 @@ pub(crate) fn run_verify_stage_m4(
         .iter()
         .any(|c| c.tier == "required" && c.status == "not-run")
         || report.poc_results.iter().any(|p| p.status == "not-run");
-    report.overall_status = if failed {
-        "failed"
-    } else if required_not_run {
-        "not-run"
-    } else {
-        "passed"
-    }
-    .into();
-
-    let json_text = serde_json::to_string_pretty(&report).map_err(|e| failure("report", e))?;
-    fs::write(reports.join("verify-stage-report.json"), &json_text)
-        .map_err(|e| failure("report", e))?;
-    println!("{}", sanitize_terminal_output(&json_text));
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    finalize_and_write_report(
+        &mut report,
+        &reports.join("verify-stage-report.json"),
+        failed,
+        Some(required_not_run),
+    )
 }
 
 #[cfg(test)]

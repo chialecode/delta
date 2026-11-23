@@ -11,7 +11,7 @@
 3. 查 [工程事项台账](docs/decisions/open-questions.md)与 [用户待办](USER-ACTIONS.md)，复用已确认决定与已有授权。常规实现、依赖安装、检查、修复和文档同步连续执行；不按工作包反复询问是否继续。仅暂停缺少必要决定的依赖部分（[连续执行规则](docs/dev-rules/development-workflow.md#continuous-execution)）。
 4. 默认 **A 完整阶段计划 → B 连续实现和自检 → A 集中审核 → 用户授权具体远端动作 → push / PR / 经授权合并**。只有实际 A→B、B→A 或返工交接才提供对方 prompt；A 审查收敛后转入用户授权，不制造重复 A 审核。协议见 [协作流程](docs/dev-rules/development-workflow.md#mvp-loop)。不自动创建其他 Agent 会话。
 5. A 在给出技术推荐前查证活跃开源方案，记录官方来源、日期、适配与许可证边界；不能把首次调研全部留给 B。B 负责锁定具体兼容版本并提供运行证据。重点自研方案整合、金融语义、统一能力接口与上下文状态管理。
-6. 关键用户决定、技术取舍、契约、测试事实与接续状态必须回写职责正本，不能仅留在聊天、prompt 或个人记忆中。新阶段开始时按 [阶段清理规则](docs/governance/documentation-policy.md#stage-cleanup) 执行四分类整理，保持正本去旧阶段化（`M1`–`M5`）。
+6. 关键用户决定、技术取舍、契约、测试事实与接续状态必须回写职责正本，不能仅留在聊天、prompt 或个人记忆中。新阶段开始时按 [阶段清理规则](docs/governance/documentation-policy.md#stage-cleanup) 执行四分类整理，保持正本去旧阶段化（`M1`–`M7`）；同时做[依赖盘点](docs/dev-rules/quality-gates.md#dependencies)：先处理还开着的 Dependabot PR，再跑 `python scripts/deps.py`（D-35）。
 
 ## 按变更触发阅读
 

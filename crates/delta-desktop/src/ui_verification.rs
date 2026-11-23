@@ -39,7 +39,7 @@ use crate::{
     KlineChartView, MarketColorConvention,
 };
 
-fn hidden_options() -> WindowOptions {
+pub(crate) fn hidden_options() -> WindowOptions {
     WindowOptions {
         focus: false,
         show: false,
@@ -52,7 +52,7 @@ fn hidden_options() -> WindowOptions {
     }
 }
 
-fn quiet_window_check() -> Result<(), ErrorEnvelope> {
+pub(crate) fn quiet_window_check() -> Result<(), ErrorEnvelope> {
     if count_visible_windows_for_current_process() > 0 {
         return Err(ErrorEnvelope::new(
             "VISIBLE_VERIFICATION_WINDOW",
@@ -65,21 +65,24 @@ fn quiet_window_check() -> Result<(), ErrorEnvelope> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             GetForegroundWindow, GetWindowThreadProcessId,
         };
-        let mut pid = 0;
-        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
-        if pid == std::process::id() {
-            return Err(ErrorEnvelope::new(
-                "VERIFICATION_FOCUS_STOLEN",
-                "验证窗口意外取得了前台焦点",
-                false,
-            ));
+        let fg = GetForegroundWindow();
+        if !fg.is_null() {
+            let mut pid = 0;
+            GetWindowThreadProcessId(fg, &mut pid);
+            if pid == std::process::id() {
+                return Err(ErrorEnvelope::new(
+                    "VERIFICATION_FOCUS_STOLEN",
+                    "验证窗口意外取得了前台焦点",
+                    false,
+                ));
+            }
         }
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn native_window() -> Result<usize, ErrorEnvelope> {
+pub(crate) fn native_window() -> Result<usize, ErrorEnvelope> {
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, RECT},
         UI::WindowsAndMessaging::{EnumWindows, GetClientRect, GetWindowThreadProcessId},
@@ -92,8 +95,8 @@ fn native_window() -> Result<usize, ErrorEnvelope> {
         let mut bounds: RECT = unsafe { std::mem::zeroed() };
         if pid == std::process::id()
             && unsafe { GetClientRect(hwnd, &mut bounds) } != 0
-            && bounds.right - bounds.left >= 600
-            && bounds.bottom - bounds.top >= 400
+            && bounds.right.saturating_sub(bounds.left) >= 600
+            && bounds.bottom.saturating_sub(bounds.top) >= 400
         {
             unsafe {
                 *(data as *mut usize) = hwnd as usize;
@@ -117,7 +120,7 @@ fn native_window() -> Result<usize, ErrorEnvelope> {
 }
 
 #[cfg(not(windows))]
-fn native_window() -> Result<usize, ErrorEnvelope> {
+pub(crate) fn native_window() -> Result<usize, ErrorEnvelope> {
     Err(ErrorEnvelope::new(
         "WINDOWS_VERIFICATION_REQUIRED",
         "原生帧基准需要 Windows",
@@ -125,7 +128,7 @@ fn native_window() -> Result<usize, ErrorEnvelope> {
     ))
 }
 
-fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
+pub(crate) fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -156,7 +159,7 @@ fn paint_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     quiet_window_check()
 }
 
-fn initialize_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
+pub(crate) fn initialize_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -188,99 +191,226 @@ fn initialize_native_window(hwnd: usize) -> Result<(), ErrorEnvelope> {
     quiet_window_check()
 }
 
+/// Cleans up `owned` without masking a primary verification error (`UI-B11`).
+pub(crate) fn finish_verification<T>(
+    owned: &VerificationDirectory,
+    inner: Result<T, ErrorEnvelope>,
+) -> Result<T, ErrorEnvelope> {
+    match (inner, owned.cleanup()) {
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
+        (Ok(val), Ok(())) => Ok(val),
+    }
+}
+
+/// Shared hidden-window GPUI bootstrap / HWND init / teardown harness used across M2/M3/M4/M5
+/// native verification flows (`UI-Q02`).
+pub(crate) fn run_in_hidden_window<V, R, Build, Run, OnEmpty>(
+    build: Build,
+    run: Run,
+    on_empty: OnEmpty,
+) -> Result<R, ErrorEnvelope>
+where
+    V: Render + 'static,
+    R: Send + 'static,
+    Build: FnOnce(&mut Window, &mut Context<V>) -> V + 'static,
+    Run: std::ops::AsyncFnOnce(
+            &mut gpui_kit::AsyncApp,
+            gpui_kit::WindowHandle<Root>,
+            Entity<V>,
+            usize,
+        ) -> Result<R, ErrorEnvelope>
+        + 'static,
+    OnEmpty: FnOnce() -> Result<R, ErrorEnvelope>,
+{
+    let output: Arc<Mutex<Option<Result<R, ErrorEnvelope>>>> = Arc::new(Mutex::new(None));
+    let slot = Arc::clone(&output);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply_delta_theme(cx);
+            let captured: Arc<Mutex<Option<Entity<V>>>> = Arc::new(Mutex::new(None));
+            let entity_slot = Arc::clone(&captured);
+            let opened = cx.open_window(hidden_options(), move |window, cx| {
+                let view = cx.new(|cx| build(window, cx));
+                *crate::lock_or_recover(&entity_slot) = Some(view.clone());
+                cx.new(|cx| Root::new(view, window, cx))
+            });
+            let handle = match opened {
+                Ok(handle) => handle,
+                Err(error) => {
+                    *crate::lock_or_recover(&slot) = Some(Err(ErrorEnvelope::new(
+                        "NATIVE_WINDOW_FAILED",
+                        error.to_string(),
+                        false,
+                    )));
+                    cx.quit();
+                    return;
+                }
+            };
+            let hwnd = match native_window() {
+                Ok(hwnd) => hwnd,
+                Err(error) => {
+                    *crate::lock_or_recover(&slot) = Some(Err(error));
+                    cx.quit();
+                    return;
+                }
+            };
+            cx.spawn(async move |cx| {
+                let outcome = match initialize_native_window(hwnd) {
+                    Ok(()) => {
+                        let view = crate::lock_or_recover(&captured).take();
+                        match view {
+                            Some(view) => run(cx, handle, view, hwnd).await,
+                            None => Err(ErrorEnvelope::new(
+                                "NATIVE_WINDOW_FAILED",
+                                "未能获取验证视图实体",
+                                false,
+                            )),
+                        }
+                    }
+                    Err(error) => Err(error),
+                };
+                *crate::lock_or_recover(&slot) = Some(outcome);
+                if cx
+                    .update_window(handle.into(), |_, window, cx| {
+                        window.remove_window();
+                        cx.quit();
+                    })
+                    .is_err()
+                {
+                    cx.update(|cx| cx.quit());
+                }
+            })
+            .detach();
+        });
+    let result = crate::lock_or_recover(&output).take();
+    match result {
+        Some(res) => res,
+        None => on_empty(),
+    }
+}
+
 pub(crate) fn run_native_smoke(
     host: AppHost,
     data_dir: PathBuf,
     entry_started: Instant,
     navigation_cycles: usize,
 ) -> Result<Value, ErrorEnvelope> {
-    let output = Arc::new(Mutex::new(None));
-    let result = Arc::clone(&output);
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-        gpui_kit::init(cx);
-        crate::theme::apply_delta_theme(cx);
-        let wb = Arc::new(Mutex::new(None));
-        let captured = Arc::clone(&wb);
-        let opened = cx.open_window(hidden_options(), move |window, cx| {
-            let view = cx.new(|cx| DeltaWorkbench::new(host, data_dir, NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(), window, cx));
-            *captured.lock().unwrap() = Some(view.clone());
-            cx.new(|cx| Root::new(view, window, cx))
-        });
-        let handle = match opened { Ok(handle) => handle, Err(error) => {
-            *result.lock().unwrap() = Some(Err(ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false))); cx.quit(); return;
-        }};
-        let hwnd = match native_window() { Ok(hwnd) => hwnd, Err(error) => { *result.lock().unwrap() = Some(Err(error)); cx.quit(); return; } };
-        cx.spawn(async move |cx| {
-            if let Err(error) = initialize_native_window(hwnd) {
-                *result.lock().unwrap() = Some(Err(error)); cx.update(|cx| cx.quit()); return;
-            }
+    run_in_hidden_window(
+        move |window, cx| {
+            DeltaWorkbench::new(
+                host,
+                data_dir,
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                window,
+                cx,
+            )
+        },
+        async move |cx, handle, view, hwnd| {
             let deadline = Instant::now() + Duration::from_secs(30);
             let mut pages = 0;
             let mut first_screen_ms = None;
             let mut navigation_started: Option<Instant> = None;
             let mut navigation_times_us = Vec::new();
-            const PAGES: [&str; 6] = ["nav.overview", "nav.market", "nav.assets", "nav.journal", "nav.data_center", "nav.settings"];
+            const PAGES: [&str; 6] = [
+                "nav.overview",
+                "nav.market",
+                "nav.assets",
+                "nav.journal",
+                "nav.data_center",
+                "nav.settings",
+            ];
             loop {
-                cx.background_executor().timer(Duration::from_millis(20)).await;
-                let check = cx.update_window(handle.into(), |_, window, cx| {
-                    quiet_window_check()?;
-                    let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                    let ready = view.update(cx, |view, cx| {
-                        !view.controller.read(cx).busy && view.state.lock().unwrap().overview.is_some()
-                    });
-                    if Instant::now() >= deadline { return Err(ErrorEnvelope::new("SMOKE_TIMEOUT", "工作台未在期限内完成初始化", false)); }
-                    window.refresh();
-                    Ok(ready)
-                });
-                let ready = match check {
-                    Ok(Ok(ready)) => ready,
-                    Ok(Err(error)) => { *result.lock().unwrap() = Some(Err(error)); break; }
-                    Err(error) => { *result.lock().unwrap() = Some(Err(ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false))); break; }
-                };
-                if let Err(error) = paint_native_window(hwnd) { *result.lock().unwrap() = Some(Err(error)); break; }
+                cx.background_executor()
+                    .timer(Duration::from_millis(20))
+                    .await;
+                let ready = cx
+                    .update_window(handle.into(), |_, window, cx| {
+                        quiet_window_check()?;
+                        let ready = view.update(cx, |view, cx| {
+                            !view.controller.read(cx).busy
+                                && crate::lock_or_recover(&view.state).overview.is_some()
+                        });
+                        if Instant::now() >= deadline {
+                            return Err(ErrorEnvelope::new(
+                                "SMOKE_TIMEOUT",
+                                "工作台未在期限内完成初始化",
+                                false,
+                            ));
+                        }
+                        window.refresh();
+                        Ok(ready)
+                    })
+                    .map_err(|error| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false)
+                    })??;
+                paint_native_window(hwnd)?;
                 if ready {
-                    first_screen_ms.get_or_insert_with(|| entry_started.elapsed().as_millis() as u64);
+                    first_screen_ms
+                        .get_or_insert_with(|| entry_started.elapsed().as_millis() as u64);
                     if let Some(started) = navigation_started.take() {
                         navigation_times_us.push(started.elapsed().as_micros() as u64);
                     }
                     if pages >= PAGES.len() * navigation_cycles {
-                        let value = cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                            let nav = view.read(cx).state.lock().unwrap().overview.as_ref().unwrap().value.net_worth;
-                            if delta_app::to_canonical_text(nav) != "2068" { return Err(ErrorEnvelope::new("SMOKE_NAV", "AC-02 NAV 不符合手算期望", false)); }
-                            Ok(json!({"status":"passed","mode":"native-hidden-window-smoke", "native_window_created":true,"rendered_pages":PAGES.len(),
-                                "navigation_actions":pages,"first_screen_ms":first_screen_ms,"navigation_times_us":navigation_times_us,
-                                "overview_nav":"2068","visible_windows":0,"focus_stolen":false,"window_size":format!("{:?}",window.bounds().size),
-                                "gpu":format!("{:?}",window.gpu_specs()),"msvc_stack_bytes":8_388_608,"scale_factor":window.scale_factor(),
-                                "first_screen_fixture":"AC-02 local library; Rust entry through host load and first native paint, including synthetic fixture setup; excludes OS executable loader",
-                                "interaction_measurement":"navigation dispatch through settings persistence, controller completion and native paint; includes the 20 ms observer interval"}))
-                        });
-                        *result.lock().unwrap() = Some(value.map_err(|error| ErrorEnvelope::new("SMOKE_WINDOW", error.to_string(), false)).and_then(|value| value));
-                        break;
+                        return cx
+                            .update_window(handle.into(), |_, window, cx| {
+                                let nav = crate::lock_or_recover(&view.read(cx).state)
+                                    .overview
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        ErrorEnvelope::new("SMOKE_NAV", "概览数据缺失", false)
+                                    })?
+                                    .value
+                                    .net_worth;
+                                if delta_app::to_canonical_text(nav) != "2068" {
+                                    return Err(ErrorEnvelope::new(
+                                        "SMOKE_NAV",
+                                        "AC-02 NAV 不符合手算期望",
+                                        false,
+                                    ));
+                                }
+                                Ok(json!({"status":"passed","mode":"native-hidden-window-smoke", "native_window_created":true,"rendered_pages":PAGES.len(),
+                                    "navigation_actions":pages,"first_screen_ms":first_screen_ms,"navigation_times_us":navigation_times_us,
+                                    "overview_nav":"2068","visible_windows":0,"focus_stolen":false,"window_size":format!("{:?}",window.bounds().size),
+                                    "gpu":format!("{:?}",window.gpu_specs()),"msvc_stack_bytes":8_388_608,"scale_factor":window.scale_factor(),
+                                    "first_screen_fixture":"AC-02 local library; Rust entry through host load and first native paint, including synthetic fixture setup; excludes OS executable loader",
+                                    "interaction_measurement":"navigation dispatch through settings persistence, controller completion and native paint; includes the 20 ms observer interval"}))
+                            })
+                            .map_err(|error| {
+                                ErrorEnvelope::new("SMOKE_WINDOW", error.to_string(), false)
+                            })?;
                     }
                     navigation_started = Some(Instant::now());
-                    if let Err(error) = cx.update_window(handle.into(), |_, window, cx| {
-                        let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                        view.update(cx, |view, cx| view.controller.update(cx, |controller, cx| controller.navigate(PAGES[pages % PAGES.len()], window, cx)));
-                    }) { *result.lock().unwrap() = Some(Err(ErrorEnvelope::new("SMOKE_WINDOW", error.to_string(), false))); break; }
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.controller.update(cx, |controller, cx| {
+                                controller.navigate(PAGES[pages % PAGES.len()], window, cx)
+                            })
+                        });
+                    })
+                    .map_err(|error| {
+                        ErrorEnvelope::new("SMOKE_WINDOW", error.to_string(), false)
+                    })?;
                     pages += 1;
                 }
             }
-            let _ = cx.update_window(handle.into(), |_, window, cx| { window.remove_window(); cx.quit(); });
-        }).detach();
-    });
-    let result = output.lock().unwrap().take().ok_or_else(|| {
-        ErrorEnvelope::new("SMOKE_INTERRUPTED", "原生窗口验证没有产生结果", false)
-    })?;
-    result
+        },
+        || {
+            Err(ErrorEnvelope::new(
+                "SMOKE_INTERRUPTED",
+                "原生窗口验证没有产生结果",
+                false,
+            ))
+        },
+    )
 }
 
 struct NativeBenchmark {
     bars: Vec<BarRecord>,
     viewport: KlineViewport,
-    slice: KlineWindowSliceDto,
+    slice: Arc<KlineWindowSliceDto>,
     table: Entity<TableState<TransactionsTableDelegate>>,
     table_phase: bool,
     frames: usize,
@@ -295,7 +425,7 @@ impl NativeBenchmark {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let bars = delta_app::kline::synthetic_benchmark_bars(100_000);
         let viewport = KlineViewport::new(bars.len(), 1000);
-        let slice = viewport.build_window_slice(
+        let slice = Arc::new(viewport.build_window_slice(
             "NASDAQ:AAPL",
             "XNAS",
             "1d",
@@ -305,7 +435,7 @@ impl NativeBenchmark {
             &[],
             &[],
             1200,
-        );
+        ));
         let table = cx.new(|cx| {
             TableState::new(
                 TransactionsTableDelegate::new(TransactionsTableDelegate::synthetic_100k_rows()),
@@ -373,7 +503,7 @@ impl NativeBenchmark {
                 },
                 0.5,
             );
-            self.slice = self.viewport.build_window_slice(
+            self.slice = Arc::new(self.viewport.build_window_slice(
                 "NASDAQ:AAPL",
                 "XNAS",
                 "1d",
@@ -383,7 +513,7 @@ impl NativeBenchmark {
                 &[],
                 &[],
                 1200,
-            );
+            ));
             if self.frames > 20 {
                 self.chart_updates.push(start.elapsed().as_micros() as u64);
             }
@@ -434,7 +564,7 @@ impl Render for NativeBenchmark {
             root = root.child(
                 KlineChartView::new(
                     "native-benchmark-chart",
-                    self.slice.clone(),
+                    Arc::clone(&self.slice),
                     MarketColorConvention::RedUpGreenDown,
                 )
                 .render_chart(cx),
@@ -457,101 +587,45 @@ pub(crate) fn percentiles(times: &[u64]) -> (u64, u64, u64) {
 }
 
 pub(crate) fn run_native_benchmark() -> Result<UiBenchReport, ErrorEnvelope> {
-    let output = Arc::new(Mutex::new(None));
-    let result = Arc::clone(&output);
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            crate::theme::apply_delta_theme(cx);
-            let captured = Arc::new(Mutex::new(None));
-            let entity = Arc::clone(&captured);
-            let opened = cx.open_window(hidden_options(), move |window, cx| {
-                let view = cx.new(|cx| NativeBenchmark::new(window, cx));
-                *entity.lock().unwrap() = Some(view.clone());
-                cx.new(|cx| Root::new(view, window, cx))
-            });
-            let handle = match opened {
-                Ok(handle) => handle,
-                Err(error) => {
-                    *result.lock().unwrap() = Some(Err(ErrorEnvelope::new(
-                        "NATIVE_WINDOW_FAILED",
-                        error.to_string(),
-                        false,
-                    )));
-                    cx.quit();
-                    return;
-                }
-            };
-            let hwnd = match native_window() {
-                Ok(hwnd) => hwnd,
-                Err(error) => {
-                    *result.lock().unwrap() = Some(Err(error));
-                    cx.quit();
-                    return;
-                }
-            };
-            cx.spawn(async move |cx| {
-                if let Err(error) = initialize_native_window(hwnd) {
-                    *result.lock().unwrap() = Some(Err(error));
-                    cx.update(|cx| cx.quit());
-                    return;
-                }
-                let deadline = Instant::now() + Duration::from_secs(90);
-                let view = captured.lock().unwrap().take().unwrap();
-                loop {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(1))
-                        .await;
-                    let start = Instant::now();
-                    let update = cx.update_window(handle.into(), |_, window, cx| {
+    run_in_hidden_window(
+        NativeBenchmark::new,
+        async move |cx, handle, view, hwnd| {
+            let deadline = Instant::now() + Duration::from_secs(90);
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(1))
+                    .await;
+                let start = Instant::now();
+                let next = cx
+                    .update_window(handle.into(), |_, window, cx| {
                         view.update(cx, |view, cx| view.next_frame(window, cx))
-                    });
-                    match update {
-                        Ok(Ok(Some(report))) => {
-                            *result.lock().unwrap() = Some(Ok(report));
-                            break;
-                        }
-                        Ok(Err(error)) => {
-                            *result.lock().unwrap() = Some(Err(error));
-                            break;
-                        }
-                        Err(error) => {
-                            *result.lock().unwrap() = Some(Err(ErrorEnvelope::new(
-                                "NATIVE_WINDOW_FAILED",
-                                error.to_string(),
-                                false,
-                            )));
-                            break;
-                        }
-                        Ok(Ok(None)) => {}
-                    }
-                    if let Err(error) = paint_native_window(hwnd) {
-                        *result.lock().unwrap() = Some(Err(error));
-                        break;
-                    }
-                    let elapsed = start.elapsed();
-                    view.update(cx, |view, _| view.record_frame_time(elapsed));
-                    if Instant::now() >= deadline {
-                        *result.lock().unwrap() = Some(Err(ErrorEnvelope::new(
-                            "BENCH_TIMEOUT",
-                            "原生窗口未完成规定帧数",
-                            false,
-                        )));
-                        break;
-                    }
+                    })
+                    .map_err(|error| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false)
+                    })??;
+                if let Some(report) = next {
+                    return Ok(report);
                 }
-                let _ = cx.update_window(handle.into(), |_, window, cx| {
-                    window.remove_window();
-                    cx.quit();
-                });
-            })
-            .detach();
-        });
-    let result = output.lock().unwrap().take().ok_or_else(|| {
-        ErrorEnvelope::new("BENCH_INTERRUPTED", "原生窗口验证没有产生结果", false)
-    })?;
-    result
+                paint_native_window(hwnd)?;
+                let elapsed = start.elapsed();
+                view.update(cx, |view, _| view.record_frame_time(elapsed));
+                if Instant::now() >= deadline {
+                    return Err(ErrorEnvelope::new(
+                        "BENCH_TIMEOUT",
+                        "原生窗口未完成规定帧数",
+                        false,
+                    ));
+                }
+            }
+        },
+        || {
+            Err(ErrorEnvelope::new(
+                "BENCH_INTERRUPTED",
+                "原生窗口验证没有产生结果",
+                false,
+            ))
+        },
+    )
 }
 
 /// Gate-only resident options (`M3-A-02`, `M3-A-04`, `M3-A-08`). The resident app runs the real
@@ -611,141 +685,108 @@ pub(crate) fn run_native_resident(
     }
     crate::lifecycle::IGNORE_CONTROL.store(options.ignore_control, Ordering::SeqCst);
     crate::lifecycle::initialize_updates(data_dir.clone(), options.apply_update);
-    let failure = Arc::new(Mutex::new(None));
-    let failed = Arc::clone(&failure);
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            crate::theme::apply_delta_theme(cx);
-            let wb = Arc::new(Mutex::new(None));
-            let captured = Arc::clone(&wb);
+    let host_shutdown = host.clone();
+    let res = run_in_hidden_window(
+        move |window, cx| {
             let as_of = chrono::Utc::now().date_naive();
-            let opened = cx.open_window(hidden_options(), move |window, cx| {
-                let view = cx.new(|cx| DeltaWorkbench::new(host, data_dir, as_of, window, cx));
-                *captured.lock().unwrap() = Some(view.clone());
-                cx.new(|cx| Root::new(view, window, cx))
-            });
-            let handle = match opened {
-                Ok(handle) => handle,
-                Err(error) => {
-                    *failed.lock().unwrap() = Some(ErrorEnvelope::new("NATIVE_WINDOW_FAILED", error.to_string(), false));
-                    cx.quit();
-                    return;
+            DeltaWorkbench::new(host, data_dir, as_of, window, cx)
+        },
+        async move |cx, handle, view, hwnd| {
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(options.max_seconds);
+            let mut ready = false;
+            let mut apply_sent = false;
+            let mut busy_prompted = false;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                if Instant::now() >= deadline {
+                    emit_event("resident-timeout", json!({}));
+                    break;
                 }
-            };
-            let hwnd = match native_window() {
-                Ok(hwnd) => hwnd,
-                Err(error) => {
-                    *failed.lock().unwrap() = Some(error);
-                    cx.quit();
-                    return;
-                }
-            };
-            cx.spawn(async move |cx| {
-                let outcome: Result<(), ErrorEnvelope> = async {
-                    initialize_native_window(hwnd)?;
-                    let started = Instant::now();
-                    let deadline = started + Duration::from_secs(options.max_seconds);
-                    let mut ready = false;
-                    let mut apply_sent = false;
-                    let mut busy_prompted = false;
-                    loop {
-                        cx.background_executor().timer(Duration::from_millis(100)).await;
-                        if Instant::now() >= deadline {
-                            emit_event("resident-timeout", json!({}));
-                            break;
-                        }
-                        let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                        let (idle, has_job) = cx
-                            .update_window(handle.into(), |_, window, cx| {
-                                window.refresh();
-                                view.update(cx, |view, cx| {
-                                    let state = view.state.lock().unwrap();
-                                    (
-                                        !view.controller.read(cx).busy && state.overview.is_some(),
-                                        state.active_sync_job.is_some(),
-                                    )
-                                })
-                            })
-                            .map_err(|e| ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false))?;
-                        paint_native_window(hwnd)?;
-                        if !ready {
-                            if !idle {
-                                continue;
-                            }
-                            ready = true;
-                            cx.update_window(handle.into(), |_, _, cx| {
-                                view.update(cx, |view, _| {
-                                    let mut state = view.state.lock().unwrap();
-                                    if let Some(text) = &options.pending_note {
-                                        // An edit whose autosave has not run yet.
-                                        state.note_editor.title_buffer = RESIDENT_PENDING_NOTE_TITLE.into();
-                                        state.note_editor.body_buffer = text.clone();
-                                        state.note_editor.status = delta_app::AutosaveStatus::Editing;
-                                    }
-                                    if let Some(ms) = options.busy_sync_ms {
-                                        state.start_verification_cancellation_job(ms)?;
-                                    }
-                                    Ok::<_, ErrorEnvelope>(())
-                                })
-                            })
-                            .map_err(|e| ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false))??;
-                            emit_event(
-                                "resident-ready",
-                                json!({"process_id": std::process::id(), "build_info": delta_app::build_info("delta-desktop"),
-                                    "pending_note": options.pending_note.is_some(), "busy_sync": options.busy_sync_ms.is_some()}),
-                            );
-                        }
-                        if options.apply_update {
-                            match update_state().map(|state| state.status) {
-                                Some(UpdateStatus::Ready { .. }) if !apply_sent => {
-                                    apply_sent = true;
-                                    APPLY_REQUESTED.store(true, Ordering::SeqCst);
-                                }
-                                Some(UpdateStatus::BusyConfirm { .. }) => {
-                                    // The prompt is shown and nothing happens without
-                                    // confirmation; once the work has finished the
-                                    // simulated user asks again.
-                                    busy_prompted = true;
-                                    if !has_job {
-                                        emit_event("update-retry-when-idle", json!({}));
-                                        crate::lifecycle::set_update_status(UpdateStatus::Ready {
-                                            version: update_state()
-                                                .and_then(|s| s.offer.map(|o| o.manifest.version))
-                                                .unwrap_or_default(),
-                                        });
-                                        APPLY_REQUESTED.store(true, Ordering::SeqCst);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        let _ = busy_prompted;
+                let (idle, has_job) = cx
+                    .update_window(handle.into(), |_, window, cx| {
+                        window.refresh();
+                        view.update(cx, |view, cx| {
+                            let state = crate::lock_or_recover(&view.state);
+                            (
+                                !view.controller.read(cx).busy && state.overview.is_some(),
+                                state.active_sync_job.is_some(),
+                            )
+                        })
+                    })
+                    .map_err(|e| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
+                    })?;
+                paint_native_window(hwnd)?;
+                if !ready {
+                    if !idle {
+                        continue;
                     }
-                    Ok(())
+                    ready = true;
+                    cx.update_window(handle.into(), |_, _, cx| {
+                        view.update(cx, |view, _| {
+                            let mut state = crate::lock_or_recover(&view.state);
+                            if let Some(text) = &options.pending_note {
+                                // An edit whose autosave has not run yet.
+                                state.note_editor.title_buffer = RESIDENT_PENDING_NOTE_TITLE.into();
+                                state.note_editor.body_buffer = text.clone();
+                                state.note_editor.status = delta_app::AutosaveStatus::Editing;
+                            }
+                            if let Some(ms) = options.busy_sync_ms {
+                                state.start_verification_cancellation_job(ms)?;
+                            }
+                            Ok::<_, ErrorEnvelope>(())
+                        })
+                    })
+                    .map_err(|e| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
+                    })??;
+                    emit_event(
+                        "resident-ready",
+                        json!({"process_id": std::process::id(), "build_info": delta_app::build_info("delta-desktop"),
+                            "pending_note": options.pending_note.is_some(), "busy_sync": options.busy_sync_ms.is_some()}),
+                    );
                 }
-                .await;
-                if let Err(error) = outcome {
-                    *failed.lock().unwrap() = Some(error);
+                if options.apply_update {
+                    match update_state().map(|state| state.status) {
+                        Some(UpdateStatus::Ready { .. }) if !apply_sent => {
+                            apply_sent = true;
+                            APPLY_REQUESTED.store(true, Ordering::SeqCst);
+                        }
+                        Some(UpdateStatus::BusyConfirm { .. }) => {
+                            busy_prompted = true;
+                            if !has_job {
+                                emit_event("update-retry-when-idle", json!({}));
+                                crate::lifecycle::set_update_status(UpdateStatus::Ready {
+                                    version: update_state()
+                                        .and_then(|s| s.offer.map(|o| o.manifest.version))
+                                        .unwrap_or_default(),
+                                });
+                                APPLY_REQUESTED.store(true, Ordering::SeqCst);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                cx.update(|cx| cx.quit());
-            })
-            .detach();
-        });
-    let outcome = failure.lock().unwrap().take();
-    match outcome {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+                let _ = busy_prompted;
+            }
+            Ok(())
+        },
+        // `DeltaWorkbench` calls `cx.quit()` cleanly on QuitForUpdate / ApplyUpdate.
+        || Ok(()),
+    );
+    let _ = host_shutdown.shutdown();
+    res
 }
 
 // ============================================================================
 // M4 Hidden Native-Window Smoke & M4-K03 / M4-A-17 Next-Bar Latency Benchmark
 // ============================================================================
 
-/// M4-K03 / M4-A-17 budget: p95 end-to-end `"下一根"` latency <= 100.0 ms.
-pub const M4_K03_P95_BUDGET_MS: f64 = 100.0;
+/// M4-K03 / M4-A-17 budget: p95 end-to-end `"下一根"` latency <= 100.0 ms (`XCR-01`).
+pub use delta_app::M4_K03_P95_BUDGET_MS;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M4UiSmokeReport {
@@ -802,10 +843,10 @@ pub struct M4NextBarBenchReport {
     pub build_info: Value,
 }
 
-async fn wait_workbench_idle_and_paint(
+pub(crate) async fn wait_workbench_idle_and_paint(
     cx: &mut gpui_kit::AsyncApp,
     handle: gpui_kit::WindowHandle<Root>,
-    wb: &Arc<Mutex<Option<Entity<DeltaWorkbench>>>>,
+    view: &Entity<DeltaWorkbench>,
     hwnd: usize,
     deadline: Instant,
 ) -> Result<(), ErrorEnvelope> {
@@ -817,7 +858,6 @@ async fn wait_workbench_idle_and_paint(
             .update_window(handle.into(), |_, window, cx| {
                 quiet_window_check()?;
                 window.refresh();
-                let view = wb.lock().unwrap().as_ref().unwrap().clone();
                 Ok::<bool, ErrorEnvelope>(view.read(cx).controller.read(cx).is_idle())
             })
             .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))??;
@@ -874,6 +914,9 @@ pub fn run_m4_ui_smoke(cli_data_dir: Option<&Path>) -> Result<M4UiSmokeReport, E
             fee_profile_version_id: BUILTIN_FEE_CRYPTO_RATE_ID.to_string(),
             hidden_mode: true,
             create_and_start: true,
+            timeframe: delta_app::Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         })?;
         let run_id = created.run_id.clone();
 
@@ -881,195 +924,134 @@ pub fn run_m4_ui_smoke(cli_data_dir: Option<&Path>) -> Result<M4UiSmokeReport, E
         let data_dir_for_ui = tmp_dir.clone();
         let run_id_for_ui = run_id.clone();
         let power_for_ui = power_throttling.clone();
-        let output: Arc<Mutex<Option<Result<M4UiSmokeReport, ErrorEnvelope>>>> =
-            Arc::new(Mutex::new(None));
-        let result_slot = Arc::clone(&output);
+        let res = run_in_hidden_window(
+            move |window, cx| {
+                DeltaWorkbench::new(
+                    host_for_ui,
+                    data_dir_for_ui,
+                    NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                    window,
+                    cx,
+                )
+            },
+            async move |cx, handle, view, hwnd| {
+                let deadline = Instant::now() + Duration::from_secs(45);
+                let paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
 
-        gpui_kit::application()
-            .with_assets(gpui_kit::assets::Assets)
-            .run(move |cx| {
-                gpui_kit::init(cx);
-                crate::theme::apply_delta_theme(cx);
-                let wb = Arc::new(Mutex::new(None));
-                let captured = Arc::clone(&wb);
-                let opened = cx.open_window(hidden_options(), move |window, cx| {
-                    let view = cx.new(|cx| {
-                        DeltaWorkbench::new(
-                            host_for_ui,
-                            data_dir_for_ui,
-                            NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
-                            window,
-                            cx,
-                        )
-                    });
-                    *captured.lock().unwrap() = Some(view.clone());
-                    cx.new(|cx| Root::new(view, window, cx))
-                });
-                let handle = match opened {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *result_slot.lock().unwrap() = Some(Err(ErrorEnvelope::new(
-                            "NATIVE_WINDOW_FAILED",
-                            e.to_string(),
-                            false,
-                        )));
-                        cx.quit();
-                        return;
-                    }
-                };
-                let hwnd = match native_window() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *result_slot.lock().unwrap() = Some(Err(e));
-                        cx.quit();
-                        return;
-                    }
-                };
-                cx.spawn(async move |cx| {
-                    let outcome: Result<M4UiSmokeReport, ErrorEnvelope> = async {
-                        initialize_native_window(hwnd)?;
-                        let deadline = Instant::now() + Duration::from_secs(45);
-                        let paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
-
-                        // 1. Wait initial load, navigate to `nav.training`, and open active workspace
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                            view.update(cx, |view, cx| {
-                                view.controller.update(cx, |ctl, cx| {
-                                    ctl.navigate("nav.training", window, cx);
-                                    ctl.dispatch(
-                                        UiAction::Training(Box::new(
-                                            TrainingUiAction::ResumeOrOpenRun(
-                                                run_id_for_ui.clone(),
-                                            ),
-                                        )),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            });
-                        })
-                        .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        // Extra paint so chart canvas commits bounds & paints
-                        cx.update_window(handle.into(), |_, window, _| window.refresh())
-                            .map_err(|e| {
-                                ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false)
-                            })?;
-                        paint_native_window(hwnd)?;
-                        let workspace_chart_paints =
-                            PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
-                        if workspace_chart_paints == 0 {
-                            return Err(ErrorEnvelope::new(
-                                "M4_SMOKE_CHART_NOT_PAINTED",
-                                "模拟训练工作台 K 线未产生原生绘制帧",
-                                false,
-                            ));
-                        }
-
-                        // 2. Advance 1 bar, finish, and reveal
-                        for act in [
-                            TrainingUiAction::AdvanceBar(run_id_for_ui.clone()),
-                            TrainingUiAction::FinishRun(run_id_for_ui.clone()),
-                            TrainingUiAction::RevealRun(run_id_for_ui.clone()),
-                        ] {
-                            cx.update_window(handle.into(), |_, window, cx| {
-                                let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                                view.update(cx, |view, cx| {
-                                    view.controller.update(cx, |ctl, cx| {
-                                        ctl.dispatch(UiAction::Training(Box::new(act)), window, cx);
-                                    });
-                                });
-                            })
-                            .map_err(|e| {
-                                ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false)
-                            })?;
-                            wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        }
-                        cx.update_window(handle.into(), |_, window, _| window.refresh())
-                            .map_err(|e| {
-                                ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false)
-                            })?;
-                        paint_native_window(hwnd)?;
-                        let total_chart_paints =
-                            PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
-
-                        let rep = cx
-                            .update_window(handle.into(), |_, window, cx| {
-                                quiet_window_check()?;
-                                let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                                let revealed_bars = view
-                                    .read(cx)
-                                    .state
-                                    .lock()
-                                    .unwrap()
-                                    .training
-                                    .reveal
-                                    .as_ref()
-                                    .map(|r| r.post_finish_bars.len())
-                                    .unwrap_or(0);
-                                if revealed_bars != 60 {
-                                    return Err(ErrorEnvelope::new(
-                                        "M4_SMOKE_REVEAL_BARS",
-                                        format!("揭示后续 K 线数量异常: {revealed_bars}"),
-                                        false,
-                                    ));
-                                }
-                                Ok(M4UiSmokeReport {
-                                    status: "passed".to_string(),
-                                    mode: "m4-native-hidden-window-smoke".to_string(),
-                                    executed_at: chrono::Utc::now().to_rfc3339(),
-                                    build_profile: if cfg!(debug_assertions) {
-                                        "dev"
-                                    } else {
-                                        "release"
-                                    }
-                                    .to_string(),
-                                    power_throttling: power_for_ui.clone(),
-                                    native_window_created: true,
-                                    visible_windows: count_visible_windows_for_current_process(),
-                                    focus_stolen: false,
-                                    window_size: format!("{:?}", window.bounds().size),
-                                    scale_factor: window.scale_factor(),
-                                    gpu: format!("{:?}", window.gpu_specs()),
-                                    run_id: run_id_for_ui.clone(),
-                                    simulated_badge: SIMULATED_TRAINING_BADGE.to_string(),
-                                    workspace_chart_paints,
-                                    total_chart_paints,
-                                    revealed_post_finish_bars: revealed_bars,
-                                    elapsed_ms: started.elapsed().as_millis() as u64,
-                                    build_info: delta_app::build_info("delta-desktop"),
-                                })
-                            })
-                            .map_err(|e| {
-                                ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false)
-                            })??;
-                        Ok(rep)
-                    }
-                    .await;
-                    *result_slot.lock().unwrap() = Some(outcome);
-                    let _ = cx.update_window(handle.into(), |_, window, cx| {
-                        window.remove_window();
-                        cx.quit();
+                // 1. Wait initial load, navigate to `nav.training`, and open active workspace
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.controller.update(cx, |ctl, cx| {
+                            ctl.navigate("nav.training", window, cx);
+                            ctl.dispatch(
+                                UiAction::Training(Box::new(TrainingUiAction::ResumeOrOpenRun(
+                                    run_id_for_ui.clone(),
+                                ))),
+                                window,
+                                cx,
+                            );
+                        });
                     });
                 })
-                .detach();
-            });
+                .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                // Extra paint so chart canvas commits bounds & paints
+                cx.update_window(handle.into(), |_, window, _| window.refresh())
+                    .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?;
+                paint_native_window(hwnd)?;
+                let workspace_chart_paints =
+                    PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
+                if workspace_chart_paints == 0 {
+                    return Err(ErrorEnvelope::new(
+                        "M4_SMOKE_CHART_NOT_PAINTED",
+                        "模拟训练工作台 K 线未产生原生绘制帧",
+                        false,
+                    ));
+                }
 
+                // 2. Advance 1 bar, finish, and reveal
+                for act in [
+                    TrainingUiAction::AdvanceBar(run_id_for_ui.clone()),
+                    TrainingUiAction::FinishRun(run_id_for_ui.clone()),
+                    TrainingUiAction::RevealRun(run_id_for_ui.clone()),
+                ] {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.controller.update(cx, |ctl, cx| {
+                                ctl.dispatch(UiAction::Training(Box::new(act)), window, cx);
+                            });
+                        });
+                    })
+                    .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?;
+                    wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                }
+                cx.update_window(handle.into(), |_, window, _| window.refresh())
+                    .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?;
+                paint_native_window(hwnd)?;
+                let total_chart_paints = PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
+
+                cx.update_window(handle.into(), |_, window, cx| {
+                    quiet_window_check()?;
+                    let revealed_bars = crate::lock_or_recover(&view.read(cx).state)
+                        .training
+                        .reveal
+                        .as_ref()
+                        .map(|r| r.post_finish_bars.len())
+                        .unwrap_or(0);
+                    if revealed_bars != 60 {
+                        return Err(ErrorEnvelope::new(
+                            "M4_SMOKE_REVEAL_BARS",
+                            format!("揭示后续 K 线数量异常: {revealed_bars}"),
+                            false,
+                        ));
+                    }
+                    Ok(M4UiSmokeReport {
+                        status: "passed".to_string(),
+                        mode: "m4-native-hidden-window-smoke".to_string(),
+                        executed_at: chrono::Utc::now().to_rfc3339(),
+                        build_profile: if cfg!(debug_assertions) {
+                            "dev"
+                        } else {
+                            "release"
+                        }
+                        .to_string(),
+                        power_throttling: power_for_ui.clone(),
+                        native_window_created: true,
+                        visible_windows: count_visible_windows_for_current_process(),
+                        focus_stolen: false,
+                        window_size: format!("{:?}", window.bounds().size),
+                        scale_factor: window.scale_factor(),
+                        gpu: format!("{:?}", window.gpu_specs()),
+                        run_id: run_id_for_ui.clone(),
+                        simulated_badge: SIMULATED_TRAINING_BADGE.to_string(),
+                        workspace_chart_paints,
+                        total_chart_paints,
+                        revealed_post_finish_bars: revealed_bars,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        build_info: delta_app::build_info("delta-desktop"),
+                    })
+                })
+                .map_err(|e| ErrorEnvelope::new("SMOKE_WINDOW", e.to_string(), false))?
+            },
+            || {
+                Err(ErrorEnvelope::new(
+                    "M4_SMOKE_INTERRUPTED",
+                    "M4 原生窗口验证没有产生结果",
+                    false,
+                ))
+            },
+        );
         let _ = host.shutdown();
-        let taken = output.lock().unwrap().take();
-        taken.ok_or_else(|| {
-            ErrorEnvelope::new("M4_SMOKE_INTERRUPTED", "M4 原生窗口验证没有产生结果", false)
-        })?
+        res
     })();
 
-    owned.cleanup()?;
-    inner_res
+    finish_verification(&owned, inner_res)
 }
 
 struct M4NextBarBenchView {
     snapshot: TrainingWorkspaceSnapshotDto,
+    slice: Arc<KlineWindowSliceDto>,
 }
 
 impl Render for M4NextBarBenchView {
@@ -1078,7 +1060,7 @@ impl Render for M4NextBarBenchView {
         let ccy = &ws.account.quote_currency;
         let chart = KlineChartView::new(
             "m4-k03-bench-chart",
-            ws.chart_slice.clone(),
+            Arc::clone(&self.slice),
             MarketColorConvention::RedUpGreenDown,
         )
         .with_masked_training_labels(ws.run.display_symbol.clone(), ws.bar_labels.clone())
@@ -1192,6 +1174,9 @@ pub fn run_m4_k03_next_bar_bench(
             fee_profile_version_id: BUILTIN_FEE_CRYPTO_RATE_ID.to_string(),
             hidden_mode: true,
             create_and_start: true,
+            timeframe: delta_app::Timeframe::D1,
+            use_practice_account: false,
+            allocation: None,
         })?;
         let run_id = created.run_id.clone();
 
@@ -1228,253 +1213,209 @@ pub fn run_m4_k03_next_bar_bench(
         let host_for_bench = host.clone();
         let run_id_for_bench = run_id.clone();
         let power_for_bench = power_throttling.clone();
-        let output: Arc<Mutex<Option<Result<M4NextBarBenchReport, ErrorEnvelope>>>> =
-            Arc::new(Mutex::new(None));
-        let result_slot = Arc::clone(&output);
-
-        gpui_kit::application()
-            .with_assets(gpui_kit::assets::Assets)
-            .run(move |cx| {
-                gpui_kit::init(cx);
-                crate::theme::apply_delta_theme(cx);
-                let captured = Arc::new(Mutex::new(None));
-                let entity_slot = Arc::clone(&captured);
-                let opened = cx.open_window(hidden_options(), move |window, cx| {
-                    let view = cx.new(|_| M4NextBarBenchView {
-                        snapshot: initial_snap,
-                    });
-                    *entity_slot.lock().unwrap() = Some(view.clone());
-                    cx.new(|cx| Root::new(view, window, cx))
-                });
-                let handle = match opened {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *result_slot.lock().unwrap() = Some(Err(ErrorEnvelope::new(
-                            "NATIVE_WINDOW_FAILED",
-                            e.to_string(),
+        let res = run_in_hidden_window(
+            move |_, _| {
+                let slice = Arc::new(initial_snap.chart_slice.clone());
+                M4NextBarBenchView {
+                    snapshot: initial_snap,
+                    slice,
+                }
+            },
+            async move |cx, handle, view, hwnd| {
+                // Initial settle paint
+                cx.update_window(handle.into(), |_, window, _| {
+                    quiet_window_check()?;
+                    if window.bounds().size.width <= px(0.) || window.bounds().size.height <= px(0.)
+                    {
+                        return Err(ErrorEnvelope::new(
+                            "NATIVE_WINDOW_SIZE",
+                            "隐藏窗口尚无有效的绘制尺寸",
                             false,
-                        )));
-                        cx.quit();
-                        return;
+                        ));
                     }
-                };
-                let hwnd = match native_window() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *result_slot.lock().unwrap() = Some(Err(e));
-                        cx.quit();
-                        return;
-                    }
-                };
-                cx.spawn(async move |cx| {
-                    let outcome: Result<M4NextBarBenchReport, ErrorEnvelope> = async {
-                        initialize_native_window(hwnd)?;
-                        let view = captured.lock().unwrap().take().unwrap();
-                        // Initial settle paint
-                        cx.update_window(handle.into(), |_, window, _| {
-                            quiet_window_check()?;
-                            if window.bounds().size.width <= px(0.)
-                                || window.bounds().size.height <= px(0.)
-                            {
-                                return Err(ErrorEnvelope::new(
-                                    "NATIVE_WINDOW_SIZE",
-                                    "隐藏窗口尚无有效的绘制尺寸",
-                                    false,
-                                ));
-                            }
-                            window.refresh();
-                            Ok(())
-                        })
-                        .map_err(|e| {
-                            ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
-                        })??;
-                        paint_native_window(hwnd)?;
-
-                        let mut step_times_us = Vec::with_capacity(MEASURED_STEPS);
-                        let mut measured_paint_start = 0usize;
-                        let mut last_visible_bars = 0usize;
-
-                        for step in 1..=TOTAL_STEPS {
-                            // Yield briefly outside timed section so OS message queue stays clean
-                            cx.background_executor()
-                                .timer(Duration::from_micros(200))
-                                .await;
-                            if step == WARMUP_STEPS + 1 {
-                                measured_paint_start =
-                                    PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
-                            }
-                            if step == 2 {
-                                // After warmup step 1 fills the 0.1 BTC market buy, place a resting GTC sell limit too
-                                let _ = host_for_bench.submit_training_order(
-                                    &run_id_for_bench,
-                                    TrainingOrderRequestDto::single(
-                                        OrderSide::Sell,
-                                        SimOrderType::Limit {
-                                            limit_price: Decimal::from(500_000),
-                                        },
-                                        Decimal::new(5, 2),
-                                        TimeInForce::Gtc,
-                                        None,
-                                    ),
-                                )?;
-                            }
-
-                            let t0 = Instant::now();
-                            // 1. SQLite save transaction + matching engine (`advance_training_bar`)
-                            let receipt =
-                                host_for_bench.advance_training_bar(&run_id_for_bench)?;
-                            // 2. PIT adjustment + SMA/EMA/MACD/RSI indicators + 1,000-bar chart slice
-                            let total_vis = receipt.run.visible_bar_count;
-                            let mut vp = KlineViewport::new(total_vis, HISTORY_BARS);
-                            vp.visible_start = total_vis.saturating_sub(HISTORY_BARS);
-                            vp.visible_end = total_vis;
-                            let snap = host_for_bench.get_training_workspace_snapshot(
-                                &run_id_for_bench,
-                                Some(vp),
-                                1200,
-                            )?;
-                            last_visible_bars = snap.chart_slice.bars.len();
-
-                            // 3. GPUI view update + layout + synchronous DirectX `WM_PAINT`
-                            cx.update_window(handle.into(), |_, window, cx| {
-                                view.update(cx, |v, cx| {
-                                    v.snapshot = snap;
-                                    cx.notify();
-                                });
-                                window.refresh();
-                            })
-                            .map_err(|e| {
-                                ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
-                            })?;
-                            paint_native_window(hwnd)?;
-                            let elapsed_us = t0.elapsed().as_micros() as u64;
-
-                            if step > WARMUP_STEPS {
-                                step_times_us.push(elapsed_us);
-                            }
-                        }
-
-                        let native_chart_paints =
-                            PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - measured_paint_start;
-                        if step_times_us.len() != MEASURED_STEPS {
-                            return Err(ErrorEnvelope::new(
-                                "M4_BENCH_INCOMPLETE",
-                                format!(
-                                    "采样步数不足: 期望 {MEASURED_STEPS}, 实际 {}",
-                                    step_times_us.len()
-                                ),
-                                false,
-                            ));
-                        }
-                        if last_visible_bars != HISTORY_BARS {
-                            return Err(ErrorEnvelope::new(
-                                "M4_BENCH_VISIBLE_BARS",
-                                format!(
-                                    "可见 K 线根数不符合 1000 根规格: 实际 {last_visible_bars}"
-                                ),
-                                false,
-                            ));
-                        }
-                        if native_chart_paints < MEASURED_STEPS {
-                            return Err(ErrorEnvelope::new(
-                                "M4_BENCH_PAINT_COUNT",
-                                format!(
-                                    "原生 K 线实际绘制帧数不足: 期望 >= {MEASURED_STEPS}, 实际 {native_chart_paints}"
-                                ),
-                                false,
-                            ));
-                        }
-
-                        let (p50_us, p95_us, p99_us) = percentiles(&step_times_us);
-                        let max_us = step_times_us.iter().copied().max().unwrap_or(0);
-                        let p50_ms = (p50_us as f64) / 1000.0;
-                        let p95_ms = (p95_us as f64) / 1000.0;
-                        let p99_ms = (p99_us as f64) / 1000.0;
-                        let max_ms = (max_us as f64) / 1000.0;
-                        let step_times_ms: Vec<f64> = step_times_us
-                            .iter()
-                            .map(|&us| (us as f64) / 1000.0)
-                            .collect();
-                        let passed = p95_ms <= M4_K03_P95_BUDGET_MS;
-
-                        let rep = cx
-                            .update_window(handle.into(), |_, window, _| {
-                                quiet_window_check()?;
-                                Ok::<M4NextBarBenchReport, ErrorEnvelope>(M4NextBarBenchReport {
-                                    status: if passed { "passed" } else { "failed" }.to_string(),
-                                    case_id: "M4-A-17".to_string(),
-                                    kpi_id: "M4-K03".to_string(),
-                                    executed_at: chrono::Utc::now().to_rfc3339(),
-                                    build_profile: if cfg!(debug_assertions) {
-                                        "dev"
-                                    } else {
-                                        "release"
-                                    }
-                                    .to_string(),
-                                    power_throttling: power_for_bench.clone(),
-                                    hardware_logical_cores: std::thread::available_parallelism()
-                                        .map(|n| n.get())
-                                        .unwrap_or(1),
-                                    cpu: std::env::var("PROCESSOR_IDENTIFIER")
-                                        .unwrap_or_else(|_| "unknown".to_string()),
-                                    gpu: format!("{:?}", window.gpu_specs()),
-                                    window_size: format!("{:?}", window.bounds().size),
-                                    scale_factor: window.scale_factor(),
-                                    native_window_created: true,
-                                    visible_windows: count_visible_windows_for_current_process(),
-                                    focus_stolen: false,
-                                    history_bars: HISTORY_BARS,
-                                    kline_visible_bars: last_visible_bars,
-                                    warmup_steps: WARMUP_STEPS,
-                                    measured_steps: step_times_us.len(),
-                                    native_chart_paints,
-                                    p50_ms,
-                                    p95_ms,
-                                    p99_ms,
-                                    max_ms,
-                                    budget_p95_ms: M4_K03_P95_BUDGET_MS,
-                                    passed,
-                                    step_times_ms,
-                                    step_times_us,
-                                    measurement: "release build; hidden non-activating HWND (1400x950); 20 warmup + 300 measured end-to-end next-bar steps covering SQLite advance_training_bar save transaction + matching engine + PIT adjustment + default SMA(5,20)/EMA(12,26)/MACD(12,26,9)/RSI(14) indicators + 1000-bar KlineChartView slice + GPUI layout/paint + synchronous DirectX WM_PAINT".to_string(),
-                                    build_info: delta_app::build_info("delta-desktop"),
-                                })
-                            })
-                            .map_err(|e| {
-                                ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
-                            })??;
-
-                        if !rep.passed {
-                            return Err(ErrorEnvelope::new(
-                                "M4_K03_BUDGET_EXCEEDED",
-                                format!(
-                                    "M4-K03 下一根延迟超过预算: p95={:.3} ms > {:.1} ms (p50={:.3} ms, p99={:.3} ms)",
-                                    rep.p95_ms, rep.budget_p95_ms, rep.p50_ms, rep.p99_ms
-                                ),
-                                false,
-                            ));
-                        }
-                        Ok(rep)
-                    }
-                    .await;
-                    *result_slot.lock().unwrap() = Some(outcome);
-                    let _ = cx.update_window(handle.into(), |_, window, cx| {
-                        window.remove_window();
-                        cx.quit();
-                    });
+                    window.refresh();
+                    Ok(())
                 })
-                .detach();
-            });
+                .map_err(|e| ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false))??;
+                paint_native_window(hwnd)?;
 
+                let mut step_times_us = Vec::with_capacity(MEASURED_STEPS);
+                let mut measured_paint_start = 0usize;
+                let mut last_visible_bars = 0usize;
+
+                for step in 1..=TOTAL_STEPS {
+                    // Yield briefly outside timed section so OS message queue stays clean
+                    cx.background_executor()
+                        .timer(Duration::from_micros(200))
+                        .await;
+                    if step == WARMUP_STEPS + 1 {
+                        measured_paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
+                    }
+                    if step == 2 {
+                        // After warmup step 1 fills the 0.1 BTC market buy, place a resting GTC sell limit too
+                        let _ = host_for_bench.submit_training_order(
+                            &run_id_for_bench,
+                            TrainingOrderRequestDto::single(
+                                OrderSide::Sell,
+                                SimOrderType::Limit {
+                                    limit_price: Decimal::from(500_000),
+                                },
+                                Decimal::new(5, 2),
+                                TimeInForce::Gtc,
+                                None,
+                            ),
+                        )?;
+                    }
+
+                    let t0 = Instant::now();
+                    // 1. SQLite save transaction + matching engine (`advance_training_bar`)
+                    let receipt = host_for_bench.advance_training_bar(&run_id_for_bench)?;
+                    // 2. PIT adjustment + SMA/EMA/MACD/RSI indicators + 1,000-bar chart slice
+                    let total_vis = receipt.run.visible_bar_count;
+                    let mut vp = KlineViewport::new(total_vis, HISTORY_BARS);
+                    vp.visible_start = total_vis.saturating_sub(HISTORY_BARS);
+                    vp.visible_end = total_vis;
+                    let snap = host_for_bench.get_training_workspace_snapshot(
+                        &run_id_for_bench,
+                        Some(vp),
+                        1200,
+                    )?;
+                    last_visible_bars = snap.chart_slice.bars.len();
+                    let next_slice = Arc::new(snap.chart_slice.clone());
+
+                    // 3. GPUI view update + layout + synchronous DirectX `WM_PAINT`
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |v, cx| {
+                            v.snapshot = snap;
+                            v.slice = next_slice;
+                            cx.notify();
+                        });
+                        window.refresh();
+                    })
+                    .map_err(|e| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
+                    })?;
+                    paint_native_window(hwnd)?;
+                    let elapsed_us = t0.elapsed().as_micros() as u64;
+
+                    if step > WARMUP_STEPS {
+                        step_times_us.push(elapsed_us);
+                    }
+                }
+
+                let native_chart_paints =
+                    PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - measured_paint_start;
+                if step_times_us.len() != MEASURED_STEPS {
+                    return Err(ErrorEnvelope::new(
+                        "M4_BENCH_INCOMPLETE",
+                        format!(
+                            "采样步数不足: 期望 {MEASURED_STEPS}, 实际 {}",
+                            step_times_us.len()
+                        ),
+                        false,
+                    ));
+                }
+                if last_visible_bars != HISTORY_BARS {
+                    return Err(ErrorEnvelope::new(
+                        "M4_BENCH_VISIBLE_BARS",
+                        format!("可见 K 线根数不符合 1000 根规格: 实际 {last_visible_bars}"),
+                        false,
+                    ));
+                }
+                if native_chart_paints < MEASURED_STEPS {
+                    return Err(ErrorEnvelope::new(
+                        "M4_BENCH_PAINT_COUNT",
+                        format!(
+                            "原生 K 线实际绘制帧数不足: 期望 >= {MEASURED_STEPS}, 实际 {native_chart_paints}"
+                        ),
+                        false,
+                    ));
+                }
+
+                let (p50_us, p95_us, p99_us) = percentiles(&step_times_us);
+                let max_us = step_times_us.iter().copied().max().unwrap_or(0);
+                let p50_ms = (p50_us as f64) / 1000.0;
+                let p95_ms = (p95_us as f64) / 1000.0;
+                let p99_ms = (p99_us as f64) / 1000.0;
+                let max_ms = (max_us as f64) / 1000.0;
+                let step_times_ms: Vec<f64> = step_times_us
+                    .iter()
+                    .map(|&us| (us as f64) / 1000.0)
+                    .collect();
+                let passed = p95_ms <= M4_K03_P95_BUDGET_MS;
+
+                let rep = cx
+                    .update_window(handle.into(), |_, window, _| {
+                        quiet_window_check()?;
+                        Ok::<M4NextBarBenchReport, ErrorEnvelope>(M4NextBarBenchReport {
+                            status: if passed { "passed" } else { "failed" }.to_string(),
+                            case_id: "M4-A-17".to_string(),
+                            kpi_id: "M4-K03".to_string(),
+                            executed_at: chrono::Utc::now().to_rfc3339(),
+                            build_profile: if cfg!(debug_assertions) {
+                                "dev"
+                            } else {
+                                "release"
+                            }
+                            .to_string(),
+                            power_throttling: power_for_bench.clone(),
+                            hardware_logical_cores: std::thread::available_parallelism()
+                                .map(|n| n.get())
+                                .unwrap_or(1),
+                            cpu: std::env::var("PROCESSOR_IDENTIFIER")
+                                .unwrap_or_else(|_| "unknown".to_string()),
+                            gpu: format!("{:?}", window.gpu_specs()),
+                            window_size: format!("{:?}", window.bounds().size),
+                            scale_factor: window.scale_factor(),
+                            native_window_created: true,
+                            visible_windows: count_visible_windows_for_current_process(),
+                            focus_stolen: false,
+                            history_bars: HISTORY_BARS,
+                            kline_visible_bars: last_visible_bars,
+                            warmup_steps: WARMUP_STEPS,
+                            measured_steps: step_times_us.len(),
+                            native_chart_paints,
+                            p50_ms,
+                            p95_ms,
+                            p99_ms,
+                            max_ms,
+                            budget_p95_ms: M4_K03_P95_BUDGET_MS,
+                            passed,
+                            step_times_ms,
+                            step_times_us,
+                            measurement: "release build; hidden non-activating HWND (1400x950); 20 warmup + 300 measured end-to-end next-bar steps covering SQLite advance_training_bar save transaction + matching engine + PIT adjustment + default SMA(5,20)/EMA(12,26)/MACD(12,26,9)/RSI(14) indicators + 1000-bar KlineChartView slice + GPUI layout/paint + synchronous DirectX WM_PAINT".to_string(),
+                            build_info: delta_app::build_info("delta-desktop"),
+                        })
+                    })
+                    .map_err(|e| {
+                        ErrorEnvelope::new("NATIVE_WINDOW_FAILED", e.to_string(), false)
+                    })??;
+
+                if !rep.passed {
+                    return Err(ErrorEnvelope::new(
+                        "M4_K03_BUDGET_EXCEEDED",
+                        format!(
+                            "M4-K03 下一根延迟超过预算: p95={:.3} ms > {:.1} ms (p50={:.3} ms, p99={:.3} ms)",
+                            rep.p95_ms, rep.budget_p95_ms, rep.p50_ms, rep.p99_ms
+                        ),
+                        false,
+                    ));
+                }
+                Ok(rep)
+            },
+            || {
+                Err(ErrorEnvelope::new(
+                    "M4_BENCH_INTERRUPTED",
+                    "M4-K03 基准测量没有产生结果",
+                    false,
+                ))
+            },
+        );
         let _ = host.shutdown();
-        let taken = output.lock().unwrap().take();
-        taken.ok_or_else(|| {
-            ErrorEnvelope::new("M4_BENCH_INTERRUPTED", "M4-K03 基准测量没有产生结果", false)
-        })?
+        res
     })();
 
-    owned.cleanup()?;
-    inner_res
+    finish_verification(&owned, inner_res)
 }
 
 /// Explicit visual capture for design review: renders every workbench page in the same hidden,
@@ -1486,129 +1427,83 @@ pub(crate) fn run_native_capture(
     data_dir: PathBuf,
     out_dir: PathBuf,
 ) -> Result<Vec<PathBuf>, ErrorEnvelope> {
-    let output = Arc::new(Mutex::new(None));
-    let result = Arc::clone(&output);
-    gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            crate::theme::apply_delta_theme(cx);
-            let wb = Arc::new(Mutex::new(None));
-            let captured = Arc::clone(&wb);
-            let opened = cx.open_window(hidden_options(), move |window, cx| {
-                let view = cx.new(|cx| {
-                    DeltaWorkbench::new(
-                        host,
-                        data_dir,
-                        NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
-                        window,
-                        cx,
-                    )
-                });
-                *captured.lock().unwrap() = Some(view.clone());
-                cx.new(|cx| Root::new(view, window, cx))
-            });
-            let fail = |message: String| Err(ErrorEnvelope::new("CAPTURE_FAILED", message, false));
-            let handle = match opened {
-                Ok(handle) => handle,
-                Err(error) => {
-                    *result.lock().unwrap() = Some(fail(error.to_string()));
-                    cx.quit();
-                    return;
-                }
-            };
-            let hwnd = match native_window() {
-                Ok(hwnd) => hwnd,
-                Err(error) => {
-                    *result.lock().unwrap() = Some(Err(error));
-                    cx.quit();
-                    return;
-                }
-            };
-            cx.spawn(async move |cx| {
-                const PAGES: [&str; 6] = [
-                    "nav.overview",
-                    "nav.market",
-                    "nav.assets",
-                    "nav.journal",
-                    "nav.data_center",
-                    "nav.settings",
-                ];
-                let outcome = async {
-                    initialize_native_window(hwnd)?;
-                    let mut written = Vec::new();
-                    for page in PAGES {
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
+    run_in_hidden_window(
+        move |window, cx| {
+            DeltaWorkbench::new(
+                host,
+                data_dir,
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                window,
+                cx,
+            )
+        },
+        async move |cx, handle, view, hwnd| {
+            const PAGES: [&str; 6] = [
+                "nav.overview",
+                "nav.market",
+                "nav.assets",
+                "nav.journal",
+                "nav.data_center",
+                "nav.settings",
+            ];
+            let mut written = Vec::new();
+            for page in PAGES {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.controller
+                            .update(cx, |ctl, cx| ctl.navigate(page, window, cx))
+                    });
+                })
+                .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?;
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                    let ready = cx
+                        .update_window(handle.into(), |_, window, cx| {
+                            window.refresh();
                             view.update(cx, |view, cx| {
-                                view.controller
-                                    .update(cx, |ctl, cx| ctl.navigate(page, window, cx))
-                            });
+                                !view.controller.read(cx).busy
+                                    && crate::lock_or_recover(&view.state).overview.is_some()
+                            })
                         })
                         .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?;
-                        let deadline = Instant::now() + Duration::from_secs(30);
-                        loop {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(50))
-                                .await;
-                            let ready = cx
-                                .update_window(handle.into(), |_, window, cx| {
-                                    let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                                    window.refresh();
-                                    view.update(cx, |view, cx| {
-                                        !view.controller.read(cx).busy
-                                            && view.state.lock().unwrap().overview.is_some()
-                                    })
-                                })
-                                .map_err(|e| {
-                                    ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false)
-                                })?;
-                            paint_native_window(hwnd)?;
-                            if ready || Instant::now() >= deadline {
-                                break;
-                            }
-                        }
-                        // Two more frames so late layout (tables, chart bounds) settles.
-                        for _ in 0..2 {
-                            cx.background_executor()
-                                .timer(Duration::from_millis(50))
-                                .await;
-                            cx.update_window(handle.into(), |_, window, _| window.refresh())
-                                .map_err(|e| {
-                                    ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false)
-                                })?;
-                            paint_native_window(hwnd)?;
-                        }
-                        quiet_window_check()?;
-                        let image = cx
-                            .update_window(handle.into(), |_, window, _| window.render_to_image())
-                            .map_err(|e| {
-                                ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false)
-                            })?
-                            .map_err(|e| {
-                                ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false)
-                            })?;
-                        let path = out_dir.join(format!("{}.png", page.replace('.', "-")));
-                        image.save(&path).map_err(|e| {
-                            ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false)
-                        })?;
-                        written.push(path);
+                    paint_native_window(hwnd)?;
+                    if ready || Instant::now() >= deadline {
+                        break;
                     }
-                    Ok(written)
                 }
-                .await;
-                *result.lock().unwrap() = Some(outcome);
-                let _ = cx.update_window(handle.into(), |_, window, cx| {
-                    window.remove_window();
-                    cx.quit();
-                });
-            })
-            .detach();
-        });
-    let result = output.lock().unwrap().take().ok_or_else(|| {
-        ErrorEnvelope::new("CAPTURE_INTERRUPTED", "原生窗口截图没有产生结果", false)
-    })?;
-    result
+                // Two more frames so late layout (tables, chart bounds) settles.
+                for _ in 0..2 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                    cx.update_window(handle.into(), |_, window, _| window.refresh())
+                        .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?;
+                    paint_native_window(hwnd)?;
+                }
+                quiet_window_check()?;
+                let image = cx
+                    .update_window(handle.into(), |_, window, _| window.render_to_image())
+                    .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?
+                    .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?;
+                let path = out_dir.join(format!("{}.png", page.replace('.', "-")));
+                image
+                    .save(&path)
+                    .map_err(|e| ErrorEnvelope::new("CAPTURE_FAILED", e.to_string(), false))?;
+                written.push(path);
+            }
+            Ok(written)
+        },
+        || {
+            Err(ErrorEnvelope::new(
+                "CAPTURE_INTERRUPTED",
+                "原生窗口截图没有产生结果",
+                false,
+            ))
+        },
+    )
 }
 
 #[cfg(all(test, windows))]
@@ -1635,7 +1530,9 @@ mod capture_tests {
         let mut svc = delta_app::AppService::open(paths, "USD", "USD", "UTC", true).unwrap();
         delta_app::seed_ac02_fixture_in_service(&mut svc).unwrap();
         let host = super::AppHost::from_service(svc);
+        let host_shutdown = host.clone();
         let written = super::run_native_capture(host, root.clone(), out).unwrap();
+        let _ = host_shutdown.shutdown();
         assert_eq!(written.len(), 6);
         std::fs::remove_dir_all(root).unwrap();
     }

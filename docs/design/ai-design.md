@@ -6,7 +6,7 @@
 
 AI 帮助用户组织问题、调用业务分析、解释结果和形成复盘。账本事实、金融计算和数据权限由应用掌握。
 
-M2 交付个人数据问答和交易复盘，采用用户指定的 OpenAI API 形式接口，首轮参考 Codex 官方 Rust 源码，自研窄模型客户端并验证 Rust 工具循环与会话/压缩能力；不要求同时集成所有厂商。Rust 宿主掌握数据范围、确定性结果和证据。M4 增加训练结束复盘，M5 增加策略草拟和研究辅助。
+M2 交付个人数据问答和交易复盘，采用用户指定的 OpenAI API 形式接口，首轮参考 Codex 官方 Rust 源码，自研窄模型客户端并验证 Rust 工具循环与会话/压缩能力；不要求同时集成所有厂商。Rust 宿主掌握数据范围、确定性结果和证据。M4 增加训练结束复盘，M6 增加策略草拟和研究辅助。
 
 优先问题：
 
@@ -55,7 +55,7 @@ sequenceDiagram
 | `get_chart_window` | instrument, range, timeframe | 受限行情窗口、来源与质量 | 是 |
 | `compare_trade_groups` | scope, group_definitions | 样本、指标与缺失标签率 | 否，随分组统计交付 |
 | `training.run_summary` / `training.orders_and_fills` / `training.report` / `training.notes` / `training.revealed_bars` | `ScopeTarget::TrainingRun(run_id)` | 已结束训练的运行摘要、模拟委托/成交、`m4-report-1` 报告、训练笔记与揭示后行情 | 否，M4 已建立 |
-| `validate_strategy_draft` | typed_rules | 静态校验和未补齐条件 | 否，随 M5 |
+| `validate_strategy_draft` | typed_rules | 静态校验和未补齐条件 | 否，随 M6 |
 
 不提供任意 SQL、任意文件读写、系统命令或直接下单工具。所有查询复用 UI 的业务服务，不能存在第二套 AI 专用损益计算。
 
@@ -114,6 +114,8 @@ M4 严格仅在训练运行状态达到 `finished` 后开放 AI 复盘（`ScopeT
 `ScopeTarget::TrainingRun` 将 `resolved_accounts` 固定为空集以阻断全部真实账户工具，只允许调用 5 个只读训练工具：`training.run_summary`、`training.orders_and_fills`、`training.report`、`training.notes`、`training.revealed_bars`。范围修订指纹绑定 `latest_state_hash` 与 `revealed` 标志：在用户显式点击“揭示”前，即使训练已结束，工具输出仍保持隐藏模式脱敏（`training.revealed_bars` 不暴露后续行情与真实代码/日期）；揭示后自动使旧范围缓存失效。证据与数值核验（`verify_and_build_ai_report`）扫描 `SIM-ORD-*`、`SIM-FILL-*`、`TRN-NOTE-*`（以及 `TRD-GRP-*`、`FPV:*`）前缀并核对本次工具回执，拦截模型捏造的模拟引用，且从金融数值白名单剔除 `seed`、`redraw_index`、`self_evaluation` 等元数据以防伪装校验；有效证据引用可在训练工作区点击直接定位（`open_training_evidence`）。
 
 即使截断查询，通用模型仍可能从预训练知识中认出某段历史走势。隐藏日期/名称并不能保证模型“忘记未来”。因此不把训练中模型建议视为盲测成绩，用户自主决策自评（`save_training_self_evaluation`）与 AI 复盘正文分开存储和展示，且训练笔记中的越权指令按不可信数据处理、绝不扩大工具或账户权限。
+
+M5 起“已结束”包括 `finished` 与 `abandoned`（放弃也结算、可揭示），两者都可开放复盘；进行中的运行规则不变。`training.run_summary` 增加级别（`1d`/`4h`/`1h`）、资金来源（练习账户或 M4 独立资金）与有效操作次数（快捷成交、改单、撤销；被撤销的操作不计入），便于复盘时区分“频繁撤销/改单”这类过程信息；练习账户与跨局分析（`m5-account-report-1`）只在训练页与 CLI 展示，本阶段不新增 AI 工具。
 
 若后续（`LOOP-06`）开放教练模式，单独标记为辅助训练，并记录使用时间与内容。结束报告区分自主决策与辅助决策。
 

@@ -12,11 +12,173 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 5;
+pub const CURRENT_SCHEMA_VERSION: i64 = 6;
+
+const FK_LOOKUP_INDEXES: &[(&str, &str)] = &[
+    (
+        "idx_import_row_batch",
+        "CREATE INDEX IF NOT EXISTS idx_import_row_batch ON import_row(batch_id)",
+    ),
+    (
+        "idx_journal_tx_event",
+        "CREATE INDEX IF NOT EXISTS idx_journal_tx_event ON journal_transaction(event_id)",
+    ),
+    (
+        "idx_posting_tx",
+        "CREATE INDEX IF NOT EXISTS idx_posting_tx ON posting(transaction_id)",
+    ),
+    (
+        "idx_note_link_note",
+        "CREATE INDEX IF NOT EXISTS idx_note_link_note ON note_link(note_id)",
+    ),
+    (
+        "idx_attachment_note",
+        "CREATE INDEX IF NOT EXISTS idx_attachment_note ON attachment(note_id)",
+    ),
+    (
+        "idx_ai_run_session",
+        "CREATE INDEX IF NOT EXISTS idx_ai_run_session ON ai_run(session_id)",
+    ),
+    (
+        "idx_ai_checkpoint_session",
+        "CREATE INDEX IF NOT EXISTS idx_ai_checkpoint_session ON ai_checkpoint(session_id)",
+    ),
+];
+
+pub(crate) fn is_reparse_or_symlink(path: &Path) -> Result<bool, std::io::Error> {
+    let metadata = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        Ok(metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(metadata.file_type().is_symlink())
+    }
+}
+
+pub(crate) fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let tmp_path = path.with_file_name(format!(".{file_name}.tmp.{}", uuid::Uuid::new_v4()));
+    if let Err(err) = fs::write(&tmp_path, bytes) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn parse_rfc3339_utc(raw: &str, field: &str) -> Result<DateTime<Utc>, StorageError> {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| {
+            StorageError::IntegrityFailed(format!("invalid {field} timestamp '{raw}': {e}"))
+        })
+}
+
+pub(crate) fn map_bar_row(r: &rusqlite::Row<'_>) -> Result<BarRecord, StorageError> {
+    let s_date_str: String = r.get(4)?;
+    let open_str: String = r.get(5)?;
+    let close_str: String = r.get(6)?;
+    let o_str: String = r.get(7)?;
+    let h_str: String = r.get(8)?;
+    let l_str: String = r.get(9)?;
+    let c_str: String = r.get(10)?;
+    let v_str: String = r.get(11)?;
+    let adj_raw: String = r.get(13)?;
+    let is_fin: i64 = r.get(14)?;
+
+    let session_date = NaiveDate::parse_from_str(&s_date_str, "%Y-%m-%d").map_err(|e| {
+        StorageError::IntegrityFailed(format!("invalid bar session_date '{s_date_str}': {e}"))
+    })?;
+    let adjustment = AdjustmentKind::parse(&adj_raw).ok_or_else(|| {
+        StorageError::IntegrityFailed(format!("invalid bar adjustment '{adj_raw}'"))
+    })?;
+
+    Ok(BarRecord {
+        id: r.get(0)?,
+        instrument_id: r.get(1)?,
+        timeframe: r.get(2)?,
+        session: r.get(3)?,
+        session_date,
+        open_at: parse_rfc3339_utc(&open_str, "bar.open_at")?,
+        close_at: parse_rfc3339_utc(&close_str, "bar.close_at")?,
+        open: parse_decimal_lossless(&o_str)?,
+        high: parse_decimal_lossless(&h_str)?,
+        low: parse_decimal_lossless(&l_str)?,
+        close: parse_decimal_lossless(&c_str)?,
+        volume: parse_decimal_lossless(&v_str)?,
+        source: r.get(12)?,
+        adjustment,
+        is_final: is_fin != 0,
+        valid_from_version: r.get(15)?,
+        valid_to_version: r.get(16)?,
+        raw_payload_hash: r.get(17)?,
+    })
+}
+
+pub(crate) fn map_corporate_action_row(
+    r: &rusqlite::Row<'_>,
+) -> Result<CorporateActionRecord, StorageError> {
+    let act_type: String = r.get(2)?;
+    let ex_str: String = r.get(3)?;
+    let pay_str: Option<String> = r.get(4)?;
+    let ratio_str: String = r.get(5)?;
+    let ann_str: Option<String> = r.get(7)?;
+
+    Ok(CorporateActionRecord {
+        id: r.get(0)?,
+        instrument_id: r.get(1)?,
+        action_type: match act_type.as_str() {
+            "split" => CorporateActionType::Split,
+            "cash_dividend" => CorporateActionType::CashDividend,
+            other => {
+                return Err(StorageError::IntegrityFailed(format!(
+                    "unknown corporate_action type '{other}'"
+                )))
+            }
+        },
+        ex_date: NaiveDate::parse_from_str(&ex_str, "%Y-%m-%d").map_err(|e| {
+            StorageError::IntegrityFailed(format!(
+                "invalid corporate_action ex_date '{ex_str}': {e}"
+            ))
+        })?,
+        pay_date: pay_str
+            .as_deref()
+            .map(|s| {
+                NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| {
+                    StorageError::IntegrityFailed(format!(
+                        "invalid corporate_action pay_date '{s}': {e}"
+                    ))
+                })
+            })
+            .transpose()?,
+        ratio_or_amount: parse_decimal_lossless(&ratio_str)?,
+        currency: r.get(6)?,
+        announced_at: ann_str
+            .as_deref()
+            .map(|s| parse_rfc3339_utc(s, "corporate_action.announced_at"))
+            .transpose()?,
+        source: r.get(8)?,
+        factor_version: r.get(9)?,
+        raw_payload_hash: r.get(10)?,
+    })
+}
 
 const CORE_LIBRARY_TABLES: &[&str] = &[
     "library",
@@ -62,6 +224,7 @@ pub(crate) fn collect_library_table_counts(
         .iter()
         .chain(crate::m2_schema::SCHEMA_4_TABLES.iter())
         .chain(crate::m4_schema::SCHEMA_5_TABLES.iter())
+        .chain(crate::m5_schema::SCHEMA_6_TABLES.iter())
     {
         let exists: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
@@ -222,8 +385,10 @@ impl SqliteStore {
             db_path,
             conn,
         };
-        store.run_migrations(book_currency, report_currency, timezone)?;
-        store.sync_manifest()?;
+        let migrated = store.run_migrations(book_currency, report_currency, timezone)?;
+        if migrated || !store.root_dir.join("manifest.json").is_file() {
+            store.sync_manifest()?;
+        }
         Ok(store)
     }
 
@@ -245,7 +410,46 @@ impl SqliteStore {
 
     pub fn load_instrument_registry(&self) -> Result<InstrumentRegistry, StorageError> {
         let mut registry = InstrumentRegistry::new_seeded();
-        let mut stmt = self.conn.prepare("SELECT id,kind,venue,symbol,base_asset_id,quote_asset_id,lot_size,tick_size,multiplier FROM instrument")?;
+        let mut asset_stmt = self.conn.prepare_cached(
+            "SELECT id, kind, symbol, network, contract_address, precision FROM asset",
+        )?;
+        let asset_rows = asset_stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?;
+        for row in asset_rows {
+            let (id, kind, symbol, network, contract_address, precision) = row?;
+            let kind = match kind.as_str() {
+                "fiat" => delta_core::AssetKind::Fiat,
+                "stablecoin" => delta_core::AssetKind::Stablecoin,
+                "crypto" => delta_core::AssetKind::Crypto,
+                "equity" => delta_core::AssetKind::Equity,
+                "etf" => delta_core::AssetKind::Etf,
+                _ => {
+                    return Err(StorageError::IntegrityFailed(format!(
+                        "invalid asset kind '{kind}'"
+                    )))
+                }
+            };
+            registry.assets.insert(
+                id.clone(),
+                delta_core::Asset {
+                    id,
+                    kind,
+                    symbol,
+                    network,
+                    contract_address,
+                    precision: u32::try_from(precision).unwrap_or(4),
+                },
+            );
+        }
+        let mut stmt = self.conn.prepare_cached("SELECT id,kind,venue,symbol,base_asset_id,quote_asset_id,lot_size,tick_size,multiplier FROM instrument")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -287,7 +491,7 @@ impl SqliteStore {
             );
         }
         registry.aliases.clear();
-        let mut stmt = self.conn.prepare("SELECT provider,external_symbol,instrument_id FROM instrument_alias ORDER BY provider,external_symbol")?;
+        let mut stmt = self.conn.prepare_cached("SELECT provider,external_symbol,instrument_id FROM instrument_alias ORDER BY provider,external_symbol")?;
         for row in stmt.query_map([], |r| {
             Ok(delta_core::InstrumentAlias {
                 provider: r.get(0)?,
@@ -329,9 +533,9 @@ impl SqliteStore {
         } else {
             (symbol.as_str(), "USD")
         };
-        if crypto && quote != "USDT" {
+        if crypto && (base.is_empty() || base.contains('/') || quote != "USDT") {
             return Err(StorageError::IntegrityFailed(
-                "M1 crypto registrations require USDT quote".into(),
+                "M1 crypto registrations require non-empty BASE with USDT quote".into(),
             ));
         }
         let id = format!("{venue}:{symbol}");
@@ -340,6 +544,18 @@ impl SqliteStore {
             return Ok(id);
         }
         let tx = self.conn.savepoint()?;
+        let (asset_id, asset_kind, asset_sym, asset_prec) = if crypto {
+            (base.to_string(), "crypto", base.to_string(), 8i64)
+        } else if etf {
+            (id.clone(), "etf", symbol.clone(), 4i64)
+        } else {
+            (id.clone(), "equity", symbol.clone(), 4i64)
+        };
+        tx.execute(
+            "INSERT OR IGNORE INTO asset (id, kind, symbol, network, contract_address, precision)
+             VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+            params![asset_id, asset_kind, asset_sym, asset_prec],
+        )?;
         tx.execute(
             "INSERT INTO instrument VALUES (?1,?2,?3,?4,?5,?6,?7,'0.0001','1')",
             params![
@@ -359,14 +575,17 @@ impl SqliteStore {
             ],
         )?;
         let aliases: Vec<(String, String)> = if crypto {
-            vec![(
-                venue.to_ascii_lowercase(),
-                if venue == "OKX" {
-                    format!("{base}-{quote}")
-                } else {
-                    format!("{base}{quote}")
-                },
-            )]
+            vec![
+                ("canonical".into(), id.clone()),
+                (
+                    venue.to_ascii_lowercase(),
+                    if venue == "OKX" {
+                        format!("{base}-{quote}")
+                    } else {
+                        format!("{base}{quote}")
+                    },
+                ),
+            ]
         } else {
             let prefix = if etf {
                 "107"
@@ -376,6 +595,7 @@ impl SqliteStore {
                 "106"
             };
             let mut aliases = vec![
+                ("canonical".into(), id.clone()),
                 ("futu".into(), format!("US.{symbol}")),
                 ("longbridge".into(), format!("{symbol}.US")),
                 ("eastmoney".into(), format!("{prefix}.{symbol}")),
@@ -385,8 +605,13 @@ impl SqliteStore {
             }
             aliases
         };
-        for (provider, external) in aliases {
-            tx.execute("INSERT INTO instrument_alias(provider,external_symbol,instrument_id) VALUES (?1,?2,?3)",params![provider,external,id])?;
+        {
+            let mut alias_stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO instrument_alias(provider,external_symbol,instrument_id) VALUES (?1,?2,?3)",
+            )?;
+            for (provider, external) in aliases {
+                alias_stmt.execute(params![provider, external, id])?;
+            }
         }
         tx.commit()?;
         Ok(id)
@@ -470,7 +695,7 @@ impl SqliteStore {
         book_currency: &str,
         report_currency: &str,
         timezone: &str,
-    ) -> Result<(), StorageError> {
+    ) -> Result<bool, StorageError> {
         let has_library: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='library')",
             [],
@@ -486,6 +711,29 @@ impl SqliteStore {
                 return Err(StorageError::MigrationFailed(
                     "database schema is newer than this build".into(),
                 ));
+            }
+            if schema == CURRENT_SCHEMA_VERSION {
+                // Fast-path already-current databases without acquiring a write lock on every open.
+                let mut missing_indexes = Vec::new();
+                for &(name, ddl) in FK_LOOKUP_INDEXES {
+                    let exists: bool = self.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+                        params![name],
+                        |r| r.get(0),
+                    )?;
+                    if !exists {
+                        missing_indexes.push(ddl);
+                    }
+                }
+                if missing_indexes.is_empty() {
+                    return Ok(false);
+                }
+                let tx = self.conn.savepoint()?;
+                for ddl in missing_indexes {
+                    tx.execute_batch(ddl)?;
+                }
+                tx.commit()?;
+                return Ok(true);
             }
             if schema < CURRENT_SCHEMA_VERSION {
                 let before = self
@@ -911,6 +1159,10 @@ impl SqliteStore {
         }
         crate::m2_schema::apply_schema_4_ddl(&tx, schema)?;
         crate::m4_schema::apply_schema_5_ddl(&tx, schema)?;
+        crate::m5_schema::apply_schema_6_ddl(&tx, schema)?;
+        for &(_, ddl) in FK_LOOKUP_INDEXES {
+            tx.execute_batch(ddl)?;
+        }
         tx.execute(
             "UPDATE library SET schema_version=?1",
             params![CURRENT_SCHEMA_VERSION],
@@ -918,25 +1170,27 @@ impl SqliteStore {
 
         // Seed default InstrumentRegistry into asset, instrument, instrument_alias
         let reg = InstrumentRegistry::new_seeded();
-        for asset in reg.assets.values() {
-            tx.execute(
+        {
+            let mut asset_stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO asset (id, kind, symbol, network, contract_address, precision)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
+            )?;
+            for asset in reg.assets.values() {
+                asset_stmt.execute(params![
                     asset.id,
                     format!("{:?}", asset.kind).to_ascii_lowercase(),
                     asset.symbol,
                     asset.network,
                     asset.contract_address,
                     asset.precision,
-                ],
-            )?;
-        }
-        for inst in reg.instruments.values() {
-            tx.execute(
+                ])?;
+            }
+            let mut inst_stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO instrument (id, kind, venue, symbol, base_asset_id, quote_asset_id, lot_size, tick_size, multiplier)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
+            )?;
+            for inst in reg.instruments.values() {
+                inst_stmt.execute(params![
                     inst.id,
                     format!("{:?}", inst.kind).to_ascii_lowercase(),
                     inst.venue,
@@ -946,25 +1200,25 @@ impl SqliteStore {
                     to_canonical_text(inst.lot_size),
                     to_canonical_text(inst.tick_size),
                     to_canonical_text(inst.multiplier),
-                ],
-            )?;
-        }
-        for alias in &reg.aliases {
-            tx.execute(
+                ])?;
+            }
+            let mut alias_stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO instrument_alias (provider, external_symbol, instrument_id, valid_from, valid_to)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
+            )?;
+            for alias in &reg.aliases {
+                alias_stmt.execute(params![
                     alias.provider,
                     alias.external_symbol,
                     alias.instrument_id,
                     alias.valid_from.map(|d| d.to_string()),
                     alias.valid_to.map(|d| d.to_string()),
-                ],
-            )?;
+                ])?;
+            }
         }
 
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     /// Populate `calendar_session` table for a given venue and date range.
@@ -1016,19 +1270,19 @@ impl SqliteStore {
         let mut hasher = Sha256::new();
         hasher.update(body);
         let content_hash = hex::encode(hasher.finalize());
+        let raw_file = self
+            .root_dir
+            .join("raw")
+            .join(format!("{content_hash}.raw"));
+        if !raw_file.exists() {
+            write_bytes_atomic(&raw_file, body)?;
+        }
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT OR IGNORE INTO raw_payload (content_hash, provider, acquired_at, content_type, body)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![content_hash, provider, now, content_type, body],
         )?;
-        let raw_file = self
-            .root_dir
-            .join("raw")
-            .join(format!("{content_hash}.raw"));
-        if !raw_file.exists() {
-            fs::write(&raw_file, body)?;
-        }
         Ok(content_hash)
     }
 
@@ -1041,7 +1295,8 @@ impl SqliteStore {
         quality: &str,
         temporal_quality: &str,
     ) -> Result<DatasetVersionRecord, StorageError> {
-        let next_ver: i64 = self.conn.query_row(
+        let tx = self.conn.savepoint()?;
+        let next_ver: i64 = tx.query_row(
             "SELECT COALESCE(MAX(version_num), 0) + 1 FROM dataset_version",
             [],
             |r| r.get(0),
@@ -1054,7 +1309,6 @@ impl SqliteStore {
         );
         let manifest_hash = hex::encode(hasher.finalize());
 
-        let tx = self.conn.savepoint()?;
         tx.execute(
             "INSERT INTO dataset_version (id, version_num, manifest_hash, source, terms_class, acquired_at, coverage_json, quality, temporal_quality)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -1109,120 +1363,222 @@ impl SqliteStore {
         let mut inserted_or_revised = 0usize;
         let mut revision_issues = Vec::new();
 
-        for bar in bars {
-            // Only commit finalized bars (`is_final == true`) for daily sync
-            if !bar.is_final {
-                continue;
-            }
-            if bar.close <= Decimal::ZERO
-                || bar.open <= Decimal::ZERO
-                || bar.volume < Decimal::ZERO
-                || bar.high < bar.open.max(bar.close)
-                || bar.low > bar.open.min(bar.close)
-                || bar.low > bar.high
-                || bar.close_at <= bar.open_at
-            {
-                return Err(StorageError::IntegrityFailed(
-                    "invalid finalized OHLCV bar".into(),
-                ));
-            }
-            let open_str = bar.open_at.to_rfc3339();
-            let adj_str = bar.adjustment.as_str();
-
-            let existing: Option<(String, String, String, String, String, String)> = tx
-                .query_row(
-                    "SELECT id, open, high, low, close, volume FROM bar
-                     WHERE instrument_id = ?1 AND timeframe = ?2 AND adjustment = ?3
-                       AND source = ?4 AND open_at = ?5 AND valid_to_version IS NULL",
-                    params![
-                        bar.instrument_id,
-                        bar.timeframe,
-                        adj_str,
-                        bar.source,
-                        open_str
-                    ],
-                    |r| {
-                        Ok((
-                            r.get(0)?,
-                            r.get(1)?,
-                            r.get(2)?,
-                            r.get(3)?,
-                            r.get(4)?,
-                            r.get(5)?,
-                        ))
-                    },
-                )
-                .optional()?;
-
-            let new_open = to_canonical_text(bar.open);
-            let new_high = to_canonical_text(bar.high);
-            let new_low = to_canonical_text(bar.low);
-            let new_close = to_canonical_text(bar.close);
-            let new_vol = to_canonical_text(bar.volume);
-
-            if let Some((old_id, old_o, old_h, old_l, old_c, old_v)) = existing {
-                if old_o == new_open
-                    && old_h == new_high
-                    && old_l == new_low
-                    && old_c == new_close
-                    && old_v == new_vol
-                {
-                    // Identical content: idempotent skip without duplicating row
-                    continue;
-                }
-                // Content changed in overlap window! Close old version interval and record data_revision (S-09)
-                tx.execute(
-                    "UPDATE bar SET valid_to_version = ?1 WHERE id = ?2",
-                    params![dataset_version, old_id],
-                )?;
-                let issue = DataQualityIssue {
-                    id: format!(
-                        "DQI:REV:{}:{}:{dataset_version}",
-                        bar.instrument_id, bar.session_date
-                    ),
-                    dataset_version,
-                    instrument_id: bar.instrument_id.clone(),
-                    session_date: bar.session_date,
-                    kind: "data_revision".to_string(),
-                    sources: bar.source.clone(),
-                    detail: format!(
-                        "bar revised at version {dataset_version}: close {old_c} -> {new_close}, volume {old_v} -> {new_vol}"
-                    ),
-                };
-                tx.execute(
-                    "INSERT OR REPLACE INTO data_quality_issue (id, dataset_version, instrument_id, session_date, kind, sources, detail)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        issue.id,
-                        issue.dataset_version,
-                        issue.instrument_id,
-                        issue.session_date.to_string(),
-                        issue.kind,
-                        issue.sources,
-                        issue.detail,
-                    ],
-                )?;
-                revision_issues.push(issue);
-            }
-
-            let row_id = format!(
-                "BAR:{}:{}:{}:{}:{}:{dataset_version}",
-                bar.instrument_id, bar.timeframe, adj_str, bar.source, bar.session_date
-            );
-            tx.execute(
+        {
+            let mut lookup_daily = tx.prepare_cached(
+                "SELECT id, valid_from_version, open_at, close_at, open, high, low, close, volume
+                 FROM bar
+                 WHERE instrument_id = ?1 AND timeframe = ?2 AND adjustment = ?3
+                   AND source = ?4 AND session_date = ?5 AND valid_to_version IS NULL",
+            )?;
+            let mut lookup_intraday = tx.prepare_cached(
+                "SELECT id, valid_from_version, open_at, close_at, open, high, low, close, volume
+                 FROM bar
+                 WHERE instrument_id = ?1 AND timeframe = ?2 AND adjustment = ?3
+                   AND source = ?4 AND open_at = ?5 AND valid_to_version IS NULL",
+            )?;
+            let mut update_same_version = tx.prepare_cached(
+                "UPDATE bar
+                 SET session = ?2, session_date = ?3, open_at = ?4, close_at = ?5,
+                     open = ?6, high = ?7, low = ?8, close = ?9, volume = ?10, raw_payload_hash = ?11
+                 WHERE id = ?1",
+            )?;
+            let mut close_old_interval =
+                tx.prepare_cached("UPDATE bar SET valid_to_version = ?1 WHERE id = ?2")?;
+            let mut insert_dqi = tx.prepare_cached(
+                "INSERT OR REPLACE INTO data_quality_issue (id, dataset_version, instrument_id, session_date, kind, sources, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            let mut insert_bar = tx.prepare_cached(
                 "INSERT INTO bar (
                     id, instrument_id, timeframe, session, session_date, open_at, close_at,
                     open, high, low, close, volume, source, adjustment, is_final,
                     valid_from_version, valid_to_version, raw_payload_hash
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17)",
-                params![
+            )?;
+
+            for bar in bars {
+                // Only commit finalized bars (`is_final == true`) for daily sync
+                if !bar.is_final {
+                    continue;
+                }
+                if bar.close <= Decimal::ZERO
+                    || bar.open <= Decimal::ZERO
+                    || bar.low <= Decimal::ZERO
+                    || bar.volume < Decimal::ZERO
+                    || bar.high < bar.open.max(bar.close)
+                    || bar.low > bar.open.min(bar.close)
+                    || bar.low > bar.high
+                    || bar.close_at <= bar.open_at
+                {
+                    return Err(StorageError::IntegrityFailed(
+                        "invalid finalized OHLCV bar".into(),
+                    ));
+                }
+                let session_date_str = bar.session_date.to_string();
+                let open_str = bar.open_at.to_rfc3339();
+                let close_str = bar.close_at.to_rfc3339();
+                let adj_str = bar.adjustment.as_str();
+
+                type ExistingBar = (
+                    String,
+                    i64,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                );
+                let map_existing = |r: &rusqlite::Row<'_>| -> rusqlite::Result<ExistingBar> {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                    ))
+                };
+                let existing: Option<ExistingBar> = if bar.timeframe == "1d" {
+                    lookup_daily
+                        .query_row(
+                            params![
+                                bar.instrument_id,
+                                bar.timeframe,
+                                adj_str,
+                                bar.source,
+                                session_date_str
+                            ],
+                            map_existing,
+                        )
+                        .optional()?
+                } else {
+                    lookup_intraday
+                        .query_row(
+                            params![
+                                bar.instrument_id,
+                                bar.timeframe,
+                                adj_str,
+                                bar.source,
+                                open_str
+                            ],
+                            map_existing,
+                        )
+                        .optional()?
+                };
+
+                let new_open = to_canonical_text(bar.open);
+                let new_high = to_canonical_text(bar.high);
+                let new_low = to_canonical_text(bar.low);
+                let new_close = to_canonical_text(bar.close);
+                let new_vol = to_canonical_text(bar.volume);
+
+                if let Some((
+                    old_id,
+                    old_valid_from,
+                    old_open_at,
+                    old_close_at,
+                    old_o,
+                    old_h,
+                    old_l,
+                    old_c,
+                    old_v,
+                )) = existing
+                {
+                    if old_o == new_open
+                        && old_h == new_high
+                        && old_l == new_low
+                        && old_c == new_close
+                        && old_v == new_vol
+                        && old_open_at == open_str
+                        && old_close_at == close_str
+                    {
+                        // Identical content: idempotent skip without duplicating row
+                        continue;
+                    }
+                    if old_valid_from == dataset_version {
+                        // Same unpublished dataset version: update in place instead of colliding PK / zero-width interval.
+                        update_same_version.execute(params![
+                            old_id,
+                            bar.session,
+                            session_date_str,
+                            open_str,
+                            close_str,
+                            new_open,
+                            new_high,
+                            new_low,
+                            new_close,
+                            new_vol,
+                            bar.raw_payload_hash,
+                        ])?;
+                        inserted_or_revised += 1;
+                        continue;
+                    }
+                    // Content changed in overlap window! Close old version interval and record data_revision (S-09)
+                    close_old_interval.execute(params![dataset_version, old_id])?;
+                    let issue_key = if bar.timeframe == "1d" {
+                        session_date_str.clone()
+                    } else {
+                        format!(
+                            "{}:{}",
+                            bar.timeframe,
+                            bar.open_at.format("%Y-%m-%dT%H:%MZ")
+                        )
+                    };
+                    let issue = DataQualityIssue {
+                        id: format!(
+                            "DQI:REV:{}:{}:{dataset_version}",
+                            bar.instrument_id, issue_key
+                        ),
+                        dataset_version,
+                        instrument_id: bar.instrument_id.clone(),
+                        session_date: bar.session_date,
+                        kind: "data_revision".to_string(),
+                        sources: bar.source.clone(),
+                        detail: format!(
+                            "bar revised at version {dataset_version}: close {old_c} -> {new_close}, volume {old_v} -> {new_vol}"
+                        ),
+                    };
+                    insert_dqi.execute(params![
+                        issue.id,
+                        issue.dataset_version,
+                        issue.instrument_id,
+                        session_date_str,
+                        issue.kind,
+                        issue.sources,
+                        issue.detail,
+                    ])?;
+                    revision_issues.push(issue);
+                }
+
+                // Daily ids keep their historical session_date key; intraday ids key on the open instant.
+                let row_id = if bar.timeframe == "1d" {
+                    format!(
+                        "BAR:{}:{}:{}:{}:{}:{dataset_version}",
+                        bar.instrument_id, bar.timeframe, adj_str, bar.source, session_date_str
+                    )
+                } else {
+                    format!(
+                        "BAR:{}:{}:{}:{}:{}:{dataset_version}",
+                        bar.instrument_id,
+                        bar.timeframe,
+                        adj_str,
+                        bar.source,
+                        bar.open_at.format("%Y-%m-%dT%H:%MZ")
+                    )
+                };
+                insert_bar.execute(params![
                     row_id,
                     bar.instrument_id,
                     bar.timeframe,
                     bar.session,
-                    bar.session_date.to_string(),
+                    session_date_str,
                     open_str,
-                    bar.close_at.to_rfc3339(),
+                    close_str,
                     new_open,
                     new_high,
                     new_low,
@@ -1233,9 +1589,9 @@ impl SqliteStore {
                     if bar.is_final { 1 } else { 0 },
                     dataset_version,
                     bar.raw_payload_hash,
-                ],
-            )?;
-            inserted_or_revised += 1;
+                ])?;
+                inserted_or_revised += 1;
+            }
         }
 
         if let Some(cp) = checkpoint {
@@ -1300,103 +1656,36 @@ impl SqliteStore {
                AND (?5 IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', close_at) <= strftime('%Y-%m-%dT%H:%M:%fZ', ?5))
              ORDER BY open_at ASC";
 
-        let parse_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Option<BarRecord>> {
-            let s_date_str = r.get_ref(4)?.as_str()?;
-            let open_str = r.get_ref(5)?.as_str()?;
-            let close_str = r.get_ref(6)?.as_str()?;
-            let o_str = r.get_ref(7)?.as_str()?;
-            let h_str = r.get_ref(8)?.as_str()?;
-            let l_str = r.get_ref(9)?.as_str()?;
-            let c_str = r.get_ref(10)?.as_str()?;
-            let v_str = r.get_ref(11)?.as_str()?;
-            let adj_raw = r.get_ref(13)?.as_str()?;
-            let is_fin: i64 = r.get(14)?;
-
-            let close_at = DateTime::parse_from_rfc3339(close_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        6,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-            if let Some(cutoff) = visible_until {
-                if close_at > cutoff {
-                    return Ok(None);
-                }
-            }
-            let session_date = NaiveDate::parse_from_str(s_date_str, "%Y-%m-%d").map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-            let open_at = DateTime::parse_from_rfc3339(open_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        5,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-
-            let map_dec = |s: &str| {
-                parse_decimal_lossless(s).map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        7,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })
-            };
-
-            Ok(Some(BarRecord {
-                id: r.get(0)?,
-                instrument_id: r.get(1)?,
-                timeframe: r.get(2)?,
-                session: r.get(3)?,
-                session_date,
-                open_at,
-                close_at,
-                open: map_dec(o_str)?,
-                high: map_dec(h_str)?,
-                low: map_dec(l_str)?,
-                close: map_dec(c_str)?,
-                volume: map_dec(v_str)?,
-                source: r.get(12)?,
-                adjustment: AdjustmentKind::parse(adj_raw).unwrap_or(AdjustmentKind::Raw),
-                is_final: is_fin != 0,
-                valid_from_version: r.get(15)?,
-                valid_to_version: r.get(16)?,
-                raw_payload_hash: r.get(17)?,
-            }))
-        };
-
         let mut out = Vec::new();
         if let Some(src) = source {
             let mut stmt = self.conn.prepare_cached(sql_with_source)?;
             let rows = stmt.query_map(
                 params![instrument_id, timeframe, adj_str, src, version, cutoff_str],
-                parse_row,
+                |r| Ok(map_bar_row(r)),
             )?;
             for row in rows {
-                if let Some(rec) = row? {
-                    out.push(rec);
+                let rec = row??;
+                if let Some(cutoff) = visible_until {
+                    if rec.close_at > cutoff {
+                        continue;
+                    }
                 }
+                out.push(rec);
             }
         } else {
             let mut stmt = self.conn.prepare_cached(sql_any_source)?;
             let rows = stmt.query_map(
                 params![instrument_id, timeframe, adj_str, version, cutoff_str],
-                parse_row,
+                |r| Ok(map_bar_row(r)),
             )?;
             for row in rows {
-                if let Some(rec) = row? {
-                    out.push(rec);
+                let rec = row??;
+                if let Some(cutoff) = visible_until {
+                    if rec.close_at > cutoff {
+                        continue;
+                    }
                 }
+                out.push(rec);
             }
         }
         Ok(out)
@@ -1406,20 +1695,10 @@ impl SqliteStore {
         &mut self,
         actions: &[CorporateActionRecord],
     ) -> Result<usize, StorageError> {
+        let mut checked_versions = std::collections::HashSet::new();
         for action in actions {
-            self.ensure_unpublished(action.factor_version)?;
-            let previous: Option<i64> = self
-                .conn
-                .query_row(
-                    "SELECT factor_version FROM corporate_action WHERE id=?1",
-                    params![action.id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if previous.is_some_and(|version| version != action.factor_version) {
-                return Err(StorageError::IntegrityFailed(
-                    "company action ID belongs to another version".into(),
-                ));
+            if checked_versions.insert(action.factor_version) {
+                self.ensure_unpublished(action.factor_version)?;
             }
             if action.ratio_or_amount < Decimal::ZERO
                 || (action.action_type == CorporateActionType::Split
@@ -1432,13 +1711,24 @@ impl SqliteStore {
         }
         let tx = self.conn.savepoint()?;
         let mut count = 0;
-        for act in actions {
-            tx.execute(
+        {
+            let mut lookup =
+                tx.prepare_cached("SELECT factor_version FROM corporate_action WHERE id=?1")?;
+            let mut insert = tx.prepare_cached(
                 "INSERT OR REPLACE INTO corporate_action (
                     id, instrument_id, action_type, ex_date, pay_date,
                     ratio_or_amount, currency, announced_at, source, factor_version, raw_payload_hash
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
+            )?;
+            for act in actions {
+                let previous: Option<i64> =
+                    lookup.query_row(params![act.id], |r| r.get(0)).optional()?;
+                if previous.is_some_and(|version| version != act.factor_version) {
+                    return Err(StorageError::IntegrityFailed(
+                        "company action ID belongs to another version".into(),
+                    ));
+                }
+                insert.execute(params![
                     act.id,
                     act.instrument_id,
                     act.action_type.as_str(),
@@ -1450,9 +1740,9 @@ impl SqliteStore {
                     act.source,
                     act.factor_version,
                     act.raw_payload_hash,
-                ],
-            )?;
-            count += 1;
+                ])?;
+                count += 1;
+            }
         }
         tx.commit()?;
         Ok(count)
@@ -1463,7 +1753,7 @@ impl SqliteStore {
         instrument_id: &str,
         max_factor_version: Option<i64>,
     ) -> Result<Vec<CorporateActionRecord>, StorageError> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, instrument_id, action_type, ex_date, pay_date,
                     ratio_or_amount, currency, announced_at, source, factor_version, raw_payload_hash
              FROM corporate_action
@@ -1476,62 +1766,11 @@ impl SqliteStore {
              ORDER BY ex_date ASC",
         )?;
         let rows = stmt.query_map(params![instrument_id, max_factor_version], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, String>(5)?,
-                r.get::<_, Option<String>>(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, String>(8)?,
-                r.get::<_, i64>(9)?,
-                r.get::<_, Option<String>>(10)?,
-            ))
+            Ok(map_corporate_action_row(r))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, inst, act_type, ex_str, pay_str, ratio_str, ccy, ann_str, src, fv, rh) = row?;
-            out.push(CorporateActionRecord {
-                id,
-                instrument_id: inst,
-                action_type: match act_type.as_str() {
-                    "split" => CorporateActionType::Split,
-                    "cash_dividend" => CorporateActionType::CashDividend,
-                    _ => {
-                        return Err(StorageError::IntegrityFailed(
-                            "unknown company action type".into(),
-                        ))
-                    }
-                },
-                ex_date: NaiveDate::parse_from_str(&ex_str, "%Y-%m-%d").map_err(|_| {
-                    StorageError::IntegrityFailed("invalid company action date".into())
-                })?,
-                pay_date: pay_str
-                    .map(|s| {
-                        NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| {
-                            StorageError::IntegrityFailed("invalid company action pay date".into())
-                        })
-                    })
-                    .transpose()?,
-                ratio_or_amount: parse_decimal_lossless(&ratio_str)?,
-                currency: ccy,
-                announced_at: ann_str
-                    .map(|s| {
-                        DateTime::parse_from_rfc3339(&s)
-                            .map(|dt| dt.with_timezone(&Utc))
-                            .map_err(|_| {
-                                StorageError::IntegrityFailed(
-                                    "invalid company action announcement time".into(),
-                                )
-                            })
-                    })
-                    .transpose()?,
-                source: src,
-                factor_version: fv,
-                raw_payload_hash: rh,
-            });
+            out.push(row??);
         }
         Ok(out)
     }
@@ -1541,20 +1780,10 @@ impl SqliteStore {
         rates: &[FxRateRecord],
         checkpoint: Option<&SyncCheckpointRecord>,
     ) -> Result<usize, StorageError> {
+        let mut checked_versions = std::collections::HashSet::new();
         for rate in rates {
-            self.ensure_unpublished(rate.dataset_version)?;
-            let previous: Option<i64> = self
-                .conn
-                .query_row(
-                    "SELECT dataset_version FROM fx_rate WHERE id=?1",
-                    params![rate.id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if previous.is_some_and(|version| version != rate.dataset_version) {
-                return Err(StorageError::IntegrityFailed(
-                    "FX ID belongs to another version".into(),
-                ));
+            if checked_versions.insert(rate.dataset_version) {
+                self.ensure_unpublished(rate.dataset_version)?;
             }
             if rate.rate <= Decimal::ZERO {
                 return Err(StorageError::IntegrityFailed(
@@ -1564,13 +1793,25 @@ impl SqliteStore {
         }
         let tx = self.conn.savepoint()?;
         let mut count = 0;
-        for r in rates {
-            tx.execute(
+        {
+            let mut lookup =
+                tx.prepare_cached("SELECT dataset_version FROM fx_rate WHERE id=?1")?;
+            let mut insert = tx.prepare_cached(
                 "INSERT OR REPLACE INTO fx_rate (
                     id, base_currency, quote_currency, rate, effective_date,
                     effective_at, observed_at, source, quality, carried_from_date, dataset_version
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
+            )?;
+            for r in rates {
+                let previous: Option<i64> = lookup
+                    .query_row(params![r.id], |row| row.get(0))
+                    .optional()?;
+                if previous.is_some_and(|version| version != r.dataset_version) {
+                    return Err(StorageError::IntegrityFailed(
+                        "FX ID belongs to another version".into(),
+                    ));
+                }
+                insert.execute(params![
                     r.id,
                     r.base_currency.to_ascii_uppercase(),
                     r.quote_currency.to_ascii_uppercase(),
@@ -1582,9 +1823,9 @@ impl SqliteStore {
                     r.quality.as_str(),
                     r.carried_from_date.map(|d| d.to_string()),
                     r.dataset_version,
-                ],
-            )?;
-            count += 1;
+                ])?;
+                count += 1;
+            }
         }
         if let Some(cp) = checkpoint {
             tx.execute(
@@ -1643,12 +1884,14 @@ impl SqliteStore {
         issues: &[DataQualityIssue],
     ) -> Result<(), StorageError> {
         let tx = self.conn.savepoint()?;
-        for issue in issues {
-            tx.execute(
+        {
+            let mut stmt = tx.prepare_cached(
                 "INSERT OR REPLACE INTO data_quality_issue (
                     id, dataset_version, instrument_id, session_date, kind, sources, detail
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
+            )?;
+            for issue in issues {
+                stmt.execute(params![
                     issue.id,
                     issue.dataset_version,
                     issue.instrument_id,
@@ -1656,34 +1899,46 @@ impl SqliteStore {
                     issue.kind,
                     issue.sources,
                     issue.detail,
-                ],
-            )?;
+                ])?;
+            }
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn list_quality_issues(&self) -> Result<Vec<DataQualityIssue>, StorageError> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT id, dataset_version, instrument_id, session_date, kind, sources, detail
              FROM data_quality_issue ORDER BY session_date ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
-            let d_str: String = r.get(3)?;
-            Ok(DataQualityIssue {
-                id: r.get(0)?,
-                dataset_version: r.get(1)?,
-                instrument_id: r.get(2)?,
-                session_date: NaiveDate::parse_from_str(&d_str, "%Y-%m-%d")
-                    .unwrap_or_else(|_| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
-                kind: r.get(4)?,
-                sources: r.get(5)?,
-                detail: r.get(6)?,
-            })
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row?);
+            let (id, dataset_version, instrument_id, d_str, kind, sources, detail) = row?;
+            let session_date = NaiveDate::parse_from_str(&d_str, "%Y-%m-%d").map_err(|e| {
+                StorageError::IntegrityFailed(format!(
+                    "invalid data_quality_issue session_date '{d_str}': {e}"
+                ))
+            })?;
+            out.push(DataQualityIssue {
+                id,
+                dataset_version,
+                instrument_id,
+                session_date,
+                kind,
+                sources,
+                detail,
+            });
         }
         Ok(out)
     }
@@ -1711,6 +1966,7 @@ impl SqliteStore {
 
         let mut sessions = Vec::new();
         let mut gaps = Vec::new();
+        let mut resolved_dates = Vec::new();
         let mut cur = start;
         while cur <= end {
             let sess = query_calendar_session(venue, cur);
@@ -1720,7 +1976,7 @@ impl SqliteStore {
                 }
                 CalendarSessionKind::CalendarUnknown => {
                     gaps.push(CoverageGap {
-                        id: format!("GAP:UNKNOWN:{instrument_id}:{cur}"),
+                        id: format!("GAP:UNKNOWN:{instrument_id}:{cur}:v{dataset_version}"),
                         dataset_version,
                         instrument_id: instrument_id.to_string(),
                         start_date: cur,
@@ -1734,7 +1990,7 @@ impl SqliteStore {
                 | CalendarSessionKind::Crypto24x7 => {
                     if !present_dates.contains(&cur) {
                         gaps.push(CoverageGap {
-                            id: format!("GAP:MISSING:{instrument_id}:{cur}"),
+                            id: format!("GAP:MISSING:{instrument_id}:{cur}:v{dataset_version}"),
                             dataset_version,
                             instrument_id: instrument_id.to_string(),
                             start_date: cur,
@@ -1742,6 +1998,8 @@ impl SqliteStore {
                             gap_kind: "provider_missing".to_string(),
                             resolution: "open".to_string(),
                         });
+                    } else {
+                        resolved_dates.push(cur);
                     }
                 }
             }
@@ -1753,11 +2011,25 @@ impl SqliteStore {
         }
 
         let tx = self.conn.savepoint()?;
-        for gap in &gaps {
-            tx.execute(
+        {
+            let mut resolve_stmt = tx.prepare_cached(
+                "UPDATE coverage_gap
+                 SET resolution = 'resolved'
+                 WHERE instrument_id = ?1
+                   AND dataset_version <= ?2
+                   AND start_date = ?3
+                   AND end_date = ?3
+                   AND resolution != 'resolved'",
+            )?;
+            for d in &resolved_dates {
+                resolve_stmt.execute(params![instrument_id, dataset_version, d.to_string()])?;
+            }
+            let mut insert_stmt = tx.prepare_cached(
                 "INSERT OR REPLACE INTO coverage_gap (id, dataset_version, instrument_id, start_date, end_date, gap_kind, resolution)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
+            )?;
+            for gap in &gaps {
+                insert_stmt.execute(params![
                     gap.id,
                     gap.dataset_version,
                     gap.instrument_id,
@@ -1765,27 +2037,35 @@ impl SqliteStore {
                     gap.end_date.to_string(),
                     gap.gap_kind,
                     gap.resolution,
-                ],
-            )?;
+                ])?;
+            }
         }
         tx.commit()?;
         Ok((sessions, gaps))
     }
 
-    /// Update `manifest.json` in `root_dir` with current file hashes.
-    pub fn sync_manifest(&self) -> Result<LibraryManifest, StorageError> {
-        let (lib_id, schema_ver, book_ccy, rep_ccy, tz, created_at): (
-            String,
-            i64,
-            String,
-            String,
-            String,
-            String,
-        ) = self.conn.query_row(
+    fn read_library_header(
+        &self,
+    ) -> Result<(String, i64, String, String, String, String), StorageError> {
+        Ok(self.conn.query_row(
             "SELECT id, schema_version, book_currency, report_currency, timezone, created_at FROM library LIMIT 1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )?;
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )?)
+    }
+
+    /// Update `manifest.json` in `root_dir` with current file hashes.
+    pub fn sync_manifest(&self) -> Result<LibraryManifest, StorageError> {
+        let (lib_id, schema_ver, book_ccy, rep_ccy, tz, created_at) = self.read_library_header()?;
 
         let mut file_hashes = BTreeMap::new();
         for (relative, path) in library_files(&self.root_dir)? {
@@ -1806,17 +2086,21 @@ impl SqliteStore {
             table_row_counts,
         };
         let manifest_path = self.root_dir.join("manifest.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+        write_bytes_atomic(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest)?.as_bytes(),
+        )?;
         Ok(manifest)
     }
 
     /// Create an atomic consistent backup using the SQLite Backup API (`rusqlite::backup::Backup`)
-    /// plus all referenced files (`raw/`, `imports/`, `attachments/`) and a verified `manifest.json` (AC-09).
+    /// plus all referenced files (`raw/`, `imports/`, `attachments/`, `settings/`) and a verified `manifest.json` (AC-09).
     pub fn create_consistent_backup(
         &self,
         backup_dir: &Path,
     ) -> Result<LibraryManifest, StorageError> {
-        if backup_dir.exists() {
+        let existed_before = backup_dir.exists();
+        if existed_before {
             let mut entries = fs::read_dir(backup_dir)?;
             if entries.next().is_some() {
                 return Err(StorageError::RestoreTargetNotEmpty(
@@ -1824,56 +2108,86 @@ impl SqliteStore {
                 ));
             }
         }
-        fs::create_dir_all(backup_dir)?;
-        let target = fs::canonicalize(backup_dir)?;
-        let source = fs::canonicalize(&self.root_dir)?;
-        if ["raw", "imports", "attachments", "settings"]
-            .iter()
-            .any(|name| target.starts_with(source.join(name)))
-        {
-            return Err(StorageError::IntegrityFailed(
-                "backup target cannot be inside referenced library files".into(),
-            ));
-        }
-        for sub in ["raw", "imports", "attachments", "settings"] {
-            fs::create_dir_all(backup_dir.join(sub))?;
-        }
-
-        let backup_db_path = backup_dir.join("delta.sqlite");
-        let backup_table_counts = {
-            let mut dst_conn = Connection::open(&backup_db_path)?;
+        let build = || -> Result<LibraryManifest, StorageError> {
+            fs::create_dir_all(backup_dir)?;
+            let target = fs::canonicalize(backup_dir)?;
+            let source = fs::canonicalize(&self.root_dir)?;
+            if ["raw", "imports", "attachments", "settings"]
+                .iter()
+                .any(|name| target.starts_with(source.join(name)))
             {
-                let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst_conn)?;
-                backup.run_to_completion(128, Duration::from_millis(10), None)?;
+                return Err(StorageError::IntegrityFailed(
+                    "backup target cannot be inside referenced library files".into(),
+                ));
             }
-            collect_library_table_counts(&dst_conn)?
+            for sub in ["raw", "imports", "attachments", "settings"] {
+                fs::create_dir_all(backup_dir.join(sub))?;
+            }
+
+            let backup_db_path = backup_dir.join("delta.sqlite");
+            let backup_table_counts = {
+                let mut dst_conn = Connection::open(&backup_db_path)?;
+                {
+                    let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst_conn)?;
+                    backup.run_to_completion(128, Duration::from_millis(10), None)?;
+                }
+                collect_library_table_counts(&dst_conn)?
+            };
+
+            let mut file_hashes = BTreeMap::new();
+            file_hashes.insert("delta.sqlite".to_string(), sha256_file(&backup_db_path)?);
+
+            for (relative, source) in library_files(&self.root_dir)? {
+                let dst = backup_dir.join(&relative);
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&source, &dst)?;
+                file_hashes.insert(relative, sha256_file(&dst)?);
+            }
+
+            let (lib_id, schema_ver, book_ccy, rep_ccy, tz, created_at) =
+                self.read_library_header()?;
+            let manifest = LibraryManifest {
+                schema_version: schema_ver,
+                library_id: lib_id,
+                book_currency: book_ccy,
+                report_currency: rep_ccy,
+                timezone: tz,
+                created_at,
+                updated_at: Utc::now().to_rfc3339(),
+                file_hashes,
+                table_row_counts: backup_table_counts,
+            };
+            let manifest_path = backup_dir.join("manifest.json");
+            write_bytes_atomic(
+                &manifest_path,
+                serde_json::to_string_pretty(&manifest)?.as_bytes(),
+            )?;
+            Ok(manifest)
         };
-
-        let mut file_hashes = BTreeMap::new();
-        file_hashes.insert("delta.sqlite".to_string(), sha256_file(&backup_db_path)?);
-
-        for (relative, source) in library_files(&self.root_dir)? {
-            let target = backup_dir.join(&relative);
-            fs::create_dir_all(target.parent().unwrap())?;
-            fs::copy(&source, &target)?;
-            file_hashes.insert(relative, sha256_file(&target)?);
+        match build() {
+            Ok(m) => Ok(m),
+            Err(err) => {
+                if !existed_before {
+                    let _ = fs::remove_dir_all(backup_dir);
+                }
+                Err(err)
+            }
         }
-
-        let mut manifest = self.sync_manifest()?;
-        manifest.file_hashes = file_hashes;
-        manifest.table_row_counts = backup_table_counts;
-        let manifest_path = backup_dir.join("manifest.json");
-        fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
-        Ok(manifest)
     }
 
-    /// Restore a backup into `target_dir` after verifying all SHA-256 hashes, SQLite integrity,
-    /// and foreign key constraints. Refuses if `target_dir` is non-empty (AC-09 / M1-W01).
-    pub fn restore_consistent_backup(
+    /// Shared verified backup staging helper used by both `restore_consistent_backup` and
+    /// `restore_consistent_backup_without_migration`. Validates paths, links/reparse points,
+    /// SHA-256 hashes, SQLite integrity, foreign keys, identity, and row counts BEFORE writing
+    /// anything into `target_dir`, and cleans up `target_dir` if staging or `post_stage` fails.
+    pub(crate) fn restore_backup_staged<T>(
         backup_dir: &Path,
         target_dir: &Path,
-    ) -> Result<Self, StorageError> {
-        if target_dir.exists() {
+        post_stage: impl FnOnce(&LibraryManifest) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let existed_before = target_dir.exists();
+        if existed_before {
             let mut entries = fs::read_dir(target_dir)?;
             if entries.next().is_some() {
                 return Err(StorageError::RestoreTargetNotEmpty(
@@ -1881,11 +2195,21 @@ impl SqliteStore {
                 ));
             }
         }
+        if is_reparse_or_symlink(backup_dir)? {
+            return Err(StorageError::IntegrityFailed(
+                "backup directory cannot be a symlink or reparse point".into(),
+            ));
+        }
 
         let manifest_path = backup_dir.join("manifest.json");
-        if !manifest_path.exists() {
+        if !manifest_path.is_file() {
             return Err(StorageError::IntegrityFailed(
                 "missing manifest.json in backup directory".to_string(),
+            ));
+        }
+        if is_reparse_or_symlink(&manifest_path)? {
+            return Err(StorageError::IntegrityFailed(
+                "backup manifest cannot be a symlink or reparse point".into(),
             ));
         }
         let manifest: LibraryManifest = serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
@@ -1896,7 +2220,9 @@ impl SqliteStore {
             ));
         }
 
-        // Verify all file hashes in backup_dir before copying
+        let canonical_root = fs::canonicalize(backup_dir)?;
+
+        // Verify all file paths, links, and hashes in backup_dir before copying
         for (rel_path, expected_hash) in &manifest.file_hashes {
             if rel_path.contains(':')
                 || rel_path.contains('\\')
@@ -1908,17 +2234,30 @@ impl SqliteStore {
                     "path traversal rejected in backup manifest: {rel_path}"
                 )));
             }
-            let src_file = backup_dir.join(rel_path);
-            let canonical_root = fs::canonicalize(backup_dir)?;
-            if !fs::canonicalize(&src_file)?.starts_with(&canonical_root) {
-                return Err(StorageError::IntegrityFailed(
-                    "backup link escapes root".into(),
-                ));
+            let mut check_path = backup_dir.to_path_buf();
+            for comp in Path::new(rel_path).components() {
+                check_path.push(comp);
+                if !check_path.exists() {
+                    return Err(StorageError::IntegrityFailed(format!(
+                        "missing file referenced in backup manifest: {rel_path}"
+                    )));
+                }
+                if is_reparse_or_symlink(&check_path)? {
+                    return Err(StorageError::IntegrityFailed(
+                        "backup link or reparse point escapes root".into(),
+                    ));
+                }
             }
+            let src_file = backup_dir.join(rel_path);
             if !src_file.is_file() {
                 return Err(StorageError::IntegrityFailed(format!(
                     "missing file referenced in backup manifest: {rel_path}"
                 )));
+            }
+            if !fs::canonicalize(&src_file)?.starts_with(&canonical_root) {
+                return Err(StorageError::IntegrityFailed(
+                    "backup link escapes root".into(),
+                ));
             }
             let actual_hash = sha256_file(&src_file)?;
             if &actual_hash != expected_hash {
@@ -1969,99 +2308,145 @@ impl SqliteStore {
         }
         drop(source);
 
-        // Copy verified files to target_dir
-        fs::create_dir_all(target_dir)?;
-        for sub in [
-            "raw",
-            "imports",
-            "attachments",
-            "backups",
-            "logs",
-            "cache",
-            "settings",
-        ] {
-            fs::create_dir_all(target_dir.join(sub))?;
-        }
-        for rel_path in manifest.file_hashes.keys() {
-            let src_file = backup_dir.join(rel_path);
-            let dst_file = target_dir.join(rel_path);
-            if let Some(parent) = dst_file.parent() {
-                fs::create_dir_all(parent)?;
+        let stage_and_verify = || -> Result<T, StorageError> {
+            fs::create_dir_all(target_dir)?;
+            for sub in [
+                "raw",
+                "imports",
+                "attachments",
+                "backups",
+                "logs",
+                "cache",
+                "settings",
+            ] {
+                fs::create_dir_all(target_dir.join(sub))?;
             }
-            fs::copy(&src_file, &dst_file)?;
-        }
-        fs::copy(&manifest_path, target_dir.join("manifest.json"))?;
+            for rel_path in manifest.file_hashes.keys() {
+                let src_file = backup_dir.join(rel_path);
+                let dst_file = target_dir.join(rel_path);
+                if let Some(parent) = dst_file.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&src_file, &dst_file)?;
+            }
+            fs::copy(&manifest_path, target_dir.join("manifest.json"))?;
+            post_stage(&manifest)
+        };
 
-        // Open and verify foreign_key_check and integrity_check
-        let store = Self::open_or_init(
-            target_dir,
-            &manifest.book_currency,
-            &manifest.report_currency,
-            &manifest.timezone,
-        )?;
-        let fk_violations: i64 =
-            store
-                .conn
-                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
-                    r.get(0)
-                })?;
-        if fk_violations != 0 {
-            return Err(StorageError::IntegrityFailed(format!(
-                "restored database has {fk_violations} foreign key violations"
-            )));
+        match stage_and_verify() {
+            Ok(val) => Ok(val),
+            Err(err) => {
+                if !existed_before {
+                    let _ = fs::remove_dir_all(target_dir);
+                } else if let Ok(entries) = fs::read_dir(target_dir) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            let _ = fs::remove_dir_all(p);
+                        } else {
+                            let _ = fs::remove_file(p);
+                        }
+                    }
+                }
+                Err(err)
+            }
         }
-        if !manifest.table_row_counts.is_empty() {
-            let restored_counts = collect_library_table_counts(&store.conn)?;
-            for (table, &expected) in &manifest.table_row_counts {
-                let actual = restored_counts.get(table).copied().unwrap_or(0);
-                if manifest.schema_version == CURRENT_SCHEMA_VERSION {
-                    if actual != expected {
+    }
+
+    /// Restore a backup into `target_dir` after verifying all SHA-256 hashes, SQLite integrity,
+    /// and foreign key constraints. Refuses if `target_dir` is non-empty (AC-09 / M1-W01).
+    pub fn restore_consistent_backup(
+        backup_dir: &Path,
+        target_dir: &Path,
+    ) -> Result<Self, StorageError> {
+        Self::restore_backup_staged(backup_dir, target_dir, |manifest| {
+            // Open and verify foreign_key_check and integrity_check
+            let store = Self::open_or_init(
+                target_dir,
+                &manifest.book_currency,
+                &manifest.report_currency,
+                &manifest.timezone,
+            )?;
+            let fk_violations: i64 =
+                store
+                    .conn
+                    .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                        r.get(0)
+                    })?;
+            if fk_violations != 0 {
+                return Err(StorageError::IntegrityFailed(format!(
+                    "restored database has {fk_violations} foreign key violations"
+                )));
+            }
+            if !manifest.table_row_counts.is_empty() {
+                let restored_counts = collect_library_table_counts(&store.conn)?;
+                for (table, &expected) in &manifest.table_row_counts {
+                    let actual = restored_counts.get(table).copied().unwrap_or(0);
+                    if manifest.schema_version == CURRENT_SCHEMA_VERSION {
+                        if actual != expected {
+                            return Err(StorageError::IntegrityFailed(format!(
+                                "restored table '{table}' count mismatch: expected {expected}, got {actual}"
+                            )));
+                        }
+                    } else if actual < expected {
                         return Err(StorageError::IntegrityFailed(format!(
-                            "restored table '{table}' count mismatch: expected {expected}, got {actual}"
+                            "upgraded restored table '{table}' lost rows: expected >= {expected}, got {actual}"
                         )));
                     }
-                } else if actual < expected {
-                    return Err(StorageError::IntegrityFailed(format!(
-                        "upgraded restored table '{table}' lost rows: expected >= {expected}, got {actual}"
-                    )));
                 }
             }
-        }
-        Ok(store)
+            Ok(store)
+        })
     }
 }
 
 pub fn sha256_file(path: &Path) -> Result<String, StorageError> {
-    let bytes = fs::read(path)?;
+    let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     Ok(hex::encode(hasher.finalize()))
 }
 
 fn library_files(root: &Path) -> Result<Vec<(String, PathBuf)>, StorageError> {
+    let canonical_root = fs::canonicalize(root)?;
     fn walk(
         root: &Path,
+        canonical_root: &Path,
         directory: &Path,
         out: &mut Vec<(String, PathBuf)>,
     ) -> Result<(), StorageError> {
         if !directory.exists() {
             return Ok(());
         }
+        if is_reparse_or_symlink(directory)? {
+            return Err(StorageError::IntegrityFailed(
+                "library directory is a link or reparse point".into(),
+            ));
+        }
         for item in fs::read_dir(directory)? {
             let path = item?.path();
-            if fs::symlink_metadata(&path)?.file_type().is_symlink()
-                || !fs::canonicalize(&path)?.starts_with(fs::canonicalize(root)?)
+            if is_reparse_or_symlink(&path)?
+                || !fs::canonicalize(&path)?.starts_with(canonical_root)
             {
                 return Err(StorageError::IntegrityFailed(
                     "library file escapes root".into(),
                 ));
             }
             if path.is_dir() {
-                walk(root, &path, out)?;
+                walk(root, canonical_root, &path, out)?;
             } else if path.is_file() {
                 out.push((
                     path.strip_prefix(root)
-                        .unwrap()
+                        .map_err(|_| {
+                            StorageError::IntegrityFailed("library file escapes root".into())
+                        })?
                         .to_string_lossy()
                         .replace('\\', "/"),
                     path,
@@ -2072,11 +2457,13 @@ fn library_files(root: &Path) -> Result<Vec<(String, PathBuf)>, StorageError> {
     }
     let mut files = Vec::new();
     for dir in ["raw", "imports", "attachments", "settings"] {
-        walk(root, &root.join(dir), &mut files)?;
+        walk(root, &canonical_root, &root.join(dir), &mut files)?;
     }
     let settings = root.join("settings.json");
     if settings.exists() {
-        if !fs::canonicalize(&settings)?.starts_with(fs::canonicalize(root)?) {
+        if is_reparse_or_symlink(&settings)?
+            || !fs::canonicalize(&settings)?.starts_with(&canonical_root)
+        {
             return Err(StorageError::IntegrityFailed(
                 "settings link escapes root".into(),
             ));

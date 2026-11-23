@@ -7,7 +7,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::packaging::{
-    check_runtime_imports, collect_files, copy_tree, failure, pe_imports, reject_link,
-    relative_file, InstallManifest,
+    collect_paths, collect_workspace_licenses, copy_tree, failure, inspect_product_binary,
+    pe_imports, reject_ancestors_links, reject_link, relative_file, run_static_crt_release_build,
+    CollectedLicenses, InstallManifest,
 };
 
 /// `fs::canonicalize` without the `\\?\` prefix, so paths read normally in logs and Inno.
@@ -143,18 +144,10 @@ fn identity_icon(identity: InstallIdentity) -> &'static str {
 pub(crate) struct PackagingContext {
     root: PathBuf,
     output: PathBuf,
-    licenses: PathBuf,
+    licenses: CollectedLicenses,
     iscc: PathBuf,
     tags: Vec<String>,
     pub fingerprint: String,
-}
-
-/// The collected license tree is copied into every staged installer; it is scratch data and
-/// must not pile up in the output directory across builds.
-impl Drop for PackagingContext {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.licenses);
-    }
 }
 
 impl PackagingContext {
@@ -170,37 +163,7 @@ impl PackagingContext {
         let fingerprint = crate::verify::source_fingerprint(&root)?;
         fs::create_dir_all(output).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
         let output = plain_canonical(output).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
-        let metadata_path = output.join("metadata.json");
-        let metadata = run_quiet_command(
-            OsStr::new("cargo"),
-            ["metadata", "--locked", "--format-version", "1"],
-            Some(&root),
-            &BTreeMap::new(),
-        )
-        .map_err(|e| failure("PACKAGE_METADATA", e))?;
-        if metadata.status_code != Some(0) || metadata.timed_out {
-            return Err(failure("PACKAGE_METADATA", "locked metadata failed"));
-        }
-        fs::write(&metadata_path, &metadata.stdout).map_err(|e| failure("PACKAGE_METADATA", e))?;
-        let licenses = output.join(format!("licenses-{}", uuid::Uuid::new_v4()));
-        let collected = run_quiet_command(
-            OsStr::new("python"),
-            [
-                root.join("scripts/collect_third_party_licenses.py")
-                    .display()
-                    .to_string(),
-                "--metadata".into(),
-                metadata_path.display().to_string(),
-                "--output".into(),
-                licenses.display().to_string(),
-            ],
-            Some(&root),
-            &BTreeMap::from([("PYTHONUTF8".into(), "1".into())]),
-        )
-        .map_err(|e| failure("PACKAGE_LICENSES", e))?;
-        if collected.status_code != Some(0) || collected.timed_out {
-            return Err(failure("PACKAGE_LICENSES", "license collection failed"));
-        }
+        let licenses = collect_workspace_licenses(&root, &output, false)?;
         let tags = git_tags(&root)?;
         Ok(Self {
             root,
@@ -240,36 +203,9 @@ impl PackagingContext {
             ("DELTA_IDENTITY".into(), identity.name().to_string()),
             ("DELTA_VERSION".into(), version.clone()),
             ("DELTA_SOURCE_FINGERPRINT".into(), self.fingerprint.clone()),
-            ("RUSTFLAGS".into(), "-C target-feature=+crt-static".into()),
-            (
-                "CARGO_ENCODED_RUSTFLAGS".into(),
-                "-C\u{1f}target-feature=+crt-static".into(),
-            ),
-            (
-                "CARGO_BUILD_JOBS".into(),
-                std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "4".into()),
-            ),
         ]);
         let started = Instant::now();
-        let build = run_quiet_command(
-            OsStr::new("cargo"),
-            [
-                "build".to_string(),
-                "--release".into(),
-                "--locked".into(),
-                "--target".into(),
-                "x86_64-pc-windows-msvc".into(),
-                "-p".into(),
-                "delta-desktop".into(),
-                "-p".into(),
-                "delta-cli".into(),
-                "--target-dir".into(),
-                target.display().to_string(),
-            ],
-            Some(&self.root),
-            &environment,
-        )
-        .map_err(|e| failure("PACKAGE_BUILD", e))?;
+        let build = run_static_crt_release_build(&self.root, &target, environment)?;
         fs::create_dir_all(target_dir).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
         let log_name = format!("build-{}-{version}-log.json", identity.name());
         fs::write(
@@ -323,7 +259,7 @@ impl PackagingContext {
             fs::copy(self.root.join(name), stage.join(name))
                 .map_err(|e| failure("PACKAGE_COPY", e))?;
         }
-        copy_tree(&self.licenses, &stage.join("third-party-licenses"))?;
+        copy_tree(&self.licenses.dir, &stage.join("third-party-licenses"))?;
         fs::write(stage.join("README.txt"), readme(identity, &version_text))
             .map_err(|e| failure("PACKAGE_README", e))?;
         let built_at = Utc::now().to_rfc3339();
@@ -450,20 +386,8 @@ pub(crate) fn verify_identity_binary(
     identity: InstallIdentity,
     version: &str,
 ) -> Result<Value, ErrorEnvelope> {
-    if !path.is_file() {
-        return Err(failure(
-            "MISSING_PRODUCT_BINARY",
-            format!("missing {}", path.display()),
-        ));
-    }
-    check_runtime_imports(&pe_imports(path)?)?;
-    let result = run_quiet_command(path.as_os_str(), ["--build-info"], None, &BTreeMap::new())
-        .map_err(|e| failure("PACKAGE_BINARY", e))?;
-    let info: Value = serde_json::from_str(&result.stdout)
-        .map_err(|_| failure("PACKAGE_BINARY", "binary did not return build information"))?;
-    if result.status_code != Some(0)
-        || result.timed_out
-        || info["product"] != product
+    let info = inspect_product_binary(path)?;
+    if info["product"] != product
         || info["identity"] != identity.name()
         || info["channel"] != identity.channel().as_str()
         || info["version"] != version
@@ -492,8 +416,22 @@ pub(crate) fn installed_value(identity: InstallIdentity, name: &str) -> Option<S
             .chain(std::iter::once(0))
             .collect();
         let value: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buffer = vec![0u16; 1024];
-        let mut size = (buffer.len() * 2) as u32;
+        let mut size = 0u32;
+        if RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        ) != 0
+            || size == 0
+        {
+            return None;
+        }
+        let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
+        let mut out_size = (buffer.len() * 2) as u32;
         let status = RegGetValueW(
             HKEY_CURRENT_USER,
             key.as_ptr(),
@@ -501,12 +439,13 @@ pub(crate) fn installed_value(identity: InstallIdentity, name: &str) -> Option<S
             RRF_RT_REG_SZ,
             std::ptr::null_mut(),
             buffer.as_mut_ptr().cast(),
-            &mut size,
+            &mut out_size,
         );
         if status != 0 {
             return None;
         }
-        let length = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
+        let used = (out_size as usize / 2).min(buffer.len());
+        let length = buffer[..used].iter().position(|c| *c == 0).unwrap_or(used);
         Some(String::from_utf16_lossy(&buffer[..length]))
     }
     #[cfg(not(windows))]
@@ -529,7 +468,9 @@ pub(crate) fn file_version_info(path: &Path) -> Option<(String, [u16; 4])> {
         if size == 0 {
             return None;
         }
-        let mut data = vec![0u8; size as usize];
+        // Allocate 4-byte aligned storage for Win32 VERSIONINFO structs; still use unaligned
+        // reads below so any internal offset returned by VerQueryValueW is guaranteed sound.
+        let mut data = vec![0u32; (size as usize).div_ceil(4)];
         if GetFileVersionInfoW(file.as_ptr(), 0, size, data.as_mut_ptr().cast()) == 0 {
             return None;
         }
@@ -541,45 +482,60 @@ pub(crate) fn file_version_info(path: &Path) -> Option<(String, [u16; 4])> {
             &mut pointer,
             &mut length,
         ) == 0
+            || pointer.is_null()
             || (length as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>()
         {
             return None;
         }
-        let fixed = &*(pointer as *const VS_FIXEDFILEINFO);
+        let fixed = std::ptr::read_unaligned(pointer as *const VS_FIXEDFILEINFO);
         let numbers = [
             (fixed.dwFileVersionMS >> 16) as u16,
             (fixed.dwFileVersionMS & 0xffff) as u16,
             (fixed.dwFileVersionLS >> 16) as u16,
             (fixed.dwFileVersionLS & 0xffff) as u16,
         ];
+        pointer = std::ptr::null_mut();
+        length = 0;
         if VerQueryValueW(
             data.as_ptr().cast(),
             wide("\\VarFileInfo\\Translation").as_ptr(),
             &mut pointer,
             &mut length,
         ) == 0
+            || pointer.is_null()
             || length < 4
         {
             return None;
         }
-        let translation = std::slice::from_raw_parts(pointer as *const u16, 2);
+        let lang = std::ptr::read_unaligned(pointer as *const u16);
+        let codepage = std::ptr::read_unaligned((pointer as *const u16).add(1));
         let query = format!(
             "\\StringFileInfo\\{:04x}{:04x}\\ProductVersion",
-            translation[0], translation[1]
+            lang, codepage
         );
+        pointer = std::ptr::null_mut();
+        length = 0;
         if VerQueryValueW(
             data.as_ptr().cast(),
             wide(&query).as_ptr(),
             &mut pointer,
             &mut length,
         ) == 0
+            || pointer.is_null()
             || length == 0
         {
             return None;
         }
-        let text = std::slice::from_raw_parts(pointer as *const u16, length as usize);
-        let end = text.iter().position(|c| *c == 0).unwrap_or(text.len());
-        Some((String::from_utf16_lossy(&text[..end]), numbers))
+        let mut text = Vec::with_capacity(length as usize);
+        let base = pointer as *const u16;
+        for i in 0..(length as usize) {
+            let unit = std::ptr::read_unaligned(base.add(i));
+            if unit == 0 {
+                break;
+            }
+            text.push(unit);
+        }
+        Some((String::from_utf16_lossy(&text), numbers))
     }
     #[cfg(not(windows))]
     {
@@ -804,10 +760,41 @@ pub(crate) struct InstallDevReceipt {
     pub was_running: bool,
     pub restarted: bool,
     pub restart_process_id: Option<u32>,
+    /// Started with `--background` (tray icon only without showing a window; D-36).
+    pub background: bool,
+    /// Started via the desktop shell (`explorer.exe`) so it runs outside any caller job (D-36).
+    #[serde(default)]
+    pub via_shell: bool,
+    /// The started app could not leave the caller's job object (an agent's command sandbox)
+    /// and may end with the command; open it once from the Start menu (D-36).
+    pub in_job: bool,
     pub setup: SetupRun,
 }
 
-/// `install-dev` (`S-30`): only dev-channel packages; never kills a running app.
+/// Flag that starts the desktop app in the system tray without showing a window (D-36).
+pub(crate) const BACKGROUND_FLAG: &str = "--background";
+
+/// Arguments for the app started after `install-dev`: its previous arguments when it was
+/// running, plus `--background` once (D-36).
+fn background_launch_args(mut previous: Vec<String>) -> Vec<String> {
+    if !previous.iter().any(|arg| arg == BACKGROUND_FLAG) {
+        previous.push(BACKGROUND_FLAG.into());
+    }
+    previous
+}
+
+/// Whether `install-dev` should ask the desktop shell (`explorer.exe`) to launch the app.
+///
+/// Only the real `delta-dev` identity uses the desktop shell (and only when `delta-cli` runs
+/// inside a job object): test identities (`--test-identity` in `M3-A-06`) must inherit the
+/// gate's isolated `DELTA_DATA_DIR` / `DELTA_DOCUMENTS_DIR` / `LOCALAPPDATA` environment.
+fn should_use_desktop_shell(identity: InstallIdentity, caller_in_job: bool) -> bool {
+    !identity.is_test() && caller_in_job
+}
+
+/// `install-dev` (`S-30`): only dev-channel packages; never kills a running app. After every
+/// successful install the app is started minimized in the background, whether it was running
+/// or not (D-36: the person keeps the dev build running).
 pub(crate) fn install_dev(
     package: &Path,
     expected: InstallIdentity,
@@ -825,14 +812,23 @@ pub(crate) fn install_dev(
             ),
         ));
     }
+    let validated_version = semver::Version::parse(&artifact.version)
+        .map_err(|e| {
+            failure(
+                "INSTALL_DEV_VERSION",
+                format!("invalid package version: {e}"),
+            )
+        })?
+        .to_string();
+    let directory = install_dir(identity)
+        .ok_or_else(|| failure("INSTALL_DEV_DIR", "LOCALAPPDATA is not set"))?;
     let previous = installed_version(identity);
     if let Some(previous) = &previous {
-        if !delta_app::is_upgrade(previous, &artifact.version) {
+        if !delta_app::is_upgrade(previous, &validated_version) {
             return Err(failure(
                 "INSTALL_DEV_DOWNGRADE",
                 format!(
-                    "installed {previous} is not older than package {}; nothing changed",
-                    artifact.version
+                    "installed {previous} is not older than package {validated_version}; nothing changed",
                 ),
             ));
         }
@@ -875,13 +871,12 @@ pub(crate) fn install_dev(
     }
     fs::create_dir_all(log_dir).map_err(|e| failure("INSTALL_DEV_LOG", e))?;
     let log = log_dir.join(format!(
-        "install-dev-{}-{}.log",
+        "install-dev-{}-{validated_version}.log",
         identity.name(),
-        artifact.version
     ));
     let setup = run_setup_silently(package, &log)?;
     let installed = installed_version(identity).unwrap_or_default();
-    if setup.exit_code != Some(0) || setup.timed_out || installed != artifact.version {
+    if setup.exit_code != Some(0) || setup.timed_out || installed != validated_version {
         return Err(failure(
             "INSTALL_DEV_FAILED",
             format!(
@@ -891,31 +886,62 @@ pub(crate) fn install_dev(
             ),
         ));
     }
-    let directory = install_dir(identity).unwrap_or_default();
     verify_identity_binary(
         &directory.join(identity.desktop_exe()),
         "delta-desktop",
         identity,
-        &artifact.version,
+        &validated_version,
     )?;
-    let mut restart_process_id = None;
-    if was_running {
-        let launch = delta_app::spawn_detached_app(
-            directory.join(identity.desktop_exe()).as_os_str(),
-            &relaunch_args,
-            &BTreeMap::new(),
-            false,
-        )
-        .map_err(|e| failure("INSTALL_DEV_RESTART", e))?;
-        restart_process_id = Some(launch.process_id);
-    }
+    // Always start it again in the background (D-36: tray icon only, no main window). Inside a
+    // job object (an agent's command sandbox may forbid breaking away and end every process when
+    // the command returns) the desktop shell starts `delta-dev` first, so it is explorer's child
+    // and outside any caller job; otherwise (or for isolated `--test-identity` gate runs, or when
+    // the shell cannot), it breaks away when allowed. A job that forbids both still gets the app,
+    // reported as `in_job` instead of failing the install.
+    // Pass `SW_SHOWNORMAL` (1): `delta-dev --background` opens no window at startup (`show: false`),
+    // and `SW_SHOWNORMAL` avoids overriding the first tray-click reveal with a minimized state.
+    const SW_SHOWNORMAL: i32 = 1;
+    let desktop_exe = directory.join(identity.desktop_exe());
+    let launch_args = background_launch_args(relaunch_args);
+    let shell_pid = if should_use_desktop_shell(identity, delta_app::process_in_job(None)) {
+        delta_app::spawn_via_desktop_shell(&desktop_exe, &launch_args, SW_SHOWNORMAL).ok()
+    } else {
+        None
+    };
+    let via_shell = shell_pid.is_some();
+    let (process_id, in_job) = match shell_pid {
+        // Launched by `explorer.exe`, so it is outside any caller sandbox job. Check against
+        // `ACTIVE_JOB` rather than `process_in_job(Some(pid))`, because `delta-desktop` joins its
+        // own `QuietJobObject` at startup and Windows 10/11 PCA/Shell routinely assigns GUI apps
+        // launched via `ShellExecute` to a system job, both of which would falsely make
+        // `IsProcessInJob(pid, NULL)` return true.
+        Some(pid) => (pid, delta_app::process_in_active_job(pid)),
+        None => {
+            let launch = delta_app::spawn_detached_app(
+                desktop_exe.as_os_str(),
+                launch_args,
+                &BTreeMap::new(),
+                true,
+            )
+            .map_err(|e| {
+                failure(
+                    "INSTALL_DEV_RESTART",
+                    format!("installed {installed}, but could not start it: {e}"),
+                )
+            })?;
+            (launch.process_id, !launch.broke_away_from_job)
+        }
+    };
     Ok(InstallDevReceipt {
         identity: identity.name().into(),
         previous_version: previous,
         installed_version: installed,
         was_running,
-        restarted: restart_process_id.is_some(),
-        restart_process_id,
+        restarted: true,
+        restart_process_id: Some(process_id),
+        background: true,
+        via_shell,
+        in_job,
         setup,
     })
 }
@@ -938,18 +964,65 @@ pub(crate) fn default_release_key_file() -> Result<PathBuf, ErrorEnvelope> {
         .ok_or_else(|| failure("RELEASE_KEY_FILE", "APPDATA is not set; pass --key-file"))
 }
 
-/// Whether `path` would land inside `repository`, judged by its nearest existing ancestor
-/// (the key directory may not exist yet).
+/// Normalize a path (canonicalizing when present, otherwise resolving `.`/`..` against CWD)
+/// so key-file comparisons cannot be bypassed via slashes, relative segments, or Windows casing.
+fn normalized_path_key(path: &Path) -> String {
+    let resolved = plain_canonical(path).unwrap_or_else(|_| {
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut clean = PathBuf::new();
+        for comp in abs.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    clean.pop();
+                }
+                other => clean.push(other.as_os_str()),
+            }
+        }
+        clean
+    });
+    let text = resolved.to_string_lossy();
+    let stripped = text
+        .strip_prefix(r"\\?\")
+        .filter(|rest| !rest.starts_with("UNC\\"))
+        .unwrap_or(&text);
+    if cfg!(windows) {
+        stripped.replace('/', "\\").to_ascii_lowercase()
+    } else {
+        stripped.to_string()
+    }
+}
+
+fn same_path_normalized(a: &Path, b: &Path) -> bool {
+    normalized_path_key(a) == normalized_path_key(b)
+}
+
+/// Whether `path` would land inside `repository` (including its enclosing git root if `repository`
+/// is a subdirectory) or inside any git repository discovered along `path`'s existing ancestors.
 fn inside_repository(path: &Path, repository: &Path) -> bool {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let Ok(repository) = fs::canonicalize(repository) else {
+    let repo_root = fs::canonicalize(repository).ok().map(|canon| {
+        canon
+            .ancestors()
+            .find(|a| a.join(".git").exists())
+            .map(Path::to_path_buf)
+            .unwrap_or(canon)
+    });
+    let existing = absolute
+        .ancestors()
+        .find_map(|ancestor| fs::canonicalize(ancestor).ok());
+    let Some(existing) = existing else {
         return false;
     };
-    absolute
+    if repo_root
+        .as_ref()
+        .is_some_and(|root| existing.starts_with(root))
+    {
+        return true;
+    }
+    existing
         .ancestors()
-        .skip(1)
-        .find_map(|ancestor| fs::canonicalize(ancestor).ok())
-        .is_some_and(|existing| existing.starts_with(&repository))
+        .any(|ancestor| ancestor.join(".git").exists())
 }
 
 /// Load the signing key. The release identity also accepts `DELTA_RELEASE_SIGNING_KEY` (CI);
@@ -1043,7 +1116,9 @@ pub(crate) fn release_build(
     })?;
     let is_release = identity == InstallIdentity::Release;
     // Test rehearsals use their own throw-away key; the release key never signs them.
-    if !is_release && default_release_key_file().is_ok_and(|default| default == key_file) {
+    if !is_release
+        && default_release_key_file().is_ok_and(|default| same_path_normalized(&default, key_file))
+    {
         return Err(failure(
             "RELEASE_KEY_FILE",
             "test releases must use a separate --key-file, never the release signing key",
@@ -1065,14 +1140,16 @@ pub(crate) fn release_build(
         }
     }
     let context = PackagingContext::prepare(root, output)?;
+    let validated_version = context.validate_version(identity, version)?.to_string();
     let staging = context.output().join(format!(
         ".staging-{}-{}",
         identity.name(),
         uuid::Uuid::new_v4()
     ));
-    let final_directory = context
-        .output()
-        .join(format!("{}-{}", identity.name(), version));
+    let final_directory =
+        context
+            .output()
+            .join(format!("{}-{}", identity.name(), validated_version));
     if final_directory.exists() {
         return Err(failure(
             "RELEASE_EXISTS",
@@ -1080,7 +1157,7 @@ pub(crate) fn release_build(
         ));
     }
     let result = (|| -> Result<ReleaseArtifacts, ErrorEnvelope> {
-        let artifact = context.build(identity, version, &staging)?;
+        let artifact = context.build(identity, &validated_version, &staging)?;
         let file = identity.setup_file_name(&artifact.version);
         let manifest = UpdateManifest {
             schema_version: 1,
@@ -1122,6 +1199,22 @@ pub(crate) fn release_build(
     result
 }
 
+fn plain_file_name(name: &str) -> Result<&str, ErrorEnvelope> {
+    let path = Path::new(name);
+    let mut comps = path.components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(_)), None)
+            if !name.is_empty() && !name.contains(['/', '\\', ':']) =>
+        {
+            Ok(name)
+        }
+        _ => Err(failure(
+            "UPDATE_TEST_SOURCE",
+            "manifest.file must be a plain filename without path separators",
+        )),
+    }
+}
+
 /// Serve a test-identity release from `127.0.0.1` for manual update checks (`H-04`). Only
 /// `channel: test` artifacts are served; the release identity never accepts loopback HTTP.
 pub(crate) fn serve_test_release(
@@ -1139,23 +1232,21 @@ pub(crate) fn serve_test_release(
             "only test-identity releases may be served from loopback",
         ));
     }
+    let safe_file = plain_file_name(&manifest.file)?;
     let installer =
-        fs::read(directory.join(&manifest.file)).map_err(|e| failure("UPDATE_TEST_SOURCE", e))?;
-    let signature = fs::read_to_string(directory.join(format!("{}.sig", manifest.file)))
+        fs::read(directory.join(safe_file)).map_err(|e| failure("UPDATE_TEST_SOURCE", e))?;
+    let signature = fs::read_to_string(directory.join(format!("{safe_file}.sig")))
         .map_err(|e| failure("UPDATE_TEST_SOURCE", e))?;
     let server = update::UpdateLoopbackServer::start().map_err(|e| failure(e.code(), e))?;
     server.publish(&manifest, installer, Some(signature));
     let public_key = fs::read_to_string(directory.join("public-key.txt")).unwrap_or_default();
-    println!(
-        "{}",
-        json!({
-            "status": "serving",
-            "version": manifest.version,
-            "seconds": duration.as_secs(),
-            "DELTA_UPDATE_SOURCE": server.latest_url(),
-            "DELTA_UPDATE_PUBLIC_KEY": public_key.trim(),
-        })
-    );
+    crate::cli_args::print_json(&json!({
+        "status": "serving",
+        "version": manifest.version,
+        "seconds": duration.as_secs(),
+        "DELTA_UPDATE_SOURCE": server.latest_url(),
+        "DELTA_UPDATE_PUBLIC_KEY": public_key.trim(),
+    }));
     std::thread::sleep(duration);
     Ok(())
 }
@@ -1203,13 +1294,20 @@ pub(crate) fn migrate_portable(
     // migration leaves the portable installation intact.
     let mut verified = BTreeMap::new();
     for (name, expected) in &manifest.files {
+        if matches!(
+            name.as_str(),
+            "package-manifest.json" | "install-manifest.json"
+        ) {
+            continue;
+        }
         let path = directory.join(relative_file(name)?);
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
+        // Reject links/junctions anywhere along the ancestor chain before hashing or mutating.
+        reject_ancestors_links(&directory, &path)?;
         let matches = metadata.is_file()
-            && reject_link(&path).is_ok()
             && sha256_file(&path).map_err(|e| failure("MIGRATE_HASH", e))? == *expected;
         if matches {
             if let Err(error) = fs::OpenOptions::new().write(true).open(&path) {
@@ -1222,6 +1320,12 @@ pub(crate) fn migrate_portable(
         verified.insert(name.clone(), matches);
     }
     for name in manifest.files.keys() {
+        if matches!(
+            name.as_str(),
+            "package-manifest.json" | "install-manifest.json"
+        ) {
+            continue;
+        }
         let path = directory.join(relative_file(name)?);
         let Some(&matches) = verified.get(name) else {
             report.missing.push(name.clone());
@@ -1257,27 +1361,27 @@ pub(crate) fn migrate_portable(
     }
     for manifest_file in ["package-manifest.json", "install-manifest.json"] {
         let path = directory.join(manifest_file);
-        if path.is_file() {
-            fs::remove_file(&path).map_err(|e| failure("MIGRATE_REMOVE", e))?;
-            if !report.removed.iter().any(|n| n == manifest_file) {
-                report.removed.push(manifest_file.into());
+        if fs::symlink_metadata(&path).is_ok() {
+            reject_link(&path)?;
+            if path.is_file() {
+                fs::remove_file(&path).map_err(|e| failure("MIGRATE_REMOVE", e))?;
+                if !report.removed.iter().any(|n| n == manifest_file) {
+                    report.removed.push(manifest_file.into());
+                }
             }
         }
-        report
-            .kept_modified
-            .retain(|n| !n.starts_with(&format!("{manifest_file} ->")));
     }
-    let mut remaining = BTreeMap::new();
-    collect_files(&directory, &directory, &mut remaining)?;
+    let mut remaining = Vec::new();
+    collect_paths(&directory, &directory, &mut remaining)?;
+    remaining.sort();
     report.kept_unknown = remaining
-        .keys()
+        .into_iter()
         .filter(|name| {
             !report
                 .kept_modified
                 .iter()
                 .any(|kept| kept.ends_with(&format!("-> {name}")))
         })
-        .cloned()
         .collect();
     remove_empty_directories(&directory)?;
     Ok(report)
@@ -1305,6 +1409,28 @@ fn remove_empty_directories(directory: &Path) -> Result<(), ErrorEnvelope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_dev_always_starts_the_app_in_the_background_once() {
+        // Not running before: just `--background` (D-36).
+        assert_eq!(background_launch_args(Vec::new()), vec!["--background"]);
+        // Running before: its previous arguments are kept, `--background` added once.
+        let previous = vec!["--data-dir".to_string(), "profile-data".to_string()];
+        assert_eq!(
+            background_launch_args(previous),
+            vec!["--data-dir", "profile-data", "--background"]
+        );
+        assert_eq!(
+            background_launch_args(vec!["--background".into()]),
+            vec!["--background"]
+        );
+        // Real `delta-dev` uses the desktop shell when inside a job; test identities stay on
+        // `spawn_detached_app` to keep the gate's isolated environment variables.
+        assert!(should_use_desktop_shell(InstallIdentity::Dev, true));
+        assert!(!should_use_desktop_shell(InstallIdentity::Dev, false));
+        assert!(!should_use_desktop_shell(InstallIdentity::DevTest, true));
+        assert!(!should_use_desktop_shell(InstallIdentity::DevTest, false));
+    }
 
     #[test]
     fn development_identities_carry_the_dev_icon_everywhere() {
@@ -1447,5 +1573,80 @@ mod tests {
             assert!(directory.join(name).is_file(), "{name} must be kept");
         }
         fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn key_isolation_and_manifest_path_guards_prevent_bypasses() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_m3_guards_{}", uuid::Uuid::new_v4()));
+        let key_dir = root.join("release-keys");
+        fs::create_dir_all(&key_dir).unwrap();
+        let direct = key_dir.join("update-signing.key");
+        let dotted = key_dir.join(".").join("update-signing.key");
+        assert!(same_path_normalized(&direct, &dotted));
+        if cfg!(windows) {
+            let flipped = PathBuf::from(
+                direct
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+                    .to_ascii_uppercase(),
+            );
+            assert!(same_path_normalized(&direct, &flipped));
+        }
+
+        // `inside_repository` must detect a git repo even when `repository` is a subdirectory
+        // or a completely unrelated directory.
+        let fake_repo = root.join("fake-repo");
+        let sub_dir = fake_repo.join("crates/delta-cli");
+        fs::create_dir_all(fake_repo.join(".git")).unwrap();
+        fs::create_dir_all(&sub_dir).unwrap();
+        assert!(inside_repository(&fake_repo.join("leak.key"), &sub_dir));
+        assert!(inside_repository(
+            &fake_repo.join("nested/leak.key"),
+            &key_dir
+        ));
+        assert!(!inside_repository(&key_dir.join("ok.key"), &sub_dir));
+
+        // `plain_file_name` rejects traversal and path separators.
+        assert!(plain_file_name("delta-test-setup-0.1.1-x64.exe").is_ok());
+        for bad in ["", "../escape.exe", "sub/file.exe", "sub\\file.exe", "a:b"] {
+            assert!(plain_file_name(bad).is_err(), "accepted '{bad}'");
+        }
+
+        // Modified `package-manifest.json` must be removed cleanly, not misclassified as unknown.
+        let mig = root.join("mig/delta-test");
+        fs::create_dir_all(&mig).unwrap();
+        fs::write(mig.join("package-manifest.json"), b"v1").unwrap();
+        let pkg_hash = sha256_file(&mig.join("package-manifest.json")).unwrap();
+        let manifest = InstallManifest {
+            schema_version: 1,
+            product: "delta-test".into(),
+            channel: "dev".into(),
+            version: "0.1.0".into(),
+            install_dir: mig.clone(),
+            files: BTreeMap::from([("package-manifest.json".into(), pkg_hash)]),
+        };
+        fs::write(
+            mig.join("install-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        // Modify package-manifest.json after recording its hash.
+        fs::write(mig.join("package-manifest.json"), b"v1-edited").unwrap();
+        let report = migrate_portable(&mig, InstallIdentity::Test).unwrap();
+        assert!(report.kept_unknown.is_empty(), "{report:?}");
+        assert!(report.kept_modified.is_empty(), "{report:?}");
+        assert!(!mig.join("package-manifest.json").exists());
+        assert!(!mig.join("package-manifest.json.m2-modified").exists());
+
+        // `file_version_info` safely handles a non-PE file without panicking or UB.
+        let non_pe = root.join("not-a-pe.bin");
+        fs::write(&non_pe, b"hello").unwrap();
+        assert!(file_version_info(&non_pe).is_none());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 }

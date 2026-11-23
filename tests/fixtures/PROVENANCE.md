@@ -54,3 +54,11 @@
 `crates/delta-app/src/regression.rs` 另行构造独立 Futu/OKX/币安资金流水、去重与更正、多账户 Flex、OKX/币安原生结构余额/成交/已完成充提数组、Binance ZIP/CHECKSUM、分页/429/取消和第三资产费用。它们是可审查的纯合成测试数据；`FixtureAccountProvider` 的 recorded 接口名只说明可回放报文，不证明这些构造数组来自真实账户。
 
 回环 HTTP 服务只绑定 `127.0.0.1:0`；六类指标、现金 FIFO、账户在途与外币报告使用独立手算期望及未来哨兵。离线测试通过、公共 online 探针通过和真实私有账户兼容性分别报告。
+
+## 5. M5 追加夹具（2026-11-15，Agent B）
+
+| 位置 | 来源与生成方式 | 用途与边界 |
+| --- | --- | --- |
+| `crates/delta-app/src/market_fixture.rs`（代码内，无数据文件） | 回环服务只绑定 `127.0.0.1:0`，按币安月度归档（ZIP＋`.CHECKSUM`）、币安镜像 `/api/v3/klines` 与欧易 `/api/v5/market/history-candles` 的公开报文结构返回数据；价格是确定性合成的小时随机游走，再聚合为 4h/1d，两家交易所数值一致；可注入断网、429、校验和错误与“结束时间前移” | `M5-A-01`、`M5-A-04`、`M5-A-05`、无头 UI 流程、`--m5-ui-smoke` / `--m5-ui-bench` 与门禁跨进程探针。**完全合成，不是线上录制**，不证明真实价格、成交量或交易所可用性；真实公开源结果只见 `verify-stage --stage M5 --live-data`（`M5-L-01`）并单独声明 |
+| `libraries/m4-schema5/m4-library.sqlite.zip`、`expected.json` | 用 M5 父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`（即 M4 合并后的 `main`）在临时 worktree 中构建并运行真实 M4 代码生成的 `schema 5` 资料库：一局已结束的美股运行 `TRN-M4FX-EQ`（`seq 28`）、一局暂停的加密运行 `TRN-M4FX-CR`（`seq 25`）与一局准备中的 `TRN-M4FX-PREP`；行情为该代码的合成测试数据。`expected.json` 记录生成时持久化的 `engine_version = m4-sim-1`、`latest_seq`、`latest_state_hash` 与 `candidate_pool_hash`。生成后 worktree 已删除 | `M5-A-08`、`M5-A-12`、`M5-K03`：迁移到 `schema 6` 先备份，旧运行在新代码下重放哈希与 M4 记录一致。不含任何真实账户或个人数据 |
+| `release/v0.1.1/latest.json`、`delta-setup-0.1.1-x64.exe.sig` | 复制自已发布 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 的发布产物（本机 `.local/reports/m3/release/delta-0.1.1/`；清单中安装包 `sha256 = 5e632cea…1351` 与发布一致） | `M5-A-17`：升级签名相关依赖（`ed25519-dalek 3`、`sha2 0.11`）后，用内置公钥验证已发布的更新清单与签名仍然有效。只含公开发布的清单与签名，不含私钥 |

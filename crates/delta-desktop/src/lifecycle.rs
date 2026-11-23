@@ -5,7 +5,7 @@
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant},
@@ -16,6 +16,8 @@ use delta_app::{
     ControlCommand, ControlReply, ControlStatus, InstallIdentity,
 };
 use serde::Serialize;
+
+use crate::lock_or_recover;
 
 /// A control request handed from the pipe thread to the GPUI foreground loop.
 pub(crate) type ControlEnvelope = (ControlCommand, mpsc::Sender<ControlReply>);
@@ -50,16 +52,20 @@ pub(crate) fn options() -> Option<&'static LifecycleOptions> {
 }
 
 pub(crate) fn install_control_receiver(receiver: mpsc::Receiver<ControlEnvelope>) {
-    *CONTROL_RECEIVER.lock().unwrap() = Some(receiver);
+    *lock_or_recover(&CONTROL_RECEIVER) = Some(receiver);
+}
+
+/// Drops the control receiver so any late pipe request during shutdown immediately gets `Busy`
+/// instead of waiting 60 s on `recv_timeout` (`UI-B11`).
+pub(crate) fn clear_control_receiver() {
+    *lock_or_recover(&CONTROL_RECEIVER) = None;
 }
 
 pub(crate) fn next_control_request() -> Option<ControlEnvelope> {
     if IGNORE_CONTROL.load(Ordering::SeqCst) {
         return None;
     }
-    CONTROL_RECEIVER
-        .lock()
-        .unwrap()
+    lock_or_recover(&CONTROL_RECEIVER)
         .as_ref()
         .and_then(|receiver| receiver.try_recv().ok())
 }
@@ -70,9 +76,7 @@ pub(crate) fn bridge_handler(sender: mpsc::Sender<ControlEnvelope>) -> delta_app
     let sender = Mutex::new(sender);
     Arc::new(move |command| {
         let (reply_sender, reply_receiver) = mpsc::channel();
-        if sender
-            .lock()
-            .unwrap()
+        if lock_or_recover(&sender)
             .send((command, reply_sender))
             .is_err()
         {
@@ -158,9 +162,21 @@ pub struct UpdateUiState {
 
 static UPDATE: Mutex<Option<UpdateUiState>> = Mutex::new(None);
 static UPDATE_WORKER: AtomicBool = AtomicBool::new(false);
+static UPDATE_REVISION: AtomicU64 = AtomicU64::new(0);
+static PREFS_SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn bump_update_revision() {
+    UPDATE_REVISION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Monotonic counter bumped whenever [`update_state`] changes so the UI tick avoids allocating
+/// debug strings at 10 Hz (`UI-Q05`).
+pub(crate) fn update_revision() -> u64 {
+    UPDATE_REVISION.load(Ordering::SeqCst)
+}
 
 pub fn update_state() -> Option<UpdateUiState> {
-    UPDATE.lock().unwrap().clone()
+    lock_or_recover(&UPDATE).clone()
 }
 
 /// One-line Chinese status for the settings page.
@@ -204,9 +220,10 @@ pub(crate) fn set_update_failed(code: &str, message: &str) {
 }
 
 fn set_status(status: UpdateStatus) {
-    if let Some(state) = UPDATE.lock().unwrap().as_mut() {
+    if let Some(state) = lock_or_recover(&UPDATE).as_mut() {
         state.status = status.clone();
     }
+    bump_update_revision();
     emit_event(
         "update-status",
         serde_json::to_value(&status).unwrap_or_default(),
@@ -232,7 +249,7 @@ pub(crate) fn initialize_updates(data_dir: PathBuf, check_now: bool) {
             String::new(),
         ),
     };
-    *UPDATE.lock().unwrap() = Some(UpdateUiState {
+    *lock_or_recover(&UPDATE) = Some(UpdateUiState {
         status: status.clone(),
         current_version: delta_app::app_version().into(),
         source,
@@ -241,17 +258,36 @@ pub(crate) fn initialize_updates(data_dir: PathBuf, check_now: bool) {
         offer: None,
         installer: None,
     });
+    bump_update_revision();
     if status == UpdateStatus::Idle && (check_now || preferences.check_due(chrono::Utc::now())) {
         start_check(data_dir);
     }
 }
 
 pub(crate) fn set_auto_check(data_dir: PathBuf, enabled: bool) {
-    let mut preferences = UpdatePreferences::load(&data_dir);
-    preferences.auto_check = enabled;
-    let _ = preferences.save(&data_dir);
-    if let Some(state) = UPDATE.lock().unwrap().as_mut() {
+    if let Some(state) = lock_or_recover(&UPDATE).as_mut() {
         state.auto_check = enabled;
+    }
+    bump_update_revision();
+    // Persist off the UI thread (`UI-B11`); serialize writes and read the latest in-memory
+    // value under `PREFS_SAVE_LOCK` so rapid toggles cannot overwrite newer state out of order (`V-UI-01`).
+    std::thread::spawn(move || {
+        delta_app::apply_process_quiet_guards();
+        let _guard = lock_or_recover(&PREFS_SAVE_LOCK);
+        let latest = lock_or_recover(&UPDATE)
+            .as_ref()
+            .map_or(enabled, |state| state.auto_check);
+        let mut preferences = UpdatePreferences::load(&data_dir);
+        preferences.auto_check = latest;
+        let _ = preferences.save(&data_dir);
+    });
+}
+
+struct UpdateWorkerGuard;
+
+impl Drop for UpdateWorkerGuard {
+    fn drop(&mut self) {
+        UPDATE_WORKER.store(false, Ordering::SeqCst);
     }
 }
 
@@ -261,9 +297,9 @@ pub(crate) fn start_check(data_dir: PathBuf) {
         return;
     }
     std::thread::spawn(move || {
+        let _guard = UpdateWorkerGuard;
         delta_app::apply_process_quiet_guards();
         run_check(&data_dir);
-        UPDATE_WORKER.store(false, Ordering::SeqCst);
     });
 }
 
@@ -279,12 +315,17 @@ fn run_check(data_dir: &std::path::Path) {
         Err(error) => return fail(error),
     };
     set_status(UpdateStatus::Checking);
-    let mut preferences = UpdatePreferences::load(data_dir);
-    preferences.last_check_at = Some(chrono::Utc::now().to_rfc3339());
-    let _ = preferences.save(data_dir);
-    if let Some(state) = UPDATE.lock().unwrap().as_mut() {
-        state.last_check_at = preferences.last_check_at.clone();
+    let last_check_at = {
+        let _guard = lock_or_recover(&PREFS_SAVE_LOCK);
+        let mut preferences = UpdatePreferences::load(data_dir);
+        preferences.last_check_at = Some(chrono::Utc::now().to_rfc3339());
+        let _ = preferences.save(data_dir);
+        preferences.last_check_at
+    };
+    if let Some(state) = lock_or_recover(&UPDATE).as_mut() {
+        state.last_check_at = last_check_at;
     }
+    bump_update_revision();
     let offer = match client.check(&delta_app::update::current_version()) {
         Ok(Some(offer)) => offer,
         Ok(None) => return set_status(UpdateStatus::UpToDate),
@@ -307,7 +348,7 @@ fn run_check(data_dir: &std::path::Path) {
     }
     match result {
         Ok(installer) => {
-            if let Some(state) = UPDATE.lock().unwrap().as_mut() {
+            if let Some(state) = lock_or_recover(&UPDATE).as_mut() {
                 state.offer = Some(offer);
                 state.installer = Some(installer);
             }
@@ -329,6 +370,8 @@ pub(crate) enum ExitPhase {
 pub(crate) enum ExitReason {
     Control(mpsc::Sender<ControlReply>),
     ApplyUpdate,
+    /// User chose Quit (from the tray menu, or close button when configured to quit).
+    UserQuit,
 }
 
 pub(crate) struct PendingExit {
@@ -349,14 +392,23 @@ impl PendingExit {
     }
 
     pub fn timed_out(&self) -> bool {
-        self.started.elapsed() > Duration::from_secs(45)
+        let budget = match self.reason {
+            ExitReason::UserQuit => Duration::from_secs(10),
+            ExitReason::Control(_) | ExitReason::ApplyUpdate => Duration::from_secs(45),
+        };
+        self.started.elapsed() > budget
     }
 }
 
 /// Final step of an in-app update: consistent backup, re-verification, then the detached
 /// silent installer. Any failure leaves the installed version untouched.
+///
+/// `window_was_open` records whether the main window was visible before exiting so release
+/// updates return to the previous state (open window vs tray, `D-37`); verification residents
+/// keep their raw launch arguments untouched.
 pub(crate) fn backup_and_launch_installer(
     host: &delta_app::AppHost,
+    window_was_open: bool,
 ) -> Result<(), delta_app::update::UpdateError> {
     use delta_app::update::UpdateError;
     let state = update_state().ok_or_else(|| UpdateError::NotConfigured("no update".into()))?;
@@ -368,6 +420,11 @@ pub(crate) fn backup_and_launch_installer(
     let policy = policy()?;
     delta_app::update::verify_installer(&policy, &offer, &installer)?;
     let options = options().ok_or_else(|| UpdateError::NotConfigured("lifecycle".into()))?;
+    let relaunch_args = crate::tray::relaunch_args_for_update(
+        &options.relaunch_args,
+        window_was_open,
+        !options.allow_focus,
+    );
     let backup = options.backup_root.join(format!(
         "pre-update-{}-{}",
         offer.manifest.version,
@@ -381,13 +438,8 @@ pub(crate) fn backup_and_launch_installer(
         serde_json::json!({"path": backup, "library_id": manifest.library_id}),
     );
     let log = installer.with_extension("install.log");
-    let launch = delta_app::update::launch_installer(
-        &policy,
-        &offer,
-        &installer,
-        &log,
-        &options.relaunch_args,
-    )?;
+    let launch =
+        delta_app::update::launch_installer(&policy, &offer, &installer, &log, &relaunch_args)?;
     emit_event(
         "update-installer-started",
         serde_json::json!({"process_id": launch.process_id, "broke_away": launch.broke_away_from_job, "log": log}),

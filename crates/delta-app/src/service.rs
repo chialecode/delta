@@ -3,8 +3,7 @@ use crate::paths::{ensure_writable_data_dir, InstanceLock, ResolvedAppPaths};
 use crate::process::apply_process_quiet_guards;
 use chrono::{DateTime, NaiveDate, Utc};
 use delta_core::{
-    compute_atr, compute_bollinger_bands, compute_ema, compute_macd, compute_rsi, compute_sma,
-    derive_adjusted_bars, evaluate_portfolio, parse_decimal_lossless,
+    compute_rsi, compute_sma, derive_adjusted_bars, evaluate_portfolio, parse_decimal_lossless,
     replay_ledger_events_with_bindings, resolve_fx_rate_s07, to_canonical_text, AdjustmentKind,
     BarRecord, CorporateActionRecord, DataQualityIssue, FxRateRecord, LedgerEventInput,
     QualityStatus, ValuationReport,
@@ -24,15 +23,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::path::{Component, Path, PathBuf};
+#[allow(unused_imports)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[allow(unused_imports)]
 use std::sync::{Arc, Mutex};
-use std::thread;
+#[allow(unused_imports)]
 use std::time::{Duration, Instant};
 
-thread_local! {
-    static ISOLATED_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
+mod jobs;
+use jobs::SyncControl;
+pub use jobs::{ErrorEnvelope, JobController, JobId, JobProgressDto, JobSnapshot, JobState};
+
+mod probes;
 
 #[path = "sync.rs"]
 mod sync;
@@ -41,343 +44,9 @@ pub use sync::SyncRequest;
 #[path = "export.rs"]
 mod export;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ErrorEnvelope {
-    pub code: String,
-    pub message: String,
-    pub retryable: bool,
-    pub trace_id: String,
-}
-
-impl ErrorEnvelope {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, retryable: bool) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            retryable,
-            trace_id: format!("TRC-{}", Utc::now().timestamp_micros()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct JobId(pub u64);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobState {
-    Running,
-    Succeeded,
-    Failed(ErrorEnvelope),
-    Cancelled(ErrorEnvelope),
-    TimedOut(ErrorEnvelope),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobSnapshot {
-    pub id: JobId,
-    pub name: String,
-    pub state: JobState,
-    pub elapsed_ms: u64,
-    #[serde(default)]
-    pub worker_finished: bool,
-    #[serde(default)]
-    pub progress: JobProgressDto,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct JobProgressDto {
-    pub phase: String,
-    pub records_prepared: usize,
-    pub records_published: usize,
-}
-
-struct ManagedJob {
-    id: JobId,
-    name: String,
-    cancel_flag: Arc<AtomicBool>,
-    state: Arc<Mutex<JobState>>,
-    started_at: Instant,
-    finished: Arc<AtomicBool>,
-    progress: Arc<Mutex<JobProgressDto>>,
-}
-
-/// Background job controller isolating panics, timeouts, and cancellation (S-02 / AC-16).
-pub struct JobController {
-    next_id: AtomicU64,
-    jobs: Mutex<BTreeMap<u64, ManagedJob>>,
-}
-
-impl Default for JobController {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl JobController {
-    pub fn new() -> Self {
-        static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
-        PANIC_HOOK.call_once(|| {
-            let previous = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                if !ISOLATED_WORKER.with(|flag| flag.get()) {
-                    previous(info);
-                }
-            }));
-        });
-        Self {
-            next_id: AtomicU64::new(1),
-            jobs: Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    pub fn spawn_job<F>(&self, name: impl Into<String>, timeout: Duration, task: F) -> JobId
-    where
-        F: FnOnce(Arc<AtomicBool>) -> Result<(), ErrorEnvelope> + Send + 'static,
-    {
-        self.spawn_controlled_job(
-            name,
-            timeout,
-            move |cancel, _state, _deadline, _progress| task(cancel),
-        )
-    }
-
-    fn spawn_controlled_job<F>(&self, name: impl Into<String>, timeout: Duration, task: F) -> JobId
-    where
-        F: FnOnce(
-                Arc<AtomicBool>,
-                Arc<Mutex<JobState>>,
-                Instant,
-                Arc<Mutex<JobProgressDto>>,
-            ) -> Result<(), ErrorEnvelope>
-            + Send
-            + 'static,
-    {
-        let id_num = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let job_id = JobId(id_num);
-        let job_name = name.into();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        let state = Arc::new(Mutex::new(JobState::Running));
-        let started_at = Instant::now();
-        let finished = Arc::new(AtomicBool::new(false));
-        let finished_worker = Arc::clone(&finished);
-        let progress = Arc::new(Mutex::new(JobProgressDto {
-            phase: "启动中".into(),
-            ..Default::default()
-        }));
-        let progress_worker = Arc::clone(&progress);
-
-        let cancel_clone = Arc::clone(&cancel_flag);
-        let state_clone = Arc::clone(&state);
-        let name_clone = job_name.clone();
-        let (completion_sender, completion_receiver) = std::sync::mpsc::channel();
-        let deadline_state = Arc::clone(&state);
-        let deadline_cancel = Arc::clone(&cancel_flag);
-        thread::spawn(move || {
-            if completion_receiver.recv_timeout(timeout).is_err() {
-                let mut state = deadline_state.lock().unwrap();
-                if matches!(*state, JobState::Running) {
-                    deadline_cancel.store(true, Ordering::SeqCst);
-                    *state = JobState::TimedOut(ErrorEnvelope::new(
-                        "job_timed_out",
-                        "job deadline expired; cancellation requested",
-                        true,
-                    ));
-                }
-            }
-        });
-
-        thread::spawn(move || {
-            apply_process_quiet_guards();
-            ISOLATED_WORKER.with(|flag| flag.set(true));
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                task(
-                    Arc::clone(&cancel_clone),
-                    Arc::clone(&state_clone),
-                    started_at + timeout,
-                    progress_worker,
-                )
-            }));
-            ISOLATED_WORKER.with(|flag| flag.set(false));
-            let mut guard = state_clone.lock().unwrap();
-            if !matches!(*guard, JobState::Running) {
-                // Cancellation/deadline may have published a terminal state already.
-            } else if cancel_clone.load(Ordering::SeqCst) {
-                *guard = JobState::Cancelled(ErrorEnvelope::new(
-                    "job_cancelled",
-                    format!("background job '{name_clone}' was cancelled"),
-                    true,
-                ));
-            } else if started_at.elapsed() > timeout {
-                *guard = JobState::TimedOut(ErrorEnvelope::new(
-                    "job_timed_out",
-                    format!(
-                        "background job '{name_clone}' exceeded timeout of {} ms",
-                        timeout.as_millis()
-                    ),
-                    true,
-                ));
-            } else {
-                match result {
-                    Ok(Ok(())) => {
-                        *guard = JobState::Succeeded;
-                    }
-                    Ok(Err(env)) => {
-                        *guard = JobState::Failed(env);
-                    }
-                    Err(_) => {
-                        *guard = JobState::Failed(ErrorEnvelope::new(
-                            "job_panicked",
-                            format!("background job '{name_clone}' panicked; see trace ID"),
-                            false,
-                        ));
-                    }
-                }
-            }
-            // A terminal state and released task resources must precede completion.
-            finished_worker.store(true, Ordering::SeqCst);
-            drop(guard);
-            let _ = completion_sender.send(());
-        });
-
-        self.jobs.lock().unwrap().insert(
-            id_num,
-            ManagedJob {
-                id: job_id,
-                name: job_name,
-                cancel_flag,
-                state,
-                started_at,
-                finished,
-                progress,
-            },
-        );
-        job_id
-    }
-
-    pub fn cancel_job(&self, id: JobId) -> Result<JobSnapshot, ErrorEnvelope> {
-        let jobs = self.jobs.lock().unwrap();
-        let job = jobs.get(&id.0).ok_or_else(|| {
-            ErrorEnvelope::new("job_not_found", format!("no job {}", id.0), false)
-        })?;
-        let mut st = job.state.lock().unwrap();
-        if matches!(*st, JobState::Running) {
-            job.cancel_flag.store(true, Ordering::SeqCst);
-            *st = JobState::Cancelled(ErrorEnvelope::new(
-                "job_cancelled",
-                format!("job '{}' cancelled by caller", job.name),
-                true,
-            ));
-        }
-        let progress = job.progress.lock().unwrap().clone();
-        Ok(JobSnapshot {
-            id: job.id,
-            name: job.name.clone(),
-            state: st.clone(),
-            elapsed_ms: job.started_at.elapsed().as_millis() as u64,
-            worker_finished: job.finished.load(Ordering::SeqCst),
-            progress,
-        })
-    }
-
-    pub fn wait_job(&self, id: JobId, max_wait: Duration) -> Result<JobSnapshot, ErrorEnvelope> {
-        let start = Instant::now();
-        loop {
-            let (name, state_arc, started_at, finished, progress) = {
-                let jobs = self.jobs.lock().unwrap();
-                let job = jobs.get(&id.0).ok_or_else(|| {
-                    ErrorEnvelope::new("job_not_found", format!("no job {}", id.0), false)
-                })?;
-                (
-                    job.name.clone(),
-                    Arc::clone(&job.state),
-                    job.started_at,
-                    Arc::clone(&job.finished),
-                    Arc::clone(&job.progress),
-                )
-            };
-            {
-                let st = state_arc.lock().unwrap();
-                if !matches!(*st, JobState::Running) {
-                    return Ok(JobSnapshot {
-                        id,
-                        name,
-                        state: st.clone(),
-                        elapsed_ms: started_at.elapsed().as_millis() as u64,
-                        worker_finished: finished.load(Ordering::SeqCst),
-                        progress: progress.lock().unwrap().clone(),
-                    });
-                }
-                if start.elapsed() > max_wait {
-                    return Err(ErrorEnvelope::new(
-                        "wait_timeout",
-                        format!("waiting for {name} exceeded caller deadline"),
-                        true,
-                    ));
-                }
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    pub fn snapshot(&self, id: JobId) -> Result<JobSnapshot, ErrorEnvelope> {
-        let jobs = self.jobs.lock().unwrap();
-        let job = jobs
-            .get(&id.0)
-            .ok_or_else(|| ErrorEnvelope::new("job_not_found", "unknown background job", false))?;
-        let state = job.state.lock().unwrap().clone();
-        let progress = job.progress.lock().unwrap().clone();
-        Ok(JobSnapshot {
-            id,
-            name: job.name.clone(),
-            state,
-            elapsed_ms: job.started_at.elapsed().as_millis() as u64,
-            worker_finished: job.finished.load(Ordering::SeqCst),
-            progress,
-        })
-    }
-
-    pub fn wait_finished(
-        &self,
-        id: JobId,
-        timeout: Duration,
-    ) -> Result<JobSnapshot, ErrorEnvelope> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let snapshot = self.snapshot(id)?;
-            if snapshot.worker_finished {
-                return Ok(snapshot);
-            }
-            if Instant::now() >= deadline {
-                return Err(ErrorEnvelope::new(
-                    "wait_timeout",
-                    "worker has not released its resources yet",
-                    true,
-                ));
-            }
-            thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    pub fn cancel_all_and_wait(&self, timeout: Duration) -> Result<(), ErrorEnvelope> {
-        let ids: Vec<_> = self
-            .jobs
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|job| !job.finished.load(Ordering::SeqCst))
-            .map(|job| job.id)
-            .collect();
-        for &id in &ids {
-            self.cancel_job(id)?;
-        }
-        let deadline = Instant::now() + timeout;
-        for id in ids {
-            self.wait_finished(id, deadline.saturating_duration_since(Instant::now()))?;
-        }
-        Ok(())
-    }
-}
+#[path = "training_data.rs"]
+mod training_data;
+pub use training_data::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncSummaryDto {
@@ -447,13 +116,6 @@ pub struct LiveProbeResult {
     pub detail: String,
 }
 
-type SyncControl = (
-    Arc<AtomicBool>,
-    Instant,
-    Arc<Mutex<JobState>>,
-    Arc<Mutex<JobProgressDto>>,
-);
-
 /// Synchronous application facade (S-02).
 /// Holds a private Tokio runtime internally; exposes ZERO async functions or Tokio/Reqwest types.
 pub struct AppService {
@@ -462,7 +124,7 @@ pub struct AppService {
     store: SqliteStore,
     credentials: CredentialStore,
     jobs: Arc<JobController>,
-    runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     sync_control: Option<SyncControl>,
 }
 
@@ -505,13 +167,7 @@ impl HistoricalValuationInputs {
                 .filter(|asset| !asset.is_cash)
                 .map(|asset| &asset.asset_id),
         ) {
-            let venue = if asset.starts_with("NASDAQ:") {
-                "XNAS"
-            } else if asset.starts_with("NYSE:") {
-                "XNYS"
-            } else {
-                "CRYPTO_24_7"
-            };
+            let venue = asset_venue_to_calendar(asset);
             let mut session = date;
             for _ in 0..30 {
                 if let Some(price) = self.market_prices.get(&(asset.clone(), session)) {
@@ -566,17 +222,13 @@ impl AppService {
             .store
             .query_snapshot()
             .map_err(|e| ErrorEnvelope::new("SNAPSHOT_FAILED", e.to_string(), true))?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ErrorEnvelope::new("SNAPSHOT_FAILED", e.to_string(), true))?;
         Ok(Self {
             paths: self.paths.clone(),
             _lock: self._lock.clone(),
             store,
             credentials: CredentialStore::for_paths(&self.paths),
             jobs: Arc::new(JobController::new()),
-            runtime,
+            runtime: None,
             sync_control: None,
         })
     }
@@ -644,7 +296,7 @@ impl AppService {
             store,
             credentials,
             jobs: Arc::new(JobController::new()),
-            runtime,
+            runtime: Some(runtime),
             sync_control: None,
         })
     }
@@ -1340,13 +992,7 @@ impl AppService {
                         inst_id.clone(),
                         format!("{}:{}", last_bar.source, last_bar.session_date),
                     );
-                    let venue = if inst.venue == "NASDAQ" {
-                        "XNAS"
-                    } else if inst.venue == "NYSE" {
-                        "XNYS"
-                    } else {
-                        "CRYPTO_24_7"
-                    };
+                    let venue = venue_to_calendar(&inst.venue);
                     let mut date = last_bar.session_date;
                     let mut fresh = true;
                     while date < as_of_date {
@@ -1365,11 +1011,7 @@ impl AppService {
                     }
                 }
                 let sma = compute_sma(&split_adj, 2, visible_until);
-                let _ema = compute_ema(&split_adj, 2, visible_until);
-                let _macd = compute_macd(&split_adj, 2, 3, 2, visible_until);
                 let rsi = compute_rsi(&split_adj, 2, visible_until);
-                let _atr = compute_atr(&split_adj, 2, visible_until);
-                let _bb = compute_bollinger_bands(&split_adj, 2, 2.0, visible_until);
                 sma_map.insert(inst_id.clone(), sma.last().and_then(|p| p.value));
                 rsi_map.insert(inst_id.clone(), rsi.last().and_then(|p| p.value));
             }
@@ -1500,6 +1142,43 @@ impl AppService {
         Ok((dto, inputs))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn persist_analysis_report(
+        &self,
+        report_id: &str,
+        report_type: &str,
+        scope_json: &str,
+        ledger_revision: i64,
+        dataset_version: i64,
+        calculation_version: &str,
+        payload_json: &str,
+        status: &str,
+        retryable_error: bool,
+        error_code: &str,
+    ) -> Result<(), ErrorEnvelope> {
+        self.store
+            .conn()
+            .execute(
+                "INSERT OR REPLACE INTO analysis_report (
+                    id, report_type, scope_json, ledger_revision, dataset_version,
+                    calculation_version, payload_json, status, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    report_id,
+                    report_type,
+                    scope_json,
+                    ledger_revision,
+                    dataset_version,
+                    calculation_version,
+                    payload_json,
+                    status,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .map_err(|e| ErrorEnvelope::new(error_code, e.to_string(), retryable_error))?;
+        Ok(())
+    }
+
     fn save_explain_report(&self, dto: &ExplainSummaryDto) -> Result<(), ErrorEnvelope> {
         let scope = serde_json::json!({"accounts": dto.valuation.account_scope, "as_of_date": dto.as_of_date, "visible_until": dto.visible_until, "book_currency": dto.book_currency, "report_currency": dto.report_currency, "cost_method": "fifo", "fee_rule": "capitalized_buy_net_sell_third_asset_disposal", "valuation_sources": dto.valuation_sources, "calculation_version": dto.calculation_version});
         let scope_json = scope.to_string();
@@ -1512,42 +1191,47 @@ impl AppService {
         );
         let payload = serde_json::to_string(dto)
             .map_err(|e| ErrorEnvelope::new("serialize_report", e.to_string(), false))?;
-        self.store
-            .conn()
-            .execute(
-                "INSERT OR REPLACE INTO analysis_report (
-                    id, report_type, scope_json, ledger_revision, dataset_version,
-                    calculation_version, payload_json, status, created_at
-                 ) VALUES (?1, 'explain_summary', ?7, ?2, ?3, ?8, ?4, ?5, ?6)",
-                params![
-                    report_id,
-                    dto.ledger_revision,
-                    dto.dataset_version,
-                    payload,
-                    dto.valuation.quality.as_str(),
-                    Utc::now().to_rfc3339(),
-                    scope_json,
-                    dto.calculation_version,
-                ],
-            )
-            .map_err(|e| ErrorEnvelope::new("save_report_failed", e.to_string(), false))?;
-
-        Ok(())
+        self.persist_analysis_report(
+            &report_id,
+            "explain_summary",
+            &scope_json,
+            dto.ledger_revision,
+            dto.dataset_version,
+            &dto.calculation_version,
+            &payload,
+            dto.valuation.quality.as_str(),
+            false,
+            "save_report_failed",
+        )
     }
 
-    fn load_fx_rates(&self, max_version: i64) -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
+    pub(crate) fn load_fx_rates(
+        &self,
+        max_version: i64,
+    ) -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
+        self.load_fx_rates_with_pending(max_version, None)
+    }
+
+    /// Published rates up to `max_version`, plus the rows of one still-unpublished version that is
+    /// being assembled inside the current sync transaction (`S-49` ②: derived crypto/USD rates
+    /// must see the stablecoin rates written moments earlier in the same version).
+    pub(crate) fn load_fx_rates_with_pending(
+        &self,
+        max_version: i64,
+        pending_version: Option<i64>,
+    ) -> Result<Vec<FxRateRecord>, ErrorEnvelope> {
         let mut stmt = self
             .store
             .conn()
             .prepare(
                 "SELECT id, base_currency, quote_currency, rate, effective_date,
                         effective_at, observed_at, source, quality, carried_from_date, dataset_version
-                 FROM fx_rate JOIN dataset_publication p ON p.version_num = fx_rate.dataset_version
-                 WHERE dataset_version <= ?1 ORDER BY dataset_version ASC, effective_date ASC, CASE WHEN base_currency='USDT' AND source='coinbase' THEN 2 WHEN base_currency='USDC' AND source='bitstamp' THEN 2 WHEN source='frankfurter' THEN 2 ELSE 1 END ASC, source DESC",
+                 FROM fx_rate LEFT JOIN dataset_publication p ON p.version_num = fx_rate.dataset_version
+                 WHERE dataset_version <= ?1 AND (p.version_num IS NOT NULL OR dataset_version = ?2) ORDER BY dataset_version ASC, effective_date ASC, CASE WHEN base_currency='USDT' AND source='coinbase' THEN 2 WHEN base_currency='USDC' AND source='bitstamp' THEN 2 WHEN source='frankfurter' THEN 2 ELSE 1 END ASC, source DESC",
             )
             .map_err(|e| ErrorEnvelope::new("query_fx_failed", e.to_string(), false))?;
         let rows = stmt
-            .query_map(params![max_version], |r| {
+            .query_map(params![max_version, pending_version.unwrap_or(-1)], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -1710,64 +1394,84 @@ impl AppService {
         let _ = load_all_ledger_events(&restored).map_err(|e| {
             ErrorEnvelope::new("restore_ledger_verify_failed", e.to_string(), false)
         })?;
-        if let Ok(notes) = restored.list_notes(false) {
-            for note in &notes {
-                for att in &note.attachments {
-                    let disk_path = restored.root_dir().join(&att.relative_path);
-                    let valid = att.exists_on_disk
-                        && sha256_file(&disk_path)
-                            .map(|h| h == att.sha256_hash)
-                            .unwrap_or(false);
-                    if !valid {
+        let canonical_root = fs::canonicalize(restored.root_dir())
+            .map_err(|e| ErrorEnvelope::new("restore_root_verify_failed", e.to_string(), false))?;
+        let notes = restored
+            .list_notes(false)
+            .map_err(|e| ErrorEnvelope::new("restore_notes_verify_failed", e.to_string(), false))?;
+        for note in &notes {
+            for att in &note.attachments {
+                let rel_path = Path::new(&att.relative_path);
+                let safe_relative = !att.relative_path.is_empty()
+                    && rel_path
+                        .components()
+                        .all(|c| matches!(c, Component::Normal(_)));
+                let disk_path = restored.root_dir().join(rel_path);
+                let confined = safe_relative
+                    && fs::symlink_metadata(&disk_path)
+                        .map(|m| !is_reparse_or_symlink(&m) && m.is_file())
+                        .unwrap_or(false)
+                    && fs::canonicalize(&disk_path)
+                        .map(|p| p.starts_with(&canonical_root))
+                        .unwrap_or(false);
+                let valid = att.exists_on_disk
+                    && confined
+                    && sha256_file(&disk_path)
+                        .map(|h| h == att.sha256_hash)
+                        .unwrap_or(false);
+                if !valid {
+                    return Err(ErrorEnvelope::new(
+                        "restore_attachment_corrupted",
+                        format!(
+                            "restored attachment '{}' for note '{}' failed containment, SHA-256, or existence check",
+                            att.id, note.id
+                        ),
+                        false,
+                    ));
+                }
+            }
+            for link in &note.links {
+                if link.target_type == "economic_event" || link.target_type == "event" {
+                    let exists: bool = restored
+                        .conn()
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM economic_event WHERE id = ?1)",
+                            params![link.target_id],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| {
+                            ErrorEnvelope::new("restore_link_verify_failed", e.to_string(), false)
+                        })?;
+                    if !exists {
                         return Err(ErrorEnvelope::new(
-                            "restore_attachment_corrupted",
+                            "restore_dangling_note_link",
                             format!(
-                                "restored attachment '{}' for note '{}' failed SHA-256 or existence check",
-                                att.id, note.id
+                                "restored note '{}' links to missing economic_event '{}'",
+                                note.id, link.target_id
                             ),
                             false,
                         ));
                     }
-                }
-                for link in &note.links {
-                    if link.target_type == "economic_event" || link.target_type == "event" {
-                        let exists: bool = restored
-                            .conn()
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM economic_event WHERE id = ?1)",
-                                params![link.target_id],
-                                |r| r.get(0),
-                            )
-                            .unwrap_or(false);
-                        if !exists {
-                            return Err(ErrorEnvelope::new(
-                                "restore_dangling_note_link",
-                                format!(
-                                    "restored note '{}' links to missing economic_event '{}'",
-                                    note.id, link.target_id
-                                ),
-                                false,
-                            ));
-                        }
-                    } else if link.target_type == "chart_context" {
-                        let exists: bool = restored
-                            .conn()
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM chart_context WHERE id = ?1)",
-                                params![link.target_id],
-                                |r| r.get(0),
-                            )
-                            .unwrap_or(false);
-                        if !exists {
-                            return Err(ErrorEnvelope::new(
-                                "restore_dangling_chart_context",
-                                format!(
-                                    "restored note '{}' links to missing chart_context '{}'",
-                                    note.id, link.target_id
-                                ),
-                                false,
-                            ));
-                        }
+                } else if link.target_type == "chart_context" {
+                    let exists: bool = restored
+                        .conn()
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM chart_context WHERE id = ?1)",
+                            params![link.target_id],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| {
+                            ErrorEnvelope::new("restore_link_verify_failed", e.to_string(), false)
+                        })?;
+                    if !exists {
+                        return Err(ErrorEnvelope::new(
+                            "restore_dangling_chart_context",
+                            format!(
+                                "restored note '{}' links to missing chart_context '{}'",
+                                note.id, link.target_id
+                            ),
+                            false,
+                        ));
                     }
                 }
             }
@@ -1938,14 +1642,7 @@ impl AppService {
             .map_err(|e| ErrorEnvelope::new("invalid_library", e.to_string(), false))?;
         let metadata = fs::symlink_metadata(data_dir)
             .map_err(|e| ErrorEnvelope::new("invalid_library", e.to_string(), false))?;
-        #[cfg(windows)]
-        let linked = {
-            use std::os::windows::fs::MetadataExt as _;
-            metadata.file_attributes() & 0x400 != 0
-        };
-        #[cfg(not(windows))]
-        let linked = metadata.file_type().is_symlink();
-        if linked {
+        if is_reparse_or_symlink(&metadata) {
             return Err(ErrorEnvelope::new(
                 "delete_link",
                 "library root is a link; deletion refused",
@@ -1970,14 +1667,7 @@ impl AppService {
                     .path();
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
-                #[cfg(windows)]
-                let linked = {
-                    use std::os::windows::fs::MetadataExt as _;
-                    metadata.file_attributes() & 0x400 != 0
-                };
-                #[cfg(not(windows))]
-                let linked = metadata.file_type().is_symlink();
-                if linked
+                if is_reparse_or_symlink(&metadata)
                     || !fs::canonicalize(&path)
                         .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?
                         .starts_with(directory)
@@ -2041,7 +1731,7 @@ impl AppService {
         {
             let meta = fs::symlink_metadata(&entry)
                 .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?;
-            if meta.file_type().is_symlink()
+            if is_reparse_or_symlink(&meta)
                 || !fs::canonicalize(&entry)
                     .map_err(|e| ErrorEnvelope::new("delete_preview", e.to_string(), false))?
                     .starts_with(&root)
@@ -2110,415 +1800,37 @@ impl AppService {
             total_bytes,
         })
     }
+}
 
-    /// Execute live read-only network probes when explicitly requested via `--live` (Section 6.2).
-    pub fn run_live_network_probes(&self) -> Vec<LiveProbeResult> {
-        let client = match build_http_client(8000) {
-            Ok(c) => c,
-            Err(e) => {
-                return vec![LiveProbeResult {
-                    provider: "http_client".to_string(),
-                    endpoint: "n/a".to_string(),
-                    status: "failed".to_string(),
-                    http_status: None,
-                    detail: e.to_string(),
-                }]
-            }
-        };
-
-        let mut results = Vec::new();
-
-        // 1. OKX public BTC-USDT 1Dutc
-        let okx = OkxSpotProvider::default();
-        let okx_res = self.runtime.block_on(okx.fetch_daily_candles(
-            &client,
-            "OKX:BTC/USDT",
-            "BTC-USDT",
-            None,
-            1,
-        ));
-        results.push(match okx_res {
-            Ok((bars, _)) => LiveProbeResult {
-                provider: "okx".to_string(),
-                endpoint: format!(
-                    "{}/api/v5/market/history-candles?instId=BTC-USDT&bar=1Dutc",
-                    okx.base_url
-                ),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} finalized 1Dutc bars", bars.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "okx".to_string(),
-                endpoint: okx.base_url,
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 2. Binance Vision public mirror BTCUSDT 1d
-        let binance = BinanceSpotProvider::default();
-        let bn_res = self.runtime.block_on(binance.fetch_daily_klines(
-            &client,
-            "OKX:BTC/USDT",
-            "BTCUSDT",
-            None,
-            Utc::now(),
-            1,
-        ));
-        results.push(match bn_res {
-            Ok((bars, _)) => LiveProbeResult {
-                provider: "binance-vision".to_string(),
-                endpoint: format!(
-                    "{}/api/v3/klines?symbol=BTCUSDT&interval=1d",
-                    binance.rest_base_url
-                ),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} finalized 1d bars", bars.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "binance-vision".to_string(),
-                endpoint: binance.rest_base_url.clone(),
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 3. Coinbase USDT-USD
-        let stable = StablecoinFxProvider::default();
-        let cb_res = self
-            .runtime
-            .block_on(stable.fetch_coinbase_usdt_usd(&client, 1));
-        results.push(match cb_res {
-            Ok(rates) => LiveProbeResult {
-                provider: "coinbase".to_string(),
-                endpoint: format!(
-                    "{}/products/USDT-USD/candles?granularity=86400",
-                    stable.coinbase_base_url
-                ),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} USDT/USD daily rates", rates.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "coinbase".to_string(),
-                endpoint: stable.coinbase_base_url.clone(),
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 4. Bitstamp USDC-USD
-        let bs_res = self
-            .runtime
-            .block_on(stable.fetch_bitstamp_pair(&client, "USDC", "USD", 5, 1));
-        results.push(match bs_res {
-            Ok(rates) => LiveProbeResult {
-                provider: "bitstamp".to_string(),
-                endpoint: format!("{}/api/v2/ohlc/usdcusd/", stable.bitstamp_base_url),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} USDC/USD daily rates", rates.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "bitstamp".to_string(),
-                endpoint: stable.bitstamp_base_url.clone(),
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 5. Kraken USDCUSD
-        let kr_res = self
-            .runtime
-            .block_on(stable.fetch_kraken_usdc_usd(&client, 1));
-        results.push(match kr_res {
-            Ok(rates) => LiveProbeResult {
-                provider: "kraken".to_string(),
-                endpoint: format!(
-                    "{}/0/public/OHLC?pair=USDCUSD&interval=1440",
-                    stable.kraken_base_url
-                ),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} USDC/USD daily rates", rates.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "kraken".to_string(),
-                endpoint: stable.kraken_base_url.clone(),
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 6. Frankfurter Fiat FX
-        let ff = FrankfurterFxProvider::default();
-        let ff_res = self.runtime.block_on(ff.fetch_range(
-            &client,
-            "USD",
-            &["HKD", "CNY", "EUR"],
-            NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
-            NaiveDate::from_ymd_opt(2026, 1, 6).unwrap(),
-            1,
-        ));
-        results.push(match ff_res {
-            Ok((rates, _)) => LiveProbeResult {
-                provider: "frankfurter".to_string(),
-                endpoint: format!(
-                    "{}/v1/2026-01-02..2026-01-06?base=USD&symbols=HKD,CNY,EUR",
-                    ff.base_url
-                ),
-                status: "passed".to_string(),
-                http_status: Some(200),
-                detail: format!("fetched {} fiat FX rates", rates.len()),
-            },
-            Err(e) => LiveProbeResult {
-                provider: "frankfurter".to_string(),
-                endpoint: ff.base_url,
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 7. Yahoo Chart v8 AAPL 2020-08-28..2020-09-01
-        let yahoo = YahooChartV8Provider::default();
-        let y_res = self.runtime.block_on(yahoo.fetch_chart_v8(
-            &client,
-            "NASDAQ:AAPL",
-            "XNAS",
-            "AAPL",
-            1598486400,
-            1599004800,
-            1,
-        ));
-        results.push(match y_res {
-            Ok((bars, actions, _)) => {
-                let b_0828 = bars
-                    .iter()
-                    .find(|b| b.session_date == NaiveDate::from_ymd_opt(2020, 8, 28).unwrap())
-                    .map(|b| to_canonical_text(b.close))
-                    .unwrap_or_else(|| "n/a".to_string());
-                LiveProbeResult {
-                    provider: "yahoo".to_string(),
-                    endpoint: format!(
-                        "{}/v8/finance/chart/AAPL?interval=1d&events=div,split",
-                        yahoo.base_url
-                    ),
-                    status: "passed".to_string(),
-                    http_status: Some(200),
-                    detail: format!(
-                        "fetched {} bars, {} actions; 2020-08-28 restored raw close={}",
-                        bars.len(),
-                        actions.len(),
-                        b_0828
-                    ),
-                }
-            }
-            Err(e) => LiveProbeResult {
-                provider: "yahoo".to_string(),
-                endpoint: yahoo.base_url.clone(),
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        // 8. EastMoney push2his AAPL fqt=0
-        let em = EastMoneyUsEquityProvider::default();
-        let em_res = self.runtime.block_on(em.fetch_kline_raw(
-            &client,
-            "NASDAQ:AAPL",
-            "XNAS",
-            "105.AAPL",
-            "20200827",
-            "20200901",
-            1,
-        ));
-        results.push(match em_res {
-            Ok((bars, _)) => {
-                let b_0828 = bars
-                    .iter()
-                    .find(|b| b.session_date == NaiveDate::from_ymd_opt(2020, 8, 28).unwrap())
-                    .map(|b| to_canonical_text(b.close))
-                    .unwrap_or_else(|| "n/a".to_string());
-                LiveProbeResult {
-                    provider: "eastmoney".to_string(),
-                    endpoint: format!(
-                        "{}/api/qt/stock/kline/get?secid=105.AAPL&fqt=0",
-                        em.base_url
-                    ),
-                    status: "passed".to_string(),
-                    http_status: Some(200),
-                    detail: format!(
-                        "fetched {} raw bars; 2020-08-28 close={}",
-                        bars.len(),
-                        b_0828
-                    ),
-                }
-            }
-            Err(e) => LiveProbeResult {
-                provider: "eastmoney".to_string(),
-                endpoint: em.base_url,
-                status: "failed".to_string(),
-                http_status: extract_status(&e),
-                detail: e.to_string(),
-            },
-        });
-
-        let archive_month = NaiveDate::from_ymd_opt(2025, 3, 1).unwrap();
-        let archive = self.runtime.block_on(binance.fetch_monthly_archive(
-            &client,
-            "BINANCE:BTC/USDT",
-            "BTCUSDT",
-            archive_month,
-            1,
-        ));
-        results.push(match archive {
-            Ok((bars,_,_))=>LiveProbeResult{provider:"binance-archive".into(),endpoint:format!("{}/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2025-03.zip",binance.archive_base_url),status:if bars.len()==31 {"passed"}else{"failed"}.into(),http_status:Some(200),detail:format!("SHA-256 CHECKSUM verified; {} completed daily bars; microsecond timestamps parsed",bars.len())},
-            Err(error)=>LiveProbeResult{provider:"binance-archive".into(),endpoint:binance.archive_base_url.clone(),status:"failed".into(),http_status:extract_status(&error),detail:error.to_string()},
-        });
-        let usdt_check = self
-            .runtime
-            .block_on(stable.fetch_bitstamp_pair(&client, "USDT", "USD", 5, 1));
-        results.push(match usdt_check {
-            Ok(rates) => LiveProbeResult {
-                provider: "bitstamp-usdt".into(),
-                endpoint: format!("{}/api/v2/ohlc/usdtusd/", stable.bitstamp_base_url),
-                status: if rates.is_empty() { "failed" } else { "passed" }.into(),
-                http_status: Some(200),
-                detail: format!("fetched {} USDT/USD cross-check rates", rates.len()),
-            },
-            Err(error) => LiveProbeResult {
-                provider: "bitstamp-usdt".into(),
-                endpoint: stable.bitstamp_base_url.clone(),
-                status: "failed".into(),
-                http_status: extract_status(&error),
-                detail: error.to_string(),
-            },
-        });
-        for (symbol, start, end, split) in [
-            (
-                "NVDA",
-                NaiveDate::from_ymd_opt(2024, 6, 6).unwrap(),
-                NaiveDate::from_ymd_opt(2024, 6, 12).unwrap(),
-                true,
-            ),
-            (
-                "SPY",
-                NaiveDate::from_ymd_opt(2025, 3, 17).unwrap(),
-                NaiveDate::from_ymd_opt(2025, 3, 25).unwrap(),
-                false,
-            ),
-        ] {
-            let venue = if split { "XNAS" } else { "XNYS" };
-            let id = format!("{}:{symbol}", if split { "NASDAQ" } else { "NYSE" });
-            let response = self.runtime.block_on(yahoo.fetch_chart_v8(
-                &client,
-                &id,
-                venue,
-                symbol,
-                start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
-                end.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(),
-                1,
-            ));
-            results.push(match response {
-                Ok((bars, actions, _)) => {
-                    let expected = actions.iter().any(|action| {
-                        if split {
-                            action.action_type == delta_core::CorporateActionType::Split
-                                && action.ratio_or_amount == Decimal::from(10)
-                        } else {
-                            action.action_type == delta_core::CorporateActionType::CashDividend
-                                && action.ratio_or_amount > Decimal::ZERO
-                        }
-                    });
-                    LiveProbeResult {
-                        provider: format!("yahoo-{}", symbol.to_ascii_lowercase()),
-                        endpoint: format!("{}/v8/finance/chart/{symbol}", yahoo.base_url),
-                        status: if expected && !bars.is_empty() {
-                            "passed"
-                        } else {
-                            "failed"
-                        }
-                        .into(),
-                        http_status: Some(200),
-                        detail: format!(
-                            "{} raw bars; {} actions; expected {} observed={expected}",
-                            bars.len(),
-                            actions.len(),
-                            if split { "10:1 split" } else { "cash dividend" }
-                        ),
-                    }
-                }
-                Err(error) => LiveProbeResult {
-                    provider: format!("yahoo-{}", symbol.to_ascii_lowercase()),
-                    endpoint: yahoo.base_url.clone(),
-                    status: "failed".into(),
-                    http_status: extract_status(&error),
-                    detail: error.to_string(),
-                },
-            });
-        }
-
-        // ACT-03 private-service verification is separate from the public probe.
-        let tiingo = TiingoEquityProvider::default();
-        results.push(LiveProbeResult {
-            provider: "tiingo".to_string(),
-            endpoint: format!("{}/tiingo/daily/AAPL/prices", tiingo.base_url),
-            status: "not-run".to_string(),
-            http_status: None,
-            detail:
-                "ACT-03 private-service live verification not requested; offline fixture verified"
-                    .to_string(),
-        });
-
-        // 10. Alpaca (ACT-03: remains not-run unless API key is configured)
-        let alpaca = AlpacaEquityProvider::default();
-        results.push(LiveProbeResult {
-            provider: "alpaca".to_string(),
-            endpoint: format!("{}/v1/corporate-actions", alpaca.base_url),
-            status: "not-run".to_string(),
-            http_status: None,
-            detail:
-                "ACT-03 private-service live verification not requested; offline fixture verified"
-                    .to_string(),
-        });
-        results.push(LiveProbeResult {
-            provider: "longport".into(),
-            endpoint: "https://openapi.longportapp.com".into(),
-            status: "not-run".into(),
-            http_status: None,
-            detail: "ACT-03 private-service configuration and SDK adapter deferred as LOOP-03"
-                .into(),
-        });
-        for result in &mut results {
-            if result.status == "passed" && result.detail.starts_with("fetched 0 ") {
-                result.status = "failed".into();
-            }
-            if matches!(result.provider.as_str(), "yahoo" | "eastmoney")
-                && !result.detail.contains("499.23")
-            {
-                result.status = "failed".into();
-            }
-        }
-
-        results
+pub(crate) fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        metadata.file_type().is_symlink() || (metadata.file_attributes() & 0x400 != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
     }
 }
 
-fn extract_status(err: &delta_data::ProviderError) -> Option<u16> {
-    match err {
-        delta_data::ProviderError::Http { status, .. } => *status,
-        delta_data::ProviderError::RateLimited { .. } => Some(429),
-        delta_data::ProviderError::ForbiddenEndpoint(_) => Some(451),
-        _ => None,
+pub(crate) fn venue_to_calendar(venue: &str) -> &'static str {
+    if venue.eq_ignore_ascii_case("NASDAQ") || venue.eq_ignore_ascii_case("XNAS") {
+        "XNAS"
+    } else if venue.eq_ignore_ascii_case("NYSE") || venue.eq_ignore_ascii_case("XNYS") {
+        "XNYS"
+    } else {
+        "CRYPTO_24_7"
+    }
+}
+
+pub(crate) fn asset_venue_to_calendar(asset_id: &str) -> &'static str {
+    if asset_id.starts_with("NASDAQ:") {
+        "XNAS"
+    } else if asset_id.starts_with("NYSE:") {
+        "XNYS"
+    } else {
+        "CRYPTO_24_7"
     }
 }
 
@@ -2528,14 +1840,7 @@ fn walk_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         let entry = entry?;
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path)?;
-        #[cfg(windows)]
-        let linked = {
-            use std::os::windows::fs::MetadataExt as _;
-            metadata.file_attributes() & 0x400 != 0
-        };
-        #[cfg(not(windows))]
-        let linked = metadata.file_type().is_symlink();
-        if linked {
+        if is_reparse_or_symlink(&metadata) {
             return Err(std::io::Error::other("library contains a link"));
         }
         if metadata.is_dir() {

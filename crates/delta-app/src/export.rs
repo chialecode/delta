@@ -32,7 +32,15 @@ impl AppService {
         fs::create_dir_all(parent).map_err(|e| fail(&e))?;
         let canonical_parent = fs::canonicalize(parent).map_err(|e| fail(&e))?;
         let library = fs::canonicalize(self.store.root_dir()).map_err(|e| fail(&e))?;
-        if canonical_parent.starts_with(&library) {
+        let target_candidate = if export_dir.exists() {
+            fs::canonicalize(export_dir).map_err(|e| fail(&e))?
+        } else {
+            canonical_parent.join(export_dir.file_name().unwrap_or_default())
+        };
+        if canonical_parent.starts_with(&library)
+            || target_candidate.starts_with(&library)
+            || library.starts_with(&target_candidate)
+        {
             return Err(ErrorEnvelope::new(
                 "export_target_in_library",
                 "export directory must be outside the library",
@@ -102,15 +110,15 @@ impl AppService {
             }
 
             // Export open-format JSON & Markdown artifacts (`M2-W08`, `M2-A-17`) when M2 entities exist
-            let notes = self.store.list_notes(false).unwrap_or_default();
+            let notes = self.store.list_notes(false).map_err(|e| fail(&e))?;
             let mut ctx_stmt = snapshot
                 .prepare("SELECT id FROM chart_context ORDER BY id ASC")
                 .map_err(|e| fail(&e))?;
             let ctx_ids: Vec<String> = ctx_stmt
                 .query_map([], |r| r.get::<_, String>(0))
                 .map_err(|e| fail(&e))?
-                .filter_map(Result::ok)
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| fail(&e))?;
             drop(ctx_stmt);
 
             let mut ai_stmt = snapshot
@@ -132,8 +140,8 @@ impl AppService {
                     })
                 })
                 .map_err(|e| fail(&e))?
-                .filter_map(Result::ok)
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| fail(&e))?;
             drop(ai_stmt);
 
             let has_settings_or_attachments = ["attachments", "settings"].iter().any(|subdir| {
@@ -183,15 +191,32 @@ impl AppService {
                             }
                         })
                         .collect();
-                    let rel_md = format!("notes/{safe_id}.md");
+                    let rel_md = {
+                        let base = if safe_id.is_empty() {
+                            "note".to_string()
+                        } else {
+                            safe_id.clone()
+                        };
+                        let candidate = format!("notes/{base}.md");
+                        if safe_id.is_empty() || files.contains_key(&candidate) {
+                            use sha2::{Digest, Sha256};
+                            let suffix = &hex::encode(Sha256::digest(note.id.as_bytes()))[..12];
+                            format!("notes/{base}_{suffix}.md")
+                        } else {
+                            candidate
+                        }
+                    };
                     let md_path = staging.join(&rel_md);
+                    let yaml_str =
+                        |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string());
+                    let yaml_tags: Vec<String> = note.tags.iter().map(|t| yaml_str(t)).collect();
                     let md_content = format!(
                         "---\nid: {}\ntitle: {}\ntemplate: {}\nrevision: {}\ntags: [{}]\n---\n\n{}\n",
-                        note.id,
-                        note.title,
-                        note.template_kind,
+                        yaml_str(&note.id),
+                        yaml_str(&note.title),
+                        yaml_str(&note.template_kind),
                         note.current_revision,
-                        note.tags.join(", "),
+                        yaml_tags.join(", "),
                         note.body_markdown
                     );
                     fs::write(&md_path, md_content.as_bytes()).map_err(|e| fail(&e))?;
@@ -200,9 +225,8 @@ impl AppService {
 
                 let mut chart_contexts = Vec::new();
                 for cid in ctx_ids {
-                    if let Ok(ctx) = self.store.get_chart_context(&cid) {
-                        chart_contexts.push(ctx);
-                    }
+                    let ctx = self.store.get_chart_context(&cid).map_err(|e| fail(&e))?;
+                    chart_contexts.push(ctx);
                 }
                 let ctx_path = staging.join("chart_contexts.json");
                 fs::write(
@@ -246,6 +270,7 @@ impl AppService {
                 .export_simulation_tables_snapshot()
                 .map_err(|e| fail(&e))?;
             if !sim_bundle.simulation_runs.is_empty()
+                || !sim_bundle.practice_accounts.is_empty()
                 || sim_bundle
                     .fee_profile_versions
                     .iter()
@@ -377,14 +402,28 @@ fn export_copy_dir_recursive(
     dst_dir: &Path,
     files: &mut BTreeMap<String, String>,
 ) -> std::io::Result<()> {
+    let dir_meta = fs::symlink_metadata(src_dir)?;
+    if is_reparse_or_symlink(&dir_meta) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "refusing to export symbolic link or reparse point",
+        ));
+    }
     fs::create_dir_all(dst_dir)?;
     for entry in fs::read_dir(src_dir)? {
         let entry = entry?;
         let path = entry.path();
+        let meta = fs::symlink_metadata(&path)?;
+        if is_reparse_or_symlink(&meta) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "refusing to export symbolic link or reparse point",
+            ));
+        }
         let dst_path = dst_dir.join(entry.file_name());
-        if path.is_dir() {
+        if meta.is_dir() {
             export_copy_dir_recursive(&path, staging_root, &dst_path, files)?;
-        } else if path.is_file() {
+        } else if meta.is_file() {
             fs::copy(&path, &dst_path)?;
             let rel = dst_path
                 .strip_prefix(staging_root)
@@ -608,6 +647,124 @@ mod tests {
         assert!(deleted.deleted);
         assert_eq!(deleted.file_count, preview.file_count);
         assert!(!data_dir.exists());
+
+        let _ = fs::remove_dir_all(&tmp_root);
+    }
+
+    #[test]
+    fn export_disambiguates_colliding_note_ids_and_escapes_yaml_frontmatter() {
+        apply_process_quiet_guards();
+        let tmp_root = std::env::temp_dir().join(format!(
+            "delta_export_collision_{}_{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+        let data_dir = tmp_root.join("lib_data");
+        let paths = resolve_app_paths(Some(BuildChannel::Source), Some(&data_dir)).unwrap();
+        let mut svc = AppService::open(paths, "USD", "USD", "UTC", true).unwrap();
+
+        svc.store_mut()
+            .save_note_revision(
+                "NOTE/A",
+                "Title: with colon\n---\ninjected: true",
+                "general",
+                true,
+                "Body A",
+                &StructuredNoteFields::default(),
+                &["tag:1".into(), "tag, 2".into()],
+            )
+            .unwrap();
+        svc.store_mut()
+            .save_note_revision(
+                "NOTE:A",
+                "Second note",
+                "general",
+                true,
+                "Body B",
+                &StructuredNoteFields::default(),
+                &[],
+            )
+            .unwrap();
+
+        let export_dir = tmp_root.join("exported");
+        let manifest = svc.export_library(&export_dir).unwrap();
+        let note_md_files: Vec<&String> = manifest
+            .files
+            .keys()
+            .filter(|k| k.starts_with("notes/") && k.ends_with(".md"))
+            .collect();
+        assert_eq!(
+            note_md_files.len(),
+            2,
+            "colliding sanitized note IDs must produce two distinct markdown files: {note_md_files:?}"
+        );
+        let combined: String = note_md_files
+            .iter()
+            .map(|rel| fs::read_to_string(export_dir.join(rel)).unwrap())
+            .collect();
+        assert!(combined.contains("Body A"));
+        assert!(combined.contains("Body B"));
+        assert!(combined.contains(r#""Title: with colon\n---\ninjected: true""#));
+
+        // Exporting into the library root itself must be refused.
+        assert_eq!(
+            svc.export_library(&data_dir).unwrap_err().code,
+            "export_target_not_empty"
+        );
+        let nested_in_lib = data_dir.join("nested_export");
+        assert_eq!(
+            svc.export_library(&nested_in_lib).unwrap_err().code,
+            "export_target_in_library"
+        );
+
+        drop(svc);
+        let _ = fs::remove_dir_all(&tmp_root);
+    }
+
+    #[test]
+    fn restore_backup_rejects_path_traversal_attachment_reference() {
+        apply_process_quiet_guards();
+        let tmp_root = std::env::temp_dir().join(format!(
+            "delta_restore_traversal_{}_{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(1)
+        ));
+        let _ = fs::remove_dir_all(&tmp_root);
+        let data_dir = tmp_root.join("lib_data");
+        let paths = resolve_app_paths(Some(BuildChannel::Source), Some(&data_dir)).unwrap();
+        let mut svc = AppService::open(paths, "USD", "USD", "UTC", true).unwrap();
+
+        svc.store_mut()
+            .save_note_revision(
+                "NOTE-TRAV",
+                "Traversal test",
+                "general",
+                true,
+                "body",
+                &StructuredNoteFields::default(),
+                &[],
+            )
+            .unwrap();
+        let outside_file = tmp_root.join("outside.txt");
+        fs::write(&outside_file, b"outside secret").unwrap();
+        let outside_hash = sha256_file(&outside_file).unwrap();
+        svc.store_mut()
+            .conn()
+            .execute(
+                "INSERT INTO attachment (id, note_id, file_name, relative_path, mime_type, size_bytes, sha256_hash, created_at)
+                 VALUES ('ATT-TRAV', 'NOTE-TRAV', 'outside.txt', '../outside.txt', 'text/plain', 14, ?1, ?2)",
+                params![outside_hash, Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+
+        let backup_dir = tmp_root.join("backup_trav");
+        svc.create_backup(&backup_dir).unwrap();
+        drop(svc);
+
+        let restored_dir = tmp_root.join("restored_trav");
+        let err = AppService::restore_backup(&backup_dir, &restored_dir).unwrap_err();
+        assert_eq!(err.code, "restore_attachment_corrupted");
 
         let _ = fs::remove_dir_all(&tmp_root);
     }
