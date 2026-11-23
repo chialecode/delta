@@ -1,10 +1,17 @@
-use super::{CaseResultRecord, PocResultRecord, VerifyStageReport};
+use super::{
+    verify_common::{
+        build_gate_env, check_delta_app_boundary, check_delta_core_purity,
+        check_workspace_source_hygiene, default_gate_jobs, finalize_and_write_report,
+        make_initial_report, record_execution_outcome, record_mapped_case, run_mechanical_gates,
+        stamp_path, MechanicalGateConfig,
+    },
+    CaseResultRecord, PocResultRecord, VerifyStageReport,
+};
 use chrono::Utc;
 use delta_app::{
-    count_visible_windows_for_current_process, current_process_priority, observed_window_details,
-    run_quiet_command, run_quiet_command_with_timeout, sanitize_terminal_output, spawn_quiet_child,
-    AppService, BuildChannel, CredentialStore, ErrorEnvelope, InstanceLock, QuietJobObject,
-    ResolvedAppPaths,
+    count_visible_windows_for_current_process, observed_window_details, run_quiet_command,
+    run_quiet_command_with_timeout, spawn_quiet_child, AppService, BuildChannel, CredentialStore,
+    ErrorEnvelope, InstanceLock, QuietJobObject, ResolvedAppPaths,
 };
 use delta_core::{to_canonical_text, AdjustmentKind};
 use delta_data::SqliteStore;
@@ -12,9 +19,7 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
-    ffi::OsStr,
-    fs,
+    env, fs,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -25,13 +30,29 @@ pub(super) fn failure(code: &str, error: impl std::fmt::Display) -> ErrorEnvelop
     ErrorEnvelope::new(code, error.to_string(), false)
 }
 
+fn is_symlink_or_reparse_point(meta: &fs::Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 pub(super) fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
-        if fs::symlink_metadata(&path)?.file_type().is_symlink() {
+        let meta = fs::symlink_metadata(&path)?;
+        if is_symlink_or_reparse_point(&meta) {
             return Err(std::io::Error::other("source symlink rejected"));
         }
-        if path.is_dir() {
+        if meta.is_dir() {
             source_files(&path, files)?;
         } else {
             files.push(path);
@@ -61,9 +82,13 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
             "Cargo.lock",
             "rust-toolchain.toml",
             "clippy.toml",
+            "scripts/_quiet.py",
             "scripts/check_docs.py",
             "scripts/collect_third_party_licenses.py",
+            "scripts/deps.py",
+            "scripts/deps-exceptions.json",
             "scripts/test_collect_third_party_licenses.py",
+            "scripts/test_deps.py",
             "LICENSE",
             "THIRD-PARTY-NOTICES.txt",
             "docs/delivery/m2-stage-cases.json",
@@ -138,6 +163,10 @@ pub(super) fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
         if item.file_type()?.is_dir()
             && [
                 "delta-regression-",
+                "delta-package-regression-",
+                "delta-license-regression-",
+                "delta-m1-verify-",
+                "delta-m2-verify-",
                 "delta_data_test_",
                 "delta_import_test_",
                 "delta_app_s11_",
@@ -146,6 +175,8 @@ pub(super) fn owned_test_directories() -> std::io::Result<BTreeSet<PathBuf>> {
                 "delta_m3_",
                 "delta_m4_",
                 "delta-m4-",
+                "delta_m5_",
+                "delta-m5-",
             ]
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -173,31 +204,6 @@ pub(super) fn record_tests(text: &str, tests: &mut BTreeMap<String, String>) {
     }
 }
 
-pub(super) fn case_from_tests(
-    report: &mut VerifyStageReport,
-    id: &str,
-    package: &str,
-    tier: &str,
-    names: &[&str],
-) {
-    let status = if names
-        .iter()
-        .all(|n| report.test_results.get(*n).is_some_and(|s| s == "passed"))
-    {
-        "passed"
-    } else {
-        "failed"
-    };
-    report.case_results.push(CaseResultRecord {
-        case_id: id.into(),
-        work_package: package.into(),
-        tier: tier.into(),
-        status: status.into(),
-        elapsed_ms: 0,
-        evidence: format!("M1-G-05 captured test results: {}", names.join(", ")),
-    });
-}
-
 pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnvelope> {
     let root = env::current_dir().map_err(|e| failure("cwd", e))?;
     let fingerprint = source_fingerprint(&root)?;
@@ -215,167 +221,69 @@ pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnve
     let before = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     let test_directories_before =
         owned_test_directories().map_err(|e| failure("temp_snapshot", e))?;
-    let release_before = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
-    let jobs = env::var("DELTA_GATE_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().saturating_sub(2).max(1))
-                .unwrap_or(1)
-        });
-    let mut report=VerifyStageReport {stage:"M1".into(),plan_version:"2.6".into(),executed_at:Utc::now().to_rfc3339(),live_mode,
-        source_fingerprint:fingerprint,visible_window_count:0,window_details:Vec::new(),temp_residual_dirs:0,outside_temp_created_dirs:0,
-        path_observation_scope:"directory metadata under real LOCALAPPDATA/delta and delta-dev; test roots are isolated in TEMP; no system-wide write tracing".into(),
-        release_data_dir_touched:false,poc_results:Vec::new(),case_results:Vec::new(),live_probes:Vec::new(),overall_status:"running".into(),gate_jobs:jobs,
-        process_priority:current_process_priority(),test_results:BTreeMap::new(),log_files:BTreeMap::new(),errors:Vec::new()};
+    let release_before = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
+    let jobs = default_gate_jobs();
+    let mut report = make_initial_report(
+        "M1",
+        "2.6",
+        live_mode,
+        fingerprint,
+        jobs,
+        "directory metadata under real LOCALAPPDATA/delta and delta-dev; test roots are isolated in TEMP; no system-wide write tracing",
+    );
     let execution = catch_unwind(AssertUnwindSafe(|| -> Result<(), ErrorEnvelope> {
         let job = QuietJobObject::new().map_err(|e| failure("job_object", e))?;
         job.assign_current_process()
             .map_err(|e| failure("job_object", e))?;
-        let mut boundary_files = Vec::new();
-        source_files(&root.join("crates/delta-core"), &mut boundary_files)
-            .map_err(|e| failure("boundary_scan", e))?;
-        for file in boundary_files {
-            let text = fs::read_to_string(&file).map_err(|e| failure("boundary_scan", e))?;
-            if text.contains("tokio") || text.contains("reqwest") {
-                return Err(failure(
-                    "boundary_scan",
-                    "delta-core contains IO runtime dependencies",
-                ));
-            }
-        }
-        let mut app_files = Vec::new();
-        source_files(&root.join("crates/delta-app/src"), &mut app_files)
-            .map_err(|e| failure("boundary_scan", e))?;
-        for file in app_files {
-            if fs::read_to_string(&file)
-                .map_err(|e| failure("boundary_scan", e))?
-                .contains("pub async fn")
-            {
-                return Err(failure(
-                    "boundary_scan",
-                    "delta-app leaks a public async API",
-                ));
-            }
-        }
-        let forbidden_bind = ["0.0", ".0.0"].concat();
-        let mut files = Vec::new();
-        source_files(&root.join("crates"), &mut files).map_err(|e| failure("bind_scan", e))?;
-        for file in files {
-            if file.extension().is_some_and(|e| e == "rs")
-                && fs::read_to_string(file)
-                    .map_err(|e| failure("bind_scan", e))?
-                    .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains(&forbidden_bind))
-            {
-                return Err(failure("bind_scan", "non-loopback test bind address found"));
-            }
-        }
-        let mut gate_env = BTreeMap::from([
-            (
-                "DELTA_DATA_DIR".into(),
-                temp.join("gate-data").display().to_string(),
-            ),
-            (
-                "DELTA_DOCUMENTS_DIR".into(),
-                temp.join("gate-documents").display().to_string(),
-            ),
-            (
-                "LOCALAPPDATA".into(),
-                temp.join("gate-localappdata").display().to_string(),
-            ),
-            ("CARGO_BUILD_JOBS".into(), jobs.to_string()),
-            ("CARGO_INCREMENTAL".into(), "0".into()),
-            ("PYTHONUTF8".into(), "1".into()),
-            ("RUST_TEST_THREADS".into(), jobs.to_string()),
-        ]);
-        gate_env.insert(
-            "DELTA_TEST_ROOT".into(),
-            temp.join("tests").display().to_string(),
-        );
-        for (id, program, args) in [
-            ("M1-G-01", "python", vec!["scripts/check_docs.py"]),
-            ("M1-G-02", "git", vec!["diff", "--check"]),
-            ("M1-G-03", "cargo", vec!["fmt", "--all", "--check"]),
-            (
-                "M1-G-04",
-                "cargo",
-                vec![
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
-            ("M1-G-05", "cargo", vec!["test", "--workspace"]),
+        check_delta_core_purity(
+            &root,
+            "boundary_scan",
+            "crates/delta-core",
+            &["tokio", "reqwest"],
+            &[],
+        )?;
+        check_delta_app_boundary(&root, "boundary_scan", None)?;
+        check_workspace_source_hygiene(&root, "bind_scan", false)?;
+        let gate_env = build_gate_env(&temp, jobs);
+        run_mechanical_gates(
+            &root,
+            &logs,
+            &mut report,
+            &gate_env,
+            MechanicalGateConfig {
+                stage_prefix: "M1",
+                work_package: "M1-W06",
+                clippy_locked: false,
+                test_locked: false,
+            },
+        )?;
+        let (poc_d01, poc_elapsed_ms) = storage_spike(&temp)?;
+        report.poc_results.push(poc_d01);
+        report.case_results.push(CaseResultRecord {
+            case_id: "M1-A-01".into(),
+            work_package: "M1-W01".into(),
+            tier: "required".into(),
+            status: "passed".into(),
+            elapsed_ms: poc_elapsed_ms,
+            evidence: "POC-D01 actual 1,010,000 rows, version queries, cutoff query, consistent backup and restore".into(),
+        });
+        for (id, package, tier, names) in [
+            ("M1-A-02", "M1-W02", "required", vec!["tests::test_poc_d02_xnys_calendar_1990_to_2027_day_by_day"]),
+            ("M1-A-03", "M1-W04", "required", vec!["tests::test_s08_yahoo_restore_raw_and_cross_validation_over_loopback", "regression::repeated_company_action_versions_and_sources_do_not_multiply_adjustment"]),
+            ("M1-A-04", "M1-W02", "required", vec!["regression::foreign_report_currency_uses_historical_flows_and_explains_translation", "regression::missing_book_fx_is_synced_before_import_commits", "regression::non_usd_book_currency_triangulates_and_freezes_event_fx"]),
+            ("M1-A-05", "M1-W03", "required", vec!["tests::test_binance_archive_ms_and_us_timestamps_and_checksum", "regression::monthly_archive_backfill_verifies_checksum_before_publishing", "regression::multi_page_sync_retries_429_and_persists_the_subscription_id"]),
+            ("M1-A-06", "M1-W05", "required", vec!["tests::poc_d05_ac02_minimal_ledger_and_fifo", "regression::ac02_application_import_sync_report_and_export_match_hand_calculation", "regression::asset_fee_disposes_one_fifo_slice_and_preserves_unknown_cost_flag", "regression::third_asset_fee_reduces_one_lot_and_corrections_preserve_journals", "regression::opening_cash_requires_its_own_currency_and_known_openings_need_unit_cost", "regression::stablecoin_quote_leg_is_settled_once_from_cash"]),
+            ("M1-A-07", "M1-W05", "required", vec!["tests::ac04_internal_transfer_and_ac05_split_and_ac07_twr_xirr", "regression::report_cash_flows_produce_zero_returns_for_unchanged_market", "regression::external_destination_is_excluded_and_registered_empty_account_keeps_internal_transit", "regression::crypto_funding_keeps_unknown_history_after_full_disposal_until_cost_correction"]),
+            ("M1-A-08", "M1-W05", "required", vec!["tests::test_statement_importers_and_header_mismatch", "regression::independent_funding_presets_commit_cash_income_fees_and_withdrawals", "regression::strict_headers_missing_ids_and_multi_account_flex_are_handled_explicitly", "regression::source_business_ids_deduplicate_across_files_and_revisions_require_correction"]),
+            ("M1-A-09", "M1-W05", "required", vec!["regression::third_asset_fee_reduces_one_lot_and_corrections_preserve_journals", "regression::same_preview_replay_is_idempotent_and_modified_preview_is_rejected", "regression::event_book_fx_does_not_change_when_historical_market_fx_is_revised"]),
+            ("M1-A-10", "M1-W01", "required", vec!["tests::test_s09_storage_version_intervals_and_backup_restore", "regression::recursive_backup_includes_settings_and_detects_tampering", "regression::past_balance_snapshot_ignores_later_deposit", "regression::recorded_account_providers_normalize_fills_balances_and_completed_funding"]),
+            ("M1-A-11", "M1-W06", "required", vec!["regression::all_indicators_match_independent_hand_values_and_ignore_future_sentinel", "regression::historical_indicators_ignore_future_sentinel_and_published_versions_are_immutable"]),
+            ("M1-A-12", "M1-W01", "required", vec!["tests::test_s02_background_job_panic_timeout_and_cancel", "regression::cancelled_sync_publishes_no_version"]),
+            ("M1-A-16", "M1-W01", "required", vec!["tests::test_s11_channel_resolution_and_non_writable_no_fallback", "regression::public_sessions_require_lock_and_cannot_impersonate_release_channel", "regression::source_channel_cannot_target_release_user_file_root"]),
+            ("M1-A-17", "M1-EXT", "extension", vec!["tests::test_statement_importers_and_header_mismatch", "tests::test_s08_yahoo_restore_raw_and_cross_validation_over_loopback"]),
         ] {
-            let started = Instant::now();
-            let result =
-                run_quiet_command(OsStr::new(program), args.clone(), Some(&root), &gate_env)
-                    .map_err(|e| failure("gate_command", e))?;
-            let path = logs.join(format!("{id}.json"));
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&result).map_err(|e| failure("gate_log", e))?,
-            )
-            .map_err(|e| failure("gate_log", e))?;
-            report.log_files.insert(
-                id.into(),
-                path.strip_prefix(&root).unwrap().display().to_string(),
-            );
-            if id == "M1-G-05" {
-                record_tests(&result.stdout, &mut report.test_results);
-            }
-            report.case_results.push(CaseResultRecord {
-                case_id: id.into(),
-                work_package: "M1-W06".into(),
-                tier: "required".into(),
-                status: if result.status_code == Some(0) && !result.timed_out {
-                    "passed"
-                } else {
-                    "failed"
-                }
-                .into(),
-                elapsed_ms: started.elapsed().as_millis() as u64,
-                evidence: format!(
-                    "{program} {}; exit={:?}; captured log {}",
-                    args.join(" "),
-                    result.status_code,
-                    path.display()
-                ),
-            });
-            if result.status_code != Some(0) || result.timed_out {
-                return Err(failure(
-                    "gate_failed",
-                    format!("{id}: see {}", path.display()),
-                ));
-            }
+            record_mapped_case(&mut report, "M1-G-05", id, package, tier, &names, None);
         }
-        report.poc_results.push(storage_spike(&temp)?);
-        report.case_results.push(CaseResultRecord{case_id:"M1-A-01".into(),work_package:"M1-W01".into(),tier:"required".into(),status:"passed".into(),elapsed_ms:0,evidence:"POC-D01 actual 1,010,000 rows, version queries, cutoff query, consistent backup and restore".into()});
-        for (id,package,tier,names) in [
-            ("M1-A-02","M1-W02","required",vec!["tests::test_poc_d02_xnys_calendar_1990_to_2027_day_by_day"]),
-            ("M1-A-03","M1-W04","required",vec!["tests::test_s08_yahoo_restore_raw_and_cross_validation_over_loopback","regression::repeated_company_action_versions_and_sources_do_not_multiply_adjustment"]),
-            ("M1-A-04","M1-W02","required",vec!["regression::foreign_report_currency_uses_historical_flows_and_explains_translation","regression::missing_book_fx_is_synced_before_import_commits","regression::non_usd_book_currency_triangulates_and_freezes_event_fx"]),
-            ("M1-A-05","M1-W03","required",vec!["tests::test_binance_archive_ms_and_us_timestamps_and_checksum","regression::monthly_archive_backfill_verifies_checksum_before_publishing","regression::multi_page_sync_retries_429_and_persists_the_subscription_id"]),
-            ("M1-A-06","M1-W05","required",vec!["tests::poc_d05_ac02_minimal_ledger_and_fifo","regression::ac02_application_import_sync_report_and_export_match_hand_calculation","regression::asset_fee_disposes_one_fifo_slice_and_preserves_unknown_cost_flag","regression::third_asset_fee_reduces_one_lot_and_corrections_preserve_journals","regression::opening_cash_requires_its_own_currency_and_known_openings_need_unit_cost","regression::stablecoin_quote_leg_is_settled_once_from_cash"]),
-            ("M1-A-07","M1-W05","required",vec!["tests::ac04_internal_transfer_and_ac05_split_and_ac07_twr_xirr","regression::report_cash_flows_produce_zero_returns_for_unchanged_market","regression::external_destination_is_excluded_and_registered_empty_account_keeps_internal_transit","regression::crypto_funding_keeps_unknown_history_after_full_disposal_until_cost_correction"]),
-            ("M1-A-08","M1-W05","required",vec!["tests::test_statement_importers_and_header_mismatch","regression::independent_funding_presets_commit_cash_income_fees_and_withdrawals","regression::strict_headers_missing_ids_and_multi_account_flex_are_handled_explicitly","regression::source_business_ids_deduplicate_across_files_and_revisions_require_correction"]),
-            ("M1-A-09","M1-W05","required",vec!["regression::third_asset_fee_reduces_one_lot_and_corrections_preserve_journals","regression::same_preview_replay_is_idempotent_and_modified_preview_is_rejected","regression::event_book_fx_does_not_change_when_historical_market_fx_is_revised"]),
-            ("M1-A-10","M1-W01","required",vec!["tests::test_s09_storage_version_intervals_and_backup_restore","regression::recursive_backup_includes_settings_and_detects_tampering","regression::past_balance_snapshot_ignores_later_deposit","regression::recorded_account_providers_normalize_fills_balances_and_completed_funding"]),
-            ("M1-A-11","M1-W06","required",vec!["regression::all_indicators_match_independent_hand_values_and_ignore_future_sentinel","regression::historical_indicators_ignore_future_sentinel_and_published_versions_are_immutable"]),
-            ("M1-A-12","M1-W01","required",vec!["tests::test_s02_background_job_panic_timeout_and_cancel","regression::cancelled_sync_publishes_no_version"]),
-            ("M1-A-16","M1-W01","required",vec!["tests::test_s11_channel_resolution_and_non_writable_no_fallback","regression::public_sessions_require_lock_and_cannot_impersonate_release_channel","regression::source_channel_cannot_target_release_user_file_root"]),
-            ("M1-A-17","M1-EXT","extension",vec!["tests::test_statement_importers_and_header_mismatch","tests::test_s08_yahoo_restore_raw_and_cross_validation_over_loopback"]),
-        ] { case_from_tests(&mut report,id,package,tier,&names); }
         if report.case_results.iter().any(|c| c.status == "failed") {
             return Err(failure(
                 "test_mapping",
@@ -383,7 +291,13 @@ pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnve
             ));
         }
         cross_process_checks(&root, &temp, &run_id, &mut report)?;
-        report.poc_results.push(PocResultRecord{id:"POC-D06".into(),title:"Official ccxt =4.5.91 manual isolated POC".into(),status:"not-run".into(),metrics:BTreeMap::new(),detail:"See docs/evidence/2026-11-08-ccxt-rust-poc.md: build succeeded; Windows default stack overflowed; 64MiB worker+boxed future fetched OKX/Kraken. Typed OHLCV is f64; canonical Decimal adapter remains LOOP-03. This gate does not rerun the isolated POC.".into()});
+        report.poc_results.push(PocResultRecord {
+            id: "POC-D06".into(),
+            title: "Official ccxt =4.5.91 manual isolated POC".into(),
+            status: "not-run".into(),
+            metrics: BTreeMap::new(),
+            detail: "See docs/evidence/2026-11-08-ccxt-rust-poc.md: build succeeded; Windows default stack overflowed; 64MiB worker+boxed future fetched OKX/Kraken. Typed OHLCV is f64; canonical Decimal adapter remains LOOP-03. This gate does not rerun the isolated POC.".into(),
+        });
         report.case_results.push(CaseResultRecord {
             case_id: "M1-A-18".into(),
             work_package: "M1-EXT".into(),
@@ -467,30 +381,17 @@ pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnve
         }
         Ok(())
     }));
-    match execution {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => report
-            .errors
-            .push(format!("{}: {}", error.code, error.message)),
-        Err(payload) => report.errors.push(format!(
-            "gate panic: {}",
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic")
-        )),
-    }
+    record_execution_outcome(&mut report, execution);
     if let Err(error) = fs::remove_dir_all(&temp) {
         report
             .errors
             .push(format!("temporary cleanup failed: {error}"));
     }
-    report.temp_residual_dirs = usize::from(temp.exists());
-    report.temp_residual_dirs += owned_test_directories()
-        .map_err(|e| failure("temp_snapshot", e))?
-        .difference(&test_directories_before)
-        .count();
+    report.temp_residual_dirs = usize::from(temp.exists())
+        + owned_test_directories()
+            .map_err(|e| failure("temp_snapshot", e))?
+            .difference(&test_directories_before)
+            .count();
     if report.temp_residual_dirs > 0 {
         report
             .errors
@@ -498,10 +399,7 @@ pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnve
     }
     let after = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     report.outside_temp_created_dirs = after.difference(&before).count();
-    let release_after = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
+    let release_after = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
     report.release_data_dir_touched = release_before != release_after;
     report.visible_window_count = count_visible_windows_for_current_process();
     report.window_details = observed_window_details();
@@ -523,47 +421,14 @@ pub(super) fn run_verify_stage_m1(live_mode: bool) -> Result<ExitCode, ErrorEnve
             .errors
             .push("process priority is not below normal".into());
     }
-    let invalid_statuses: Vec<_> = report
-        .case_results
-        .iter()
-        .map(|result| result.status.as_str())
-        .chain(
-            report
-                .poc_results
-                .iter()
-                .map(|result| result.status.as_str()),
-        )
-        .chain(
-            report
-                .live_probes
-                .iter()
-                .map(|result| result.status.as_str()),
-        )
-        .chain(report.test_results.values().map(String::as_str))
-        .filter(|status| !matches!(*status, "passed" | "failed" | "blocked" | "not-run"))
-        .map(str::to_owned)
-        .collect();
-    for status in invalid_statuses {
-        report
-            .errors
-            .push(format!("invalid verification status: {status}"));
-    }
     let failed =
         !report.errors.is_empty() || report.case_results.iter().any(|c| c.status == "failed");
-    report.overall_status = if failed { "failed" } else { "passed" }.into();
-    let json = serde_json::to_string_pretty(&report).map_err(|e| failure("report", e))?;
     let name = if live_mode {
         "verify-stage-live-report.json"
     } else {
         "verify-stage-report.json"
     };
-    fs::write(reports.join(name), &json).map_err(|e| failure("report", e))?;
-    println!("{}", sanitize_terminal_output(&json));
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    finalize_and_write_report(&mut report, &reports.join(name), failed, None)
 }
 
 fn cross_process_checks(
@@ -708,7 +573,17 @@ fn cross_process_checks(
             "preview/delete range or cleanup differs",
         ));
     }
-    report.case_results.push(CaseResultRecord{case_id:"M1-A-14".into(),work_package:"M1-W06".into(),tier:"required".into(),status:"passed".into(),elapsed_ms:started.elapsed().as_millis() as u64,evidence:format!("Process-tree timeout killed parent and descendant (both locks reacquired); injected crash exit {:?}; initialized non-TTY library refused; nested synthetic file added exactly 1 file/22 bytes to preview and explicit delete matched it",crash.status_code)});
+    report.case_results.push(CaseResultRecord {
+        case_id: "M1-A-14".into(),
+        work_package: "M1-W06".into(),
+        tier: "required".into(),
+        status: "passed".into(),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        evidence: format!(
+            "Process-tree timeout killed parent and descendant (both locks reacquired); injected crash exit {:?}; initialized non-TTY library refused; nested synthetic file added exactly 1 file/22 bytes to preview and explicit delete matched it",
+            crash.status_code
+        ),
+    });
     let lock_dir = temp.join("lock-probe");
     fs::create_dir(&lock_dir).map_err(|e| failure("lock_probe", e))?;
     let began = Instant::now();
@@ -787,172 +662,158 @@ fn cross_process_checks(
     Ok(())
 }
 
-fn storage_spike(temp_root: &Path) -> Result<PocResultRecord, ErrorEnvelope> {
-    let mut poc_results = Vec::new();
-    let mut case_results = Vec::new();
+fn storage_spike(temp_root: &Path) -> Result<(PocResultRecord, u64), ErrorEnvelope> {
+    let t0 = Instant::now();
+    let poc_dir = temp_root.join("poc_d01");
+    let store = SqliteStore::open_or_init(&poc_dir, "USD", "USD", "UTC")
+        .map_err(|e| delta_app::ErrorEnvelope::new("poc_d01_open", e.to_string(), false))?;
+
+    let write_start = Instant::now();
     {
-        let t0 = Instant::now();
-        let poc_dir = temp_root.join("poc_d01");
-        let store = SqliteStore::open_or_init(&poc_dir, "USD", "USD", "UTC")
-            .map_err(|e| delta_app::ErrorEnvelope::new("poc_d01_open", e.to_string(), false))?;
-
-        let write_start = Instant::now();
+        let tx = store.conn().unchecked_transaction().unwrap();
         {
-            let tx = store.conn().unchecked_transaction().unwrap();
-            {
-                let mut stmt = tx
-                    .prepare(
-                        "INSERT INTO bar (
-                            id, instrument_id, timeframe, session, session_date, open_at, close_at,
-                            open, high, low, close, volume, source, adjustment, is_final,
-                            valid_from_version, valid_to_version, raw_payload_hash
-                         ) VALUES (?1, ?2, '1d', 'regular', ?3, ?4, ?5, '100.25', '101.50', '99.75', ?6, '1000000', 'yahoo', 'raw', 1, ?7, ?8, NULL)",
-                    )
-                    .unwrap();
-                // Precompute 5,000 session date strings once so bulk write measures SQLite throughput
-                let day_strings: Vec<(String, String, String)> = (0..5000u32)
-                    .map(|day_idx| {
-                        let s_date = format!(
-                            "{:04}-{:02}-{:02}",
-                            2000 + (day_idx / 250),
-                            1 + ((day_idx % 250) / 22),
-                            1 + (day_idx % 22)
-                        );
-                        let open_at = format!("{s_date}T13:30:00Z");
-                        let close_at = format!("{s_date}T20:00:00Z");
-                        (s_date, open_at, close_at)
-                    })
-                    .collect();
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO bar (
+                        id, instrument_id, timeframe, session, session_date, open_at, close_at,
+                        open, high, low, close, volume, source, adjustment, is_final,
+                        valid_from_version, valid_to_version, raw_payload_hash
+                     ) VALUES (?1, ?2, '1d', 'regular', ?3, ?4, ?5, '100.25', '101.50', '99.75', ?6, '1000000', 'yahoo', 'raw', 1, ?7, ?8, NULL)",
+                )
+                .unwrap();
+            // Precompute 5,000 session date strings once so bulk write measures SQLite throughput
+            let day_strings: Vec<(String, String, String)> = (0..5000u32)
+                .map(|day_idx| {
+                    let s_date = format!(
+                        "{:04}-{:02}-{:02}",
+                        2000 + (day_idx / 250),
+                        1 + ((day_idx % 250) / 22),
+                        1 + (day_idx % 22)
+                    );
+                    let open_at = format!("{s_date}T13:30:00Z");
+                    let close_at = format!("{s_date}T20:00:00Z");
+                    (s_date, open_at, close_at)
+                })
+                .collect();
 
-                // Insert 1,000,000 bar rows across 200 instruments x 5,000 trading days
-                for inst_idx in 0..200u32 {
-                    let inst_id = format!("INST:BENCH:{inst_idx:04}");
-                    for (day_idx, (s_date, open_at, close_at)) in day_strings.iter().enumerate() {
-                        let id = format!("B:{inst_idx}:{day_idx}:1");
-                        let valid_to: Option<i64> = if day_idx < 50 { Some(2) } else { None };
-                        stmt.execute(params![
-                            id, inst_id, s_date, open_at, close_at, "100.50", 1i64, valid_to
-                        ])
-                        .unwrap();
-                    }
-                }
-                // Insert 1% revised rows at version 2 (50 days x 200 instruments = 10,000 rows)
-                for inst_idx in 0..200u32 {
-                    let inst_id = format!("INST:BENCH:{inst_idx:04}");
-                    for (day_idx, (s_date, open_at, close_at)) in
-                        day_strings.iter().take(50).enumerate()
-                    {
-                        let id = format!("B:{inst_idx}:{day_idx}:2");
-                        stmt.execute(params![
-                            id,
-                            inst_id,
-                            s_date,
-                            open_at,
-                            close_at,
-                            "101.75",
-                            2i64,
-                            Option::<i64>::None
-                        ])
-                        .unwrap();
-                    }
+            // Insert 1,000,000 bar rows across 200 instruments x 5,000 trading days
+            for inst_idx in 0..200u32 {
+                let inst_id = format!("INST:BENCH:{inst_idx:04}");
+                for (day_idx, (s_date, open_at, close_at)) in day_strings.iter().enumerate() {
+                    let id = format!("B:{inst_idx}:{day_idx}:1");
+                    let valid_to: Option<i64> = if day_idx < 50 { Some(2) } else { None };
+                    stmt.execute(params![
+                        id, inst_id, s_date, open_at, close_at, "100.50", 1i64, valid_to
+                    ])
+                    .unwrap();
                 }
             }
-            tx.commit().unwrap();
+            // Insert 1% revised rows at version 2 (50 days x 200 instruments = 10,000 rows)
+            for inst_idx in 0..200u32 {
+                let inst_id = format!("INST:BENCH:{inst_idx:04}");
+                for (day_idx, (s_date, open_at, close_at)) in
+                    day_strings.iter().take(50).enumerate()
+                {
+                    let id = format!("B:{inst_idx}:{day_idx}:2");
+                    stmt.execute(params![
+                        id,
+                        inst_id,
+                        s_date,
+                        open_at,
+                        close_at,
+                        "101.75",
+                        2i64,
+                        Option::<i64>::None
+                    ])
+                    .unwrap();
+                }
+            }
         }
-        let bulk_write_ms = write_start.elapsed().as_millis() as u64;
-
-        // Query 5,000 bars at version 1 and version 2 + visible_until
-        let q_start = Instant::now();
-        let bars_v1 = store
-            .query_bars_at_version(
-                "INST:BENCH:0000",
-                "1d",
-                AdjustmentKind::Raw,
-                Some("yahoo"),
-                1,
-                None,
-            )
-            .unwrap();
-        let bars_v2 = store
-            .query_bars_at_version(
-                "INST:BENCH:0000",
-                "1d",
-                AdjustmentKind::Raw,
-                Some("yahoo"),
-                2,
-                None,
-            )
-            .unwrap();
-        let query_5000_ms = (q_start.elapsed().as_millis() as u64) / 2;
-        assert_eq!(bars_v1.len(), 5000);
-        assert_eq!(bars_v2.len(), 5000);
-        assert_eq!(to_canonical_text(bars_v1[0].close), "100.5");
-        assert_eq!(to_canonical_text(bars_v2[0].close), "101.75");
-        let cutoff = bars_v1[2499].close_at;
-        let truncated = store
-            .query_bars_at_version(
-                "INST:BENCH:0000",
-                "1d",
-                AdjustmentKind::Raw,
-                Some("yahoo"),
-                1,
-                Some(cutoff),
-            )
-            .unwrap();
-        assert_eq!(truncated.len(), 2500);
-        assert!(truncated.iter().all(|bar| bar.close_at <= cutoff));
-
-        // Backup & restore verification
-        let b_start = Instant::now();
-        let snap_dir = poc_dir.join("snap");
-        let manifest = store.create_consistent_backup(&snap_dir).unwrap();
-        let restore_dir = poc_dir.join("restored");
-        let restored = SqliteStore::restore_consistent_backup(&snap_dir, &restore_dir).unwrap();
-        let backup_restore_ms = b_start.elapsed().as_millis() as u64;
-        drop(restored);
-        drop(store);
-        let _ = fs::remove_dir_all(&poc_dir);
-
-        let mut metrics = BTreeMap::new();
-        metrics.insert("total_rows_inserted".into(), serde_json::json!(1_010_000));
-        metrics.insert("bulk_write_ms".into(), serde_json::json!(bulk_write_ms));
-        metrics.insert(
-            "query_5000_bars_ms".into(),
-            serde_json::json!(query_5000_ms),
-        );
-        metrics.insert(
-            "backup_restore_ms".into(),
-            serde_json::json!(backup_restore_ms),
-        );
-        metrics.insert(
-            "sqlite_sha256".into(),
-            serde_json::json!(manifest
-                .file_hashes
-                .get("delta.sqlite")
-                .cloned()
-                .unwrap_or_default()),
-        );
-
-        poc_results.push(PocResultRecord {
-            id: "POC-D01".to_string(),
-            title: "SQLite 1M bar bulk write, S-09 version interval query, and Backup API restore".to_string(),
-            status: "passed".to_string(),
-            metrics,
-            detail: format!(
-                "1,010,000 rows committed in {bulk_write_ms} ms; 5,000-bar version query in {query_5000_ms} ms (< 50 ms target); backup+restore verified in {backup_restore_ms} ms"
-            ),
-        });
-        case_results.push(CaseResultRecord {
-            case_id: "M1-A-01".to_string(),
-            work_package: "M1-W01".to_string(),
-            tier: "required".to_string(),
-            status: "passed".to_string(),
-            elapsed_ms: t0.elapsed().as_millis() as u64,
-            evidence: format!(
-                "POC-D01 1M bars + S-01 Backup API SHA-256 verified ({query_5000_ms} ms query)"
-            ),
-        });
+        tx.commit().unwrap();
     }
+    let bulk_write_ms = write_start.elapsed().as_millis() as u64;
 
-    Ok(poc_results.remove(0))
+    // Query 5,000 bars at version 1 and version 2 + visible_until
+    let q_start = Instant::now();
+    let bars_v1 = store
+        .query_bars_at_version(
+            "INST:BENCH:0000",
+            "1d",
+            AdjustmentKind::Raw,
+            Some("yahoo"),
+            1,
+            None,
+        )
+        .unwrap();
+    let bars_v2 = store
+        .query_bars_at_version(
+            "INST:BENCH:0000",
+            "1d",
+            AdjustmentKind::Raw,
+            Some("yahoo"),
+            2,
+            None,
+        )
+        .unwrap();
+    let query_5000_ms = (q_start.elapsed().as_millis() as u64) / 2;
+    assert_eq!(bars_v1.len(), 5000);
+    assert_eq!(bars_v2.len(), 5000);
+    assert_eq!(to_canonical_text(bars_v1[0].close), "100.5");
+    assert_eq!(to_canonical_text(bars_v2[0].close), "101.75");
+    let cutoff = bars_v1[2499].close_at;
+    let truncated = store
+        .query_bars_at_version(
+            "INST:BENCH:0000",
+            "1d",
+            AdjustmentKind::Raw,
+            Some("yahoo"),
+            1,
+            Some(cutoff),
+        )
+        .unwrap();
+    assert_eq!(truncated.len(), 2500);
+    assert!(truncated.iter().all(|bar| bar.close_at <= cutoff));
+
+    // Backup & restore verification
+    let b_start = Instant::now();
+    let snap_dir = poc_dir.join("snap");
+    let manifest = store.create_consistent_backup(&snap_dir).unwrap();
+    let restore_dir = poc_dir.join("restored");
+    let restored = SqliteStore::restore_consistent_backup(&snap_dir, &restore_dir).unwrap();
+    let backup_restore_ms = b_start.elapsed().as_millis() as u64;
+    drop(restored);
+    drop(store);
+    let _ = fs::remove_dir_all(&poc_dir);
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("total_rows_inserted".into(), serde_json::json!(1_010_000));
+    metrics.insert("bulk_write_ms".into(), serde_json::json!(bulk_write_ms));
+    metrics.insert(
+        "query_5000_bars_ms".into(),
+        serde_json::json!(query_5000_ms),
+    );
+    metrics.insert(
+        "backup_restore_ms".into(),
+        serde_json::json!(backup_restore_ms),
+    );
+    metrics.insert(
+        "sqlite_sha256".into(),
+        serde_json::json!(manifest
+            .file_hashes
+            .get("delta.sqlite")
+            .cloned()
+            .unwrap_or_default()),
+    );
+
+    let record = PocResultRecord {
+        id: "POC-D01".to_string(),
+        title: "SQLite 1M bar bulk write, S-09 version interval query, and Backup API restore"
+            .to_string(),
+        status: "passed".to_string(),
+        metrics,
+        detail: format!(
+            "1,010,000 rows committed in {bulk_write_ms} ms; 5,000-bar version query in {query_5000_ms} ms (< 50 ms target); backup+restore verified in {backup_restore_ms} ms"
+        ),
+    };
+    Ok((record, t0.elapsed().as_millis() as u64))
 }

@@ -8,17 +8,14 @@
 //!   missing sessions, clickable trade/note/plan markers (`M2-A-11`), volume sub-panel, and
 //!   MACD/RSI sub-panel.
 
+use std::fmt::Write as _;
+use std::sync::Arc;
+
 use crate::i18n::{ChangeDirection, I18nCatalog, Locale, MarketColorConvention};
-#[allow(unused_imports)]
-use delta_app::kline::{
-    ChartMarkerDto, ChartMarkerLayout, IndicatorConfig, KlineViewport, KlineWindowSliceDto,
-    LodCandleDto, MarkerKind,
-};
+use delta_app::kline::{ChartMarkerLayout, KlineWindowSliceDto, MarkerKind};
 use delta_app::{to_canonical_text, QualityStatus};
 use gpui_kit::base::{ObservedElement, TestTextExt as _};
-#[allow(unused_imports)]
 use gpui_kit::component::{
-    badge::Badge,
     button::{Button, ButtonVariants as _},
     h_flex,
     separator::Separator,
@@ -27,11 +24,37 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, AnyElement, App, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
+    div, px, AnyElement, App, Div, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+
+/// Shared section heading across workbench pages: dark vertical accent bar + semibold label (`UI-Q04`).
+pub(crate) fn section_heading(label: &'static str, cx: &App) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .pt_2()
+        .pb_1()
+        .gap_2()
+        .items_center()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .w(px(3.))
+                .h(px(13.))
+                .rounded(px(1.5))
+                .bg(cx.theme().foreground),
+        )
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label),
+        )
+}
 
 /// Type alias for an interactive `Div` registered with `gpui-kit` headless test observation.
 /// In non-test builds this resolves to `gpui_kit::Stateful<gpui_kit::Div>`.
@@ -560,7 +583,7 @@ impl StatusBanner {
 #[derive(Debug, Clone, PartialEq)]
 pub struct KlineChartView {
     pub id: SharedString,
-    pub slice: KlineWindowSliceDto,
+    pub slice: Arc<KlineWindowSliceDto>,
     pub color_convention: MarketColorConvention,
     pub crosshair_bar_index: Option<usize>,
     pub crosshair_price: Option<f64>,
@@ -574,12 +597,12 @@ pub struct KlineChartView {
 impl KlineChartView {
     pub fn new(
         id: impl Into<SharedString>,
-        slice: KlineWindowSliceDto,
+        slice: impl Into<Arc<KlineWindowSliceDto>>,
         color_convention: MarketColorConvention,
     ) -> Self {
         Self {
             id: id.into(),
-            slice,
+            slice: slice.into(),
             color_convention,
             crosshair_bar_index: None,
             crosshair_price: None,
@@ -961,17 +984,21 @@ impl KlineChartView {
                     .border_1()
                     .border_color(cx.theme().border)
                     .rounded(cx.theme().radius)
-                    .child(div().id("kline-canvas").test_support().w_full().child(
-                        crate::chart_canvas::render_canvas(
-                            &self.slice,
-                            self.color_convention,
-                            self.crosshair_bar_index,
-                            self.crosshair_price,
-                            bounds,
-                            self.overlay.clone(),
-                            cx,
-                        ),
-                    ))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("{}-canvas", self.id)))
+                            .test_support()
+                            .w_full()
+                            .child(crate::chart_canvas::render_canvas(
+                                Arc::clone(&self.slice),
+                                self.color_convention,
+                                self.crosshair_bar_index,
+                                self.crosshair_price,
+                                bounds,
+                                self.overlay.clone(),
+                                cx,
+                            )),
+                    )
                     .children(self.slice.gap_indices.iter().map(|&index| {
                         div()
                             .id(self.gap_element_id(index))
@@ -999,22 +1026,31 @@ impl KlineChartView {
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "成交量 · MACD · RSI | SMA {:?} · EMA {:?} | 可见窗口 [{}..{}]",
-                        self.slice
-                            .sma_series
-                            .iter()
-                            .map(|(p, _)| *p)
-                            .collect::<Vec<_>>(),
-                        self.slice
-                            .ema_series
-                            .iter()
-                            .map(|(p, _)| *p)
-                            .collect::<Vec<_>>(),
-                        self.slice.visible_start_index,
-                        self.slice.visible_end_index,
-                    )),
+                    .child(self.subpanel_summary_text()),
             )
+    }
+
+    fn subpanel_summary_text(&self) -> String {
+        let mut out = String::from("成交量 · MACD · RSI | SMA [");
+        for (idx, (p, _)) in self.slice.sma_series.iter().enumerate() {
+            if idx > 0 {
+                out.push_str(", ");
+            }
+            let _ = write!(out, "{p}");
+        }
+        out.push_str("] · EMA [");
+        for (idx, (p, _)) in self.slice.ema_series.iter().enumerate() {
+            if idx > 0 {
+                out.push_str(", ");
+            }
+            let _ = write!(out, "{p}");
+        }
+        let _ = write!(
+            out,
+            "] | 可见窗口 [{}..{}]",
+            self.slice.visible_start_index, self.slice.visible_end_index
+        );
+        out
     }
 }
 
@@ -1022,6 +1058,7 @@ impl KlineChartView {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone, Utc};
+    use delta_app::kline::{ChartMarkerDto, KlineViewport};
     use delta_app::{AdjustmentKind, BarRecord};
     use std::str::FromStr;
 

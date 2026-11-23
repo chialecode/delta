@@ -17,21 +17,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, Utc};
-#[allow(unused_imports)]
 use delta_app::{
-    apply_process_quiet_guards, count_visible_windows_for_current_process, parse_decimal_lossless,
-    resolve_app_paths, run_m2_k02_viewport_bench, run_quiet_command, sanitize_terminal_output,
-    seed_ac02_fixture_in_service, set_note_save_fault_injection_for_test, to_canonical_text,
-    AccountBalanceSnapshotDto, AccountRecord, AdjustmentKind, AgentRuntime,
-    AiReportVerificationStatus, AiReviewReport, AnalysisScope, AppHost, AppService, AttachmentDto,
-    AutosaveStatus, BarRecord, BuildChannel, ChartContextDto, ChartMarkerDto, CommitImportReceipt,
-    DataQualitySummaryDto, ErrorEnvelope, EvidenceRef, HoldingsAndLotsDto, ImportPreview,
-    InstallIdentity, InstrumentSearchHit, JobId, JobSnapshot, JobState, KlineViewport,
-    KlineWindowSliceDto, ManualValuation, MarkerKind, ModelConnection, ModelProtocol, NoteDto,
+    apply_process_quiet_guards, resolve_app_paths, run_quiet_command, sanitize_terminal_output,
+    seed_ac02_fixture_in_service, to_canonical_text, AccountRecord, AdjustmentKind, AgentRuntime,
+    AiReportVerificationStatus, AiReviewReport, AnalysisScope, AppHost, AppService, BuildChannel,
+    ChartContextDto, CommitImportReceipt, DataQualitySummaryDto, ErrorEnvelope, HoldingsAndLotsDto,
+    ImportPreview, InstallIdentity, InstrumentSearchHit, JobId, JobSnapshot, JobState,
+    KlineViewport, KlineWindowSliceDto, ManualValuation, MarkerKind, ModelConnection, NoteDto,
     NoteEditorSession, NoteTemplateKind, OverviewMetricsDto, PeriodBreakdownReport,
     PortfolioRecord, PreSendScopeSummary, QualityStatus, QuietJobObject, ReconciliationIssueRecord,
-    ResultEnvelope, SavedReportStatusDto, ScopeTarget, StatementPreset, StructuredNoteFields,
-    TransactionFilterDto, TransactionRowDto, WatchlistGroupDto,
+    ResultEnvelope, ScopeTarget, StatementPreset, TransactionFilterDto, TransactionRowDto,
+    WatchlistGroupDto,
 };
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::{
@@ -56,8 +52,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::components::{KlineChartView, MetricCard, StatusBanner, WorkbenchSystemState};
-use crate::controller::{UiAction, WorkbenchController, WorkbenchUpdated};
+use crate::components::{
+    section_heading, KlineChartView, MetricCard, StatusBanner, WorkbenchSystemState,
+};
+use crate::controller::{AiRunTarget, UiAction, WorkbenchController, WorkbenchUpdated};
 use crate::i18n::{
     is_in_scope_nav_key, I18nCatalog, Locale, MarketColorConvention, PRIMARY_NAV_KEYS,
 };
@@ -83,6 +81,8 @@ pub struct WorkbenchLayoutConfig {
     pub locale: Locale,
     pub report_currency: String,
     pub display_timezone: String,
+    #[serde(default)]
+    pub close_action: crate::tray::CloseAction,
 }
 
 impl Default for WorkbenchLayoutConfig {
@@ -96,6 +96,7 @@ impl Default for WorkbenchLayoutConfig {
             locale: Locale::ZhCn,
             report_currency: "USD".to_string(),
             display_timezone: "UTC".to_string(),
+            close_action: crate::tray::CloseAction::default(),
         }
     }
 }
@@ -398,7 +399,7 @@ pub struct WorkbenchSharedState {
     pub overview: Option<ResultEnvelope<OverviewMetricsDto>>,
     pub breakdown: Option<ResultEnvelope<PeriodBreakdownReport>>,
     pub holdings_lots: Option<ResultEnvelope<HoldingsAndLotsDto>>,
-    pub transactions: Option<ResultEnvelope<Vec<TransactionRowDto>>>,
+    pub transactions: Option<Arc<ResultEnvelope<Vec<TransactionRowDto>>>>,
     pub reconciliation_issues: Option<ResultEnvelope<Vec<ReconciliationIssueRecord>>>,
     pub data_quality: Option<ResultEnvelope<DataQualitySummaryDto>>,
     pub accounts: Vec<AccountRecord>,
@@ -414,7 +415,7 @@ pub struct WorkbenchSharedState {
     pub active_timeframe: String,
     pub active_adjustment: AdjustmentKind,
     pub kline_viewport: KlineViewport,
-    pub kline_slice: Option<KlineWindowSliceDto>,
+    pub kline_slice: Option<Arc<KlineWindowSliceDto>>,
     pub pinned_chart_version: Option<i64>,
     pub latest_dataset_version: i64,
     pub selected_marker_outcome: Option<MarkerSelectionOutcome>,
@@ -597,7 +598,7 @@ impl WorkbenchSharedState {
                 "ui-txs",
                 gen,
             )?;
-            self.transactions = Some(txs);
+            self.transactions = Some(Arc::new(txs));
         }
         {
             let recon =
@@ -628,13 +629,13 @@ impl WorkbenchSharedState {
             &self.active_timeframe,
             self.active_adjustment,
             self.kline_viewport.clone(),
-            120,
+            1000,
             gen,
         ) {
             self.kline_viewport.total_bars = slice.total_visible_bars;
             self.kline_viewport.visible_start = slice.visible_start_index;
             self.kline_viewport.visible_end = slice.visible_end_index;
-            self.kline_slice = Some(slice);
+            self.kline_slice = Some(Arc::new(slice));
         }
 
         self.refresh_notes()?;
@@ -674,7 +675,7 @@ impl WorkbenchSharedState {
             "ui-drilldown-txs",
             gen,
         ) {
-            self.transactions = Some(txs);
+            self.transactions = Some(Arc::new(txs));
         }
         Ok(())
     }
@@ -869,7 +870,7 @@ impl WorkbenchSharedState {
         vp.requested_anchor_date = None;
         vp.requested_window = None;
         self.kline_viewport = vp;
-        self.kline_slice = Some(windowed);
+        self.kline_slice = Some(Arc::new(windowed));
         Ok(ctx)
     }
 
@@ -981,12 +982,11 @@ pub struct CenterWorkspacePanel {
     pub(crate) draft_model_connection_id: String,
     _subscriptions: Vec<Subscription>,
     flows_table: Entity<TableState<TransactionsTableDelegate>>,
+    last_flows_arc: Option<Arc<ResultEnvelope<Vec<TransactionRowDto>>>>,
     plot_bounds: crate::chart_canvas::PlotBounds,
     chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
     pub(crate) training_plot_bounds: crate::chart_canvas::PlotBounds,
     pub(crate) training_chart_drag: Option<(gpui_kit::Point<gpui_kit::Pixels>, KlineViewport)>,
-    /// A workbench action produced on mouse-down, dispatched on mouse-up (drawing save).
-    pub(crate) pending_workbench_action: Option<crate::training_ui::TrainingUiAction>,
     /// Playback / data-preparation ticker (`S-54`); exits by itself when idle.
     pub(crate) training_ticker: Option<Task<()>>,
     pub(crate) training_play_last: Option<std::time::Instant>,
@@ -1000,10 +1000,8 @@ impl CenterWorkspacePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let initial_rows = state
-            .lock()
-            .unwrap()
-            .transactions
+        let initial_arc = crate::lock_or_recover(&state).transactions.clone();
+        let initial_rows = initial_arc
             .as_ref()
             .map(|e| e.value.clone())
             .unwrap_or_default();
@@ -1016,18 +1014,23 @@ impl CenterWorkspacePanel {
                 &controller,
                 window,
                 |panel, _, _: &WorkbenchUpdated, window, cx| {
-                    let rows = panel
-                        .state
-                        .lock()
-                        .unwrap()
-                        .transactions
-                        .as_ref()
-                        .map(|result| result.value.clone())
-                        .unwrap_or_default();
-                    panel.flows_table.update(cx, |table, cx| {
-                        table.delegate_mut().set_rows(rows);
-                        cx.notify();
-                    });
+                    let current_arc = crate::lock_or_recover(&panel.state).transactions.clone();
+                    let changed = match (&panel.last_flows_arc, &current_arc) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if changed {
+                        let rows = current_arc
+                            .as_ref()
+                            .map(|result| result.value.clone())
+                            .unwrap_or_default();
+                        panel.last_flows_arc = current_arc;
+                        panel.flows_table.update(cx, |table, cx| {
+                            table.delegate_mut().set_rows(rows);
+                            cx.notify();
+                        });
+                    }
                     panel.sync_inputs(window, cx);
                     cx.notify();
                 },
@@ -1095,11 +1098,11 @@ impl CenterWorkspacePanel {
             draft_model_connection_id: format!("model:{}", uuid::Uuid::new_v4()),
             _subscriptions: subscriptions,
             flows_table,
+            last_flows_arc: initial_arc,
             plot_bounds: Default::default(),
             chart_drag: None,
             training_plot_bounds: Default::default(),
             training_chart_drag: None,
-            pending_workbench_action: None,
             training_ticker: None,
             training_play_last: None,
             training_prepare_last: None,
@@ -1125,32 +1128,19 @@ impl CenterWorkspacePanel {
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
-        let Some(bounds) = *self.plot_bounds.lock().unwrap() else {
+        let Some(bounds) = *crate::lock_or_recover(&self.plot_bounds) else {
             return;
         };
         let Some((x, y)) = crate::chart_canvas::pointer_ratio(position, bounds) else {
             return;
         };
-        let mut state = self.state.lock().unwrap();
-        let index = state.kline_slice.as_ref().and_then(|slice| {
-            (!slice.bars.is_empty()).then(|| {
-                slice.visible_start_index
-                    + ((x * slice.bars.len() as f32).floor() as usize).min(slice.bars.len() - 1)
-            })
-        });
-        let price = state.kline_slice.as_ref().and_then(|slice| {
-            let min = slice
-                .lod_candles
-                .iter()
-                .map(|candle| candle.low)
-                .reduce(f64::min)?;
-            let max = slice
-                .lod_candles
-                .iter()
-                .map(|candle| candle.high)
-                .reduce(f64::max)?;
-            Some(min + (max - min) * f64::from(1. - y))
-        });
+        let mut state = crate::lock_or_recover(&self.state);
+        let (index, price) = state
+            .kline_slice
+            .as_deref()
+            .and_then(|slice| crate::chart_canvas::pointer_bar_price(position, bounds, slice))
+            .map(|(i, p)| (Some(i), Some(p)))
+            .unwrap_or((None, None));
         if index != state.kline_viewport.crosshair_index
             || price != state.kline_viewport.crosshair_price
         {
@@ -1196,7 +1186,10 @@ impl BasePanel for CenterWorkspacePanel {
 
 impl Panel for CenterWorkspacePanel {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let nav = self.state.lock().unwrap().layout.active_nav.clone();
+        let nav = crate::lock_or_recover(&self.state)
+            .layout
+            .active_nav
+            .clone();
         I18nCatalog::tr(&nav)
     }
 
@@ -1219,421 +1212,644 @@ impl Focusable for CenterWorkspacePanel {
 
 impl Render for CenterWorkspacePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let guard = self.state.lock().unwrap();
-        let ccy = guard.scope.report_currency.clone();
-        let conv = guard.layout.color_convention;
-        let active_nav = guard.layout.active_nav.clone();
-
-        // Build Overview MetricCards (`M2-K01`, `M2-A-03`, `M2-W04`)
-        let (cash_opt, nav_opt, pnl_opt, inv_opt, qual, cov_note, recon_cnt) =
-            if let Some(ov) = &guard.overview {
-                let is_partial = ov.quality == QualityStatus::Partial;
-                (
-                    Some(ov.value.cash_value),
-                    if is_partial {
-                        Some(ov.value.known_partial_net_worth)
-                    } else {
-                        Some(ov.value.net_worth)
-                    },
-                    ov.value.total_pnl,
-                    Some(ov.value.net_invested),
-                    ov.quality,
-                    ov.value.coverage_summary.clone(),
-                    ov.value.pending_reconciliation_count,
-                )
-            } else {
-                (
-                    None,
-                    None,
-                    None,
-                    None,
-                    QualityStatus::Unavailable,
-                    "尚未加载".to_string(),
-                    0,
-                )
-            };
-
-        let cash_card = MetricCard::new(
-            "card-cash",
-            I18nCatalog::tr("card.cash"),
-            cash_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv)
-        .with_note("可用现金与外币折算")
-        .with_drilldown("assets.flows");
-
-        let nav_card = MetricCard::new(
-            "card-nav",
-            I18nCatalog::tr("card.nav"),
-            nav_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv)
-        .with_note(cov_note.clone())
-        .with_drilldown("assets.holdings");
-
-        let pnl_card = MetricCard::new(
-            "card-total-pnl",
-            I18nCatalog::tr("card.total_pnl"),
-            pnl_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_signed_pnl(true)
-        .with_color_convention(conv)
-        .with_note("已实现 + 未实现损益")
-        .with_drilldown("assets.flows");
-
-        let inv_card = MetricCard::new(
-            "card-net-invested",
-            I18nCatalog::tr("card.net_invested"),
-            inv_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv)
-        .with_note(format!("待对账差异: {recon_cnt}"));
-
-        // Period breakdown cards
-        let (real_opt, unreal_opt, div_opt, fee_val) = if let Some(bd) = &guard.breakdown {
-            (
-                bd.value.realized_pnl,
-                bd.value.unrealized_pnl,
-                bd.value.dividend_and_interest_income,
-                Some(bd.value.explanatory_total_fees),
-            )
-        } else {
-            (None, None, None, None)
-        };
-        let realized_card = MetricCard::new(
-            "card-realized-pnl",
-            I18nCatalog::tr("card.realized_pnl"),
-            real_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_signed_pnl(true)
-        .with_color_convention(conv);
-        let unrealized_card = MetricCard::new(
-            "card-unrealized-pnl",
-            I18nCatalog::tr("card.unrealized_pnl"),
-            unreal_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_signed_pnl(true)
-        .with_color_convention(conv);
-        let div_card = MetricCard::new(
-            "card-dividend",
-            I18nCatalog::tr("card.dividend_interest"),
-            div_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv);
-        let fee_card = MetricCard::new(
-            "card-fee",
-            I18nCatalog::tr("card.fee_total"),
-            fee_val,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv);
-
-        // System state banners
-        let banners: Vec<StatusBanner> = guard
-            .system_states
-            .iter()
-            .enumerate()
-            .map(|(idx, st)| {
-                StatusBanner::new(format!("sys-banner-{idx}"), st.clone()).with_locale(Locale::ZhCn)
-            })
-            .collect();
-
-        // K-line chart view if available
-        let kline_view_opt = guard.kline_slice.as_ref().map(|slice| {
-            KlineChartView::new("kline-main-chart", slice.clone(), conv)
-                .with_crosshair(guard.kline_viewport.crosshair_index)
-                .with_crosshair_price(guard.kline_viewport.crosshair_price)
-                .with_dataset_versions(
-                    guard.pinned_chart_version,
-                    Some(guard.latest_dataset_version),
-                )
-        });
-
-        // Holdings & FIFO lots summary text for headless assertions
-        let lots_summary = guard
-            .holdings_lots
-            .as_ref()
-            .map(|hl| {
-                hl.value
-                    .open_lots
-                    .iter()
-                    .map(|l| {
-                        format!(
-                            "LOT:{}:{}:qty={}:cost={}",
-                            l.account_id,
-                            l.asset_id,
-                            to_canonical_text(l.remaining_quantity),
-                            to_canonical_text(l.remaining_cost_book)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            })
-            .unwrap_or_default();
-
-        let recon_summary = guard
-            .reconciliation_issues
-            .as_ref()
-            .map(|ri| {
-                ri.value
-                    .iter()
-                    .map(|r| {
-                        format!(
-                            "RECON:{}:{}:exp={}:obs={}:diff={}",
-                            r.account_id, r.asset_id, r.expected, r.observed, r.difference
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            })
-            .unwrap_or_default();
-
-        let autosave_badge = match &guard.note_editor.status {
-            AutosaveStatus::Editing => I18nCatalog::tr("autosave.editing").to_string(),
-            AutosaveStatus::Saving => I18nCatalog::tr("autosave.saving").to_string(),
-            AutosaveStatus::Saved { revision, .. } => {
-                format!("{} (v{revision})", I18nCatalog::tr("autosave.saved"))
-            }
-            AutosaveStatus::SaveFailed { error, .. } => {
-                format!("{}: {error}", I18nCatalog::tr("autosave.failed"))
-            }
-        };
-
-        let lot_rows: Vec<Vec<String>> = guard
-            .holdings_lots
-            .as_ref()
-            .map(|hl| {
-                hl.value
-                    .open_lots
-                    .iter()
-                    .map(|l| {
-                        vec![
-                            l.account_id.clone(),
-                            l.asset_id.clone(),
-                            to_canonical_text(l.remaining_quantity),
-                            to_canonical_text(l.remaining_cost_book),
-                        ]
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let recon_rows: Vec<Vec<String>> = guard
-            .reconciliation_issues
-            .as_ref()
-            .map(|ri| {
-                ri.value
-                    .iter()
-                    .map(|r| {
-                        vec![
-                            r.account_id.clone(),
-                            r.asset_id.clone(),
-                            r.expected.to_string(),
-                            r.observed.to_string(),
-                            r.difference.to_string(),
-                        ]
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let hero_nav = MetricCard::new(
-            "hero-nav",
-            I18nCatalog::tr("overview.hero"),
-            nav_opt,
-            ccy.clone(),
-            qual,
-        )
-        .with_color_convention(conv);
-        let hero_pnl = conv.format_signed_change(pnl_opt, &ccy);
-        let (hero_pnl_fg, _) = conv.colors(hero_pnl.direction, cx);
-        let scope_caption = format!(
-            "{} · {}{} · {}",
-            if guard.scope.resolved_accounts.is_empty() {
-                "—".to_string()
-            } else {
-                guard.scope.resolved_accounts.join(", ")
-            },
-            guard
-                .scope
-                .start_date
-                .map(|date| format!("{date} → "))
-                .unwrap_or_default(),
-            guard.scope.as_of_date,
-            ccy
-        );
-        let training_state_opt = (active_nav == "nav.training").then(|| guard.clone());
-
-        drop(guard);
-
-        // Chart element with pointer/scroll/key handling (unchanged interaction contract).
-        let chart_element = kline_view_opt.map(|chart| {
-            chart
-                .render_chart_with_bounds(Arc::clone(&self.plot_bounds), cx)
-                .track_focus(&self.focus_handle)
-                .on_mouse_move(cx.listener(
-                    |panel, event: &gpui_kit::MouseMoveEvent, window, cx| {
-                        if event.dragging() {
-                            if let (Some((start, mut viewport)), Some(bounds)) =
-                                (panel.chart_drag.clone(), *panel.plot_bounds.lock().unwrap())
-                            {
-                                if bounds.size.width > px(0.) {
-                                    let bars = -((event.position.x - start.x) / bounds.size.width
-                                        * viewport.visible_len() as f32)
-                                        .round()
-                                        as isize;
-                                    viewport.pan(bars);
-                                    panel.state.lock().unwrap().kline_viewport = viewport.clone();
-                                    panel.dispatch(
-                                        Ok(UiAction::ChartViewport(viewport)),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                            }
-                        } else {
-                            panel.chart_pointer(event.position, false, None, cx);
-                        }
-                    },
-                ))
-                .on_mouse_down(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(|panel, event: &gpui_kit::MouseDownEvent, window, cx| {
-                        panel.focus_handle.focus(window, cx);
-                        panel.chart_pointer(event.position, true, Some(window), cx);
-                    }),
-                )
-                .on_mouse_up(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(|panel, _, _, _| panel.chart_drag = None),
-                )
-                .on_scroll(
-                    cx.listener(|panel, event: &gpui_kit::ScrollEvent, window, cx| {
-                        let Some(bounds) = *panel.plot_bounds.lock().unwrap() else {
-                            return;
-                        };
-                        let Some((x, _)) =
-                            crate::chart_canvas::pointer_ratio(event.position, bounds)
-                        else {
-                            return;
-                        };
-                        let delta = event.delta.pixel_delta(px(16.));
-                        let mut viewport = panel.state.lock().unwrap().kline_viewport.clone();
-                        viewport.zoom(
-                            (-f64::from(delta.y) / 600.).exp().clamp(0.5, 2.),
-                            f64::from(x),
-                        );
-                        panel.state.lock().unwrap().kline_viewport = viewport.clone();
-                        panel.dispatch(Ok(UiAction::ChartViewport(viewport)), window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-                .on_key_down(
-                    cx.listener(|panel, event: &gpui_kit::KeyDownEvent, window, cx| {
-                        match event.keystroke.key.as_str() {
-                            "left" => panel.change_viewport(-20, 1., window, cx),
-                            "right" => panel.change_viewport(20, 1., window, cx),
-                            "+" | "=" => panel.change_viewport(0, 0.7, window, cx),
-                            "-" => panel.change_viewport(0, 1.4, window, cx),
-                            "escape" => {
-                                panel
-                                    .state
-                                    .lock()
-                                    .unwrap()
-                                    .kline_viewport
-                                    .move_crosshair(None, None);
-                                cx.notify();
-                            }
-                            _ => {}
-                        }
-                    }),
-                )
-        });
-
+        // Borrow shared state under one lock for the active page only: zero per-frame
+        // `WorkbenchSharedState::clone()` and zero off-page widget construction (`UI-Q01`).
+        let state_arc = Arc::clone(&self.state);
+        let guard = crate::lock_or_recover(&state_arc);
+        let active_nav = guard.layout.active_nav.as_str();
         let caption = Chrome::caption();
-        let section = |title: &'static str, cx: &App| {
-            h_flex()
-                .w_full()
-                .pt_1()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .w(px(3.))
-                        .h(px(13.))
-                        .rounded(px(1.5))
-                        .bg(cx.theme().foreground),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .child(I18nCatalog::tr(title)),
-                )
-        };
-        let table = |id: &'static str, headers: &[&'static str], rows: &[Vec<String>], cx: &App| {
-            let cols = headers.len();
-            v_flex()
-                .id(id)
-                .w_full()
-                .border_1()
-                .border_color(cx.theme().border)
-                .rounded(cx.theme().radius)
-                .overflow_hidden()
-                .child(
-                    h_flex()
-                        .px_3()
-                        .py_1p5()
-                        .bg(cx.theme().table_head)
-                        .text_xs()
-                        .text_color(caption)
-                        .children(headers.iter().enumerate().map(|(i, h)| {
-                            div()
-                                .flex_1()
-                                .when(i >= 2, |cell| cell.text_right())
-                                .child(I18nCatalog::tr(h))
-                        })),
-                )
-                .when(rows.is_empty(), |t| {
-                    t.child(
-                        div()
-                            .px_3()
-                            .py_3()
-                            .text_xs()
-                            .text_color(caption)
-                            .child(I18nCatalog::tr("assets.none")),
+
+        let banners_el =
+            (!guard.system_states.is_empty() && active_nav != "nav.training").then(|| {
+                v_flex()
+                    .p_2()
+                    .gap_2()
+                    .children(guard.system_states.iter().enumerate().map(|(idx, st)| {
+                        let state = st.clone();
+                        StatusBanner::new(format!("sys-banner-{idx}"), st.clone())
+                            .with_locale(Locale::ZhCn)
+                            .render_banner_with_action(
+                                cx,
+                                cx.listener(move |panel, _, window, cx| match &state {
+                                    WorkbenchSystemState::Syncing { .. } => {
+                                        panel.controller.update(cx, |ctl, cx| ctl.cancel_sync(cx))
+                                    }
+                                    WorkbenchSystemState::SaveFailed { .. } => {
+                                        panel.save_note(window, cx)
+                                    }
+                                    WorkbenchSystemState::StaleReport { .. } => {
+                                        panel.dispatch(Ok(UiAction::Refresh), window, cx)
+                                    }
+                                    WorkbenchSystemState::EmptyLibrary
+                                    | WorkbenchSystemState::PartialValuation { .. }
+                                    | WorkbenchSystemState::Offline { .. }
+                                    | WorkbenchSystemState::Cancelled { .. } => {
+                                        panel.controller.update(cx, |ctl, cx| {
+                                            ctl.navigate("nav.data_center", window, cx)
+                                        })
+                                    }
+                                    _ => panel.controller.update(cx, |ctl, cx| {
+                                        ctl.navigate("nav.settings", window, cx)
+                                    }),
+                                }),
+                            )
+                    }))
+            });
+
+        let body: gpui_kit::AnyElement = if active_nav == "nav.market" {
+            let conv = guard.layout.color_convention;
+            let chart_element = guard.kline_slice.as_ref().map(|slice| {
+                KlineChartView::new("kline-main-chart", Arc::clone(slice), conv)
+                    .with_crosshair(guard.kline_viewport.crosshair_index)
+                    .with_crosshair_price(guard.kline_viewport.crosshair_price)
+                    .with_dataset_versions(
+                        guard.pinned_chart_version,
+                        Some(guard.latest_dataset_version),
                     )
-                })
-                .children(rows.iter().map(|row| {
-                    h_flex()
-                        .px_3()
-                        .py_1p5()
-                        .border_t_1()
-                        .border_color(cx.theme().table_row_border)
-                        .text_sm()
-                        .children(row.iter().take(cols).enumerate().map(|(i, v)| {
-                            div()
-                                .flex_1()
-                                .when(i >= 2, |cell| {
-                                    cell.text_right()
-                                        .font_family(cx.theme().mono_font_family.clone())
+                    .render_chart_with_bounds(Arc::clone(&self.plot_bounds), cx)
+                    .track_focus(&self.focus_handle)
+                    .on_mouse_move(cx.listener(
+                        |panel, event: &gpui_kit::MouseMoveEvent, window, cx| {
+                            if event.dragging() {
+                                if let (Some((start, mut viewport)), Some(bounds)) = (
+                                    panel.chart_drag.clone(),
+                                    *crate::lock_or_recover(&panel.plot_bounds),
+                                ) {
+                                    if bounds.size.width > px(0.) {
+                                        let bars = -((event.position.x - start.x)
+                                            / bounds.size.width
+                                            * viewport.visible_len() as f32)
+                                            .round()
+                                            as isize;
+                                        if bars != 0 {
+                                            viewport.pan(bars);
+                                            crate::lock_or_recover(&panel.state).kline_viewport =
+                                                viewport.clone();
+                                            panel.dispatch(
+                                                Ok(UiAction::ChartViewport(viewport)),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                panel.chart_pointer(event.position, false, None, cx);
+                            }
+                        },
+                    ))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|panel, event: &gpui_kit::MouseDownEvent, window, cx| {
+                            panel.focus_handle.focus(window, cx);
+                            panel.chart_pointer(event.position, true, Some(window), cx);
+                        }),
+                    )
+                    .on_mouse_up(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|panel, _, _, _| panel.chart_drag = None),
+                    )
+                    .on_mouse_up_out(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(|panel, _, _, _| panel.chart_drag = None),
+                    )
+                    .on_scroll(
+                        cx.listener(|panel, event: &gpui_kit::ScrollEvent, window, cx| {
+                            let Some(bounds) = *crate::lock_or_recover(&panel.plot_bounds) else {
+                                return;
+                            };
+                            let Some((x, _)) =
+                                crate::chart_canvas::pointer_ratio(event.position, bounds)
+                            else {
+                                return;
+                            };
+                            let delta = event.delta.pixel_delta(px(16.));
+                            let viewport = {
+                                let mut state = crate::lock_or_recover(&panel.state);
+                                state.kline_viewport.zoom(
+                                    (-f64::from(delta.y) / 600.).exp().clamp(0.5, 2.),
+                                    f64::from(x),
+                                );
+                                state.kline_viewport.clone()
+                            };
+                            panel.dispatch(Ok(UiAction::ChartViewport(viewport)), window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_key_down(cx.listener(
+                        |panel, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            let mods = &event.keystroke.modifiers;
+                            if mods.control || mods.alt || mods.platform {
+                                return;
+                            }
+                            match event.keystroke.key.as_str() {
+                                "left" => panel.change_viewport(-20, 1., window, cx),
+                                "right" => panel.change_viewport(20, 1., window, cx),
+                                "+" | "=" => panel.change_viewport(0, 0.7, window, cx),
+                                "-" => panel.change_viewport(0, 1.4, window, cx),
+                                "escape" => {
+                                    crate::lock_or_recover(&panel.state)
+                                        .kline_viewport
+                                        .move_crosshair(None, None);
+                                    cx.notify();
+                                }
+                                _ => {}
+                            }
+                        },
+                    ))
+            });
+            h_flex()
+                .id("market-workspace")
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .items_start()
+                .child(self.render_market_sidebar(&guard, cx))
+                .child(
+                    v_flex()
+                        .id("market-main")
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h_full()
+                        .overflow_y_scroll()
+                        .child(self.render_quote_header(&guard, cx))
+                        .child(self.render_chart_toolbar(&guard, cx))
+                        .when_some(chart_element, |column, chart| {
+                            column.child(div().px_3().pt_2().child(chart))
+                        })
+                        .child(self.render_chart_markers(&guard, cx)),
+                )
+                .into_any_element()
+        } else {
+            let mut scroll = v_flex()
+                .id("center-scroll")
+                .flex_1()
+                .min_h(px(0.))
+                .w_full()
+                .overflow_y_scroll()
+                .p_4()
+                .gap_3();
+            match active_nav {
+                "nav.overview" => {
+                    let ccy = guard.scope.report_currency.clone();
+                    let conv = guard.layout.color_convention;
+                    let (cash_opt, nav_opt, pnl_opt, inv_opt, qual, cov_note, recon_cnt) =
+                        if let Some(ov) = &guard.overview {
+                            let is_partial = ov.quality == QualityStatus::Partial;
+                            (
+                                Some(ov.value.cash_value),
+                                if is_partial {
+                                    Some(ov.value.known_partial_net_worth)
+                                } else {
+                                    Some(ov.value.net_worth)
+                                },
+                                ov.value.total_pnl,
+                                Some(ov.value.net_invested),
+                                ov.quality,
+                                ov.value.coverage_summary.clone(),
+                                ov.value.pending_reconciliation_count,
+                            )
+                        } else {
+                            (
+                                None,
+                                None,
+                                None,
+                                None,
+                                QualityStatus::Unavailable,
+                                "尚未加载".to_string(),
+                                0,
+                            )
+                        };
+                    let cash_card = MetricCard::new(
+                        "card-cash",
+                        I18nCatalog::tr("card.cash"),
+                        cash_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv)
+                    .with_note("可用现金与外币折算")
+                    .with_drilldown("assets.flows");
+                    let nav_card = MetricCard::new(
+                        "card-nav",
+                        I18nCatalog::tr("card.nav"),
+                        nav_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv)
+                    .with_note(cov_note.clone())
+                    .with_drilldown("assets.holdings");
+                    let pnl_card = MetricCard::new(
+                        "card-total-pnl",
+                        I18nCatalog::tr("card.total_pnl"),
+                        pnl_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_signed_pnl(true)
+                    .with_color_convention(conv)
+                    .with_note("已实现 + 未实现损益")
+                    .with_drilldown("assets.flows");
+                    let inv_card = MetricCard::new(
+                        "card-net-invested",
+                        I18nCatalog::tr("card.net_invested"),
+                        inv_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv)
+                    .with_note(format!("待对账差异: {recon_cnt}"));
+
+                    let (real_opt, unreal_opt, div_opt, fee_val) =
+                        if let Some(bd) = &guard.breakdown {
+                            (
+                                bd.value.realized_pnl,
+                                bd.value.unrealized_pnl,
+                                bd.value.dividend_and_interest_income,
+                                Some(bd.value.explanatory_total_fees),
+                            )
+                        } else {
+                            (None, None, None, None)
+                        };
+                    let realized_card = MetricCard::new(
+                        "card-realized-pnl",
+                        I18nCatalog::tr("card.realized_pnl"),
+                        real_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_signed_pnl(true)
+                    .with_color_convention(conv);
+                    let unrealized_card = MetricCard::new(
+                        "card-unrealized-pnl",
+                        I18nCatalog::tr("card.unrealized_pnl"),
+                        unreal_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_signed_pnl(true)
+                    .with_color_convention(conv);
+                    let div_card = MetricCard::new(
+                        "card-dividend",
+                        I18nCatalog::tr("card.dividend_interest"),
+                        div_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv);
+                    let fee_card = MetricCard::new(
+                        "card-fee",
+                        I18nCatalog::tr("card.fee_total"),
+                        fee_val,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv);
+                    let hero_nav = MetricCard::new(
+                        "hero-nav",
+                        I18nCatalog::tr("overview.hero"),
+                        nav_opt,
+                        ccy.clone(),
+                        qual,
+                    )
+                    .with_color_convention(conv);
+                    let hero_pnl = conv.format_signed_change(pnl_opt, &ccy);
+                    let (hero_pnl_fg, _) = conv.colors(hero_pnl.direction, cx);
+                    let scope_caption = format!(
+                        "{} · {}{} · {}",
+                        if guard.scope.resolved_accounts.is_empty() {
+                            "—".to_string()
+                        } else {
+                            guard.scope.resolved_accounts.join(", ")
+                        },
+                        guard
+                            .scope
+                            .start_date
+                            .map(|date| format!("{date} → "))
+                            .unwrap_or_default(),
+                        guard.scope.as_of_date,
+                        ccy
+                    );
+                    scroll = scroll
+                        .child(
+                            h_flex()
+                                .id("overview-hero")
+                                .w_full()
+                                .pb_3()
+                                .gap_6()
+                                .items_end()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(caption)
+                                                        .child(I18nCatalog::tr("overview.hero")),
+                                                )
+                                                .child(MetricCard::render_quality_tag(
+                                                    qual,
+                                                    Locale::ZhCn,
+                                                )),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(30.))
+                                                .font_semibold()
+                                                .child(hero_nav.formatted_display_line()),
+                                        ),
+                                )
+                                .child(
+                                    v_flex()
+                                        .pb_1()
+                                        .gap_0p5()
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(caption)
+                                                .child(I18nCatalog::tr("card.total_pnl")),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_base()
+                                                .font_semibold()
+                                                .text_color(hero_pnl_fg)
+                                                .child(hero_pnl.text),
+                                        ),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    v_flex()
+                                        .pb_1()
+                                        .items_end()
+                                        .text_xs()
+                                        .text_color(caption)
+                                        .child(scope_caption)
+                                        .child(cov_note),
+                                ),
+                        )
+                        .child(section_heading(
+                            I18nCatalog::tr("overview.assets_section"),
+                            cx,
+                        ))
+                        .child(
+                            h_flex()
+                                .id("overview-cards-grid")
+                                .test_support()
+                                .w_full()
+                                .flex_wrap()
+                                .gap_3()
+                                .child(cash_card.render_card(cx).on_click(cx.listener(
+                                    |panel, _, window, cx| {
+                                        panel.controller.update(cx, |ctl, cx| {
+                                            ctl.navigate("nav.assets", window, cx)
+                                        })
+                                    },
+                                )))
+                                .child(nav_card.render_card(cx).on_click(cx.listener(
+                                    |panel, _, window, cx| {
+                                        panel.controller.update(cx, |ctl, cx| {
+                                            ctl.navigate("nav.assets", window, cx)
+                                        })
+                                    },
+                                )))
+                                .child(pnl_card.render_card(cx).on_click(cx.listener(
+                                    |panel, _, window, cx| {
+                                        panel.controller.update(cx, |ctl, cx| {
+                                            ctl.navigate("nav.assets", window, cx)
+                                        })
+                                    },
+                                )))
+                                .child(inv_card.render_card(cx)),
+                        )
+                        .child(section_heading(
+                            I18nCatalog::tr("overview.breakdown_section"),
+                            cx,
+                        ))
+                        .child(
+                            h_flex()
+                                .id("breakdown-cards-grid")
+                                .test_support()
+                                .w_full()
+                                .flex_wrap()
+                                .gap_3()
+                                .child(realized_card.render_card(cx))
+                                .child(unrealized_card.render_card(cx))
+                                .child(div_card.render_card(cx))
+                                .child(fee_card.render_card(cx)),
+                        );
+                }
+                "nav.data_center" => {
+                    scroll = scroll.child(self.render_data_center(&guard, cx));
+                }
+                "nav.journal" => {
+                    scroll = scroll.child(self.render_journal(&guard, cx));
+                }
+                "nav.settings" => {
+                    scroll = scroll.child(self.render_settings(&guard, cx));
+                }
+                "nav.training" => {
+                    scroll = scroll.child(self.render_training_page(&guard, cx));
+                }
+                "nav.assets" => {
+                    let lots_summary = guard
+                        .holdings_lots
+                        .as_ref()
+                        .map(|hl| {
+                            hl.value
+                                .open_lots
+                                .iter()
+                                .map(|l| {
+                                    format!(
+                                        "LOT:{}:{}:qty={}:cost={}",
+                                        l.account_id,
+                                        l.asset_id,
+                                        to_canonical_text(l.remaining_quantity),
+                                        to_canonical_text(l.remaining_cost_book)
+                                    )
                                 })
-                                .child(v.clone())
-                        }))
-                }))
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        })
+                        .unwrap_or_default();
+                    let recon_summary = guard
+                        .reconciliation_issues
+                        .as_ref()
+                        .map(|ri| {
+                            ri.value
+                                .iter()
+                                .map(|r| {
+                                    format!(
+                                        "RECON:{}:{}:exp={}:obs={}:diff={}",
+                                        r.account_id,
+                                        r.asset_id,
+                                        r.expected,
+                                        r.observed,
+                                        r.difference
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        })
+                        .unwrap_or_default();
+                    let lot_rows: Vec<Vec<String>> = guard
+                        .holdings_lots
+                        .as_ref()
+                        .map(|hl| {
+                            hl.value
+                                .open_lots
+                                .iter()
+                                .map(|l| {
+                                    vec![
+                                        l.account_id.clone(),
+                                        l.asset_id.clone(),
+                                        to_canonical_text(l.remaining_quantity),
+                                        to_canonical_text(l.remaining_cost_book),
+                                    ]
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let recon_rows: Vec<Vec<String>> = guard
+                        .reconciliation_issues
+                        .as_ref()
+                        .map(|ri| {
+                            ri.value
+                                .iter()
+                                .map(|r| {
+                                    vec![
+                                        r.account_id.clone(),
+                                        r.asset_id.clone(),
+                                        r.expected.to_string(),
+                                        r.observed.to_string(),
+                                        r.difference.to_string(),
+                                    ]
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let table = |id: &'static str,
+                                 headers: &[&'static str],
+                                 rows: &[Vec<String>],
+                                 cx: &App| {
+                        let cols = headers.len();
+                        v_flex()
+                            .id(id)
+                            .w_full()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded(cx.theme().radius)
+                            .overflow_hidden()
+                            .child(
+                                h_flex()
+                                    .px_3()
+                                    .py_1p5()
+                                    .bg(cx.theme().table_head)
+                                    .text_xs()
+                                    .text_color(caption)
+                                    .children(headers.iter().enumerate().map(|(i, h)| {
+                                        div()
+                                            .flex_1()
+                                            .when(i >= 2, |cell| cell.text_right())
+                                            .child(I18nCatalog::tr(h))
+                                    })),
+                            )
+                            .when(rows.is_empty(), |t| {
+                                t.child(
+                                    div()
+                                        .px_3()
+                                        .py_3()
+                                        .text_xs()
+                                        .text_color(caption)
+                                        .child(I18nCatalog::tr("assets.none")),
+                                )
+                            })
+                            .children(rows.iter().map(|row| {
+                                h_flex()
+                                    .px_3()
+                                    .py_1p5()
+                                    .border_t_1()
+                                    .border_color(cx.theme().table_row_border)
+                                    .text_sm()
+                                    .children(row.iter().take(cols).enumerate().map(|(i, v)| {
+                                        div()
+                                            .flex_1()
+                                            .when(i >= 2, |cell| {
+                                                cell.text_right().font_family(
+                                                    cx.theme().mono_font_family.clone(),
+                                                )
+                                            })
+                                            .child(v.clone())
+                                    }))
+                            }))
+                    };
+                    scroll = scroll
+                        .child(
+                            v_flex()
+                                .id("assets-and-journal-section")
+                                .test_support()
+                                .w_full()
+                                .gap_3()
+                                .child(section_heading(I18nCatalog::tr("assets.lots_section"), cx))
+                                .child(
+                                    div()
+                                        .id("fifo-lots-summary")
+                                        .test_support()
+                                        .w_full()
+                                        .child(table(
+                                            "fifo-lots-table",
+                                            &[
+                                                "assets.account",
+                                                "assets.asset",
+                                                "assets.quantity",
+                                                "assets.cost",
+                                            ],
+                                            &lot_rows,
+                                            cx,
+                                        ))
+                                        .test_text(lots_summary),
+                                )
+                                .child(section_heading(I18nCatalog::tr("assets.recon_section"), cx))
+                                .child(
+                                    div()
+                                        .id("reconciliation-summary")
+                                        .test_support()
+                                        .w_full()
+                                        .child(table(
+                                            "reconciliation-table",
+                                            &[
+                                                "assets.account",
+                                                "assets.asset",
+                                                "assets.expected",
+                                                "assets.observed",
+                                                "assets.difference",
+                                            ],
+                                            &recon_rows,
+                                            cx,
+                                        ))
+                                        .test_text(recon_summary),
+                                )
+                                .child(section_heading(I18nCatalog::tr("assets.flows_section"), cx))
+                                .child(
+                                    div().h(px(240.0)).w_full().child(
+                                        DataTable::new(&self.flows_table)
+                                            .stripe(true)
+                                            .bordered(true),
+                                    ),
+                                ),
+                        )
+                        .child(self.render_asset_controls(&guard, cx));
+                }
+                _ => {}
+            }
+            scroll.into_any_element()
         };
 
         v_flex()
@@ -1642,274 +1858,8 @@ impl Render for CenterWorkspacePanel {
             .aria_label(format!("ActiveView:{active_nav}"))
             .size_full()
             .bg(cx.theme().background)
-            .when(
-                !banners.is_empty() && active_nav != "nav.training",
-                |root| {
-                    root.child(
-                        v_flex()
-                            .p_2()
-                            .gap_2()
-                            .children(banners.iter().map(|banner| {
-                                let state = banner.state.clone();
-                                banner.render_banner_with_action(
-                                    cx,
-                                    cx.listener(move |panel, _, window, cx| match &state {
-                                        WorkbenchSystemState::Syncing { .. } => panel
-                                            .controller
-                                            .update(cx, |ctl, cx| ctl.cancel_sync(cx)),
-                                        WorkbenchSystemState::SaveFailed { .. } => {
-                                            panel.save_note(window, cx)
-                                        }
-                                        WorkbenchSystemState::StaleReport { .. } => {
-                                            panel.dispatch(Ok(UiAction::Refresh), window, cx)
-                                        }
-                                        WorkbenchSystemState::EmptyLibrary
-                                        | WorkbenchSystemState::PartialValuation { .. }
-                                        | WorkbenchSystemState::Offline { .. }
-                                        | WorkbenchSystemState::Cancelled { .. } => {
-                                            panel.controller.update(cx, |ctl, cx| {
-                                                ctl.navigate("nav.data_center", window, cx)
-                                            })
-                                        }
-                                        _ => panel.controller.update(cx, |ctl, cx| {
-                                            ctl.navigate("nav.settings", window, cx)
-                                        }),
-                                    }),
-                                )
-                            })),
-                    )
-                },
-            )
-            .when(active_nav == "nav.market", |root| {
-                root.child(
-                    h_flex()
-                        .id("market-workspace")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .w_full()
-                        .items_start()
-                        .child(self.render_market_sidebar(cx))
-                        .child(
-                            v_flex()
-                                .id("market-main")
-                                .flex_1()
-                                .min_w(px(0.))
-                                .h_full()
-                                .overflow_y_scroll()
-                                .child(self.render_quote_header(cx))
-                                .child(self.render_chart_toolbar(cx))
-                                .when_some(chart_element, |column, chart| {
-                                    column.child(div().px_3().pt_2().child(chart))
-                                })
-                                .child(self.render_chart_markers(cx)),
-                        ),
-                )
-            })
-            .when(active_nav != "nav.market", |root| {
-                root.child(
-                    v_flex()
-                        .id("center-scroll")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .w_full()
-                        .overflow_y_scroll()
-                        .p_4()
-                        .gap_3()
-                        .when(active_nav == "nav.overview", |root| {
-                            root.child(
-                                // Hero: net worth and total P&L, like a quote header.
-                                h_flex()
-                                    .id("overview-hero")
-                                    .w_full()
-                                    .pb_3()
-                                    .gap_6()
-                                    .items_end()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .child(
-                                        v_flex()
-                                            .gap_1()
-                                            .child(
-                                                h_flex()
-                                                    .gap_2()
-                                                    .items_center()
-                                                    .child(
-                                                        div().text_xs().text_color(caption).child(
-                                                            I18nCatalog::tr("overview.hero"),
-                                                        ),
-                                                    )
-                                                    .child(MetricCard::render_quality_tag(
-                                                        qual,
-                                                        Locale::ZhCn,
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(30.))
-                                                    .font_semibold()
-                                                    .child(hero_nav.formatted_display_line()),
-                                            ),
-                                    )
-                                    .child(
-                                        v_flex()
-                                            .pb_1()
-                                            .gap_0p5()
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(caption)
-                                                    .child(I18nCatalog::tr("card.total_pnl")),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_base()
-                                                    .font_semibold()
-                                                    .text_color(hero_pnl_fg)
-                                                    .child(hero_pnl.text),
-                                            ),
-                                    )
-                                    .child(div().flex_1())
-                                    .child(
-                                        v_flex()
-                                            .pb_1()
-                                            .items_end()
-                                            .text_xs()
-                                            .text_color(caption)
-                                            .child(scope_caption.clone())
-                                            .child(cov_note.clone()),
-                                    ),
-                            )
-                            .child(section("overview.assets_section", cx))
-                            .child(
-                                h_flex()
-                                    .id("overview-cards-grid")
-                                    .test_support()
-                                    .w_full()
-                                    .flex_wrap()
-                                    .gap_3()
-                                    .child(cash_card.render_card(cx).on_click(cx.listener(
-                                        |panel, _, window, cx| {
-                                            panel.controller.update(cx, |ctl, cx| {
-                                                ctl.navigate("nav.assets", window, cx)
-                                            })
-                                        },
-                                    )))
-                                    .child(nav_card.render_card(cx).on_click(cx.listener(
-                                        |panel, _, window, cx| {
-                                            panel.controller.update(cx, |ctl, cx| {
-                                                ctl.navigate("nav.assets", window, cx)
-                                            })
-                                        },
-                                    )))
-                                    .child(pnl_card.render_card(cx).on_click(cx.listener(
-                                        |panel, _, window, cx| {
-                                            panel.controller.update(cx, |ctl, cx| {
-                                                ctl.navigate("nav.assets", window, cx)
-                                            })
-                                        },
-                                    )))
-                                    .child(inv_card.render_card(cx)),
-                            )
-                            .child(section("overview.breakdown_section", cx))
-                            .child(
-                                h_flex()
-                                    .id("breakdown-cards-grid")
-                                    .test_support()
-                                    .w_full()
-                                    .flex_wrap()
-                                    .gap_3()
-                                    .child(realized_card.render_card(cx))
-                                    .child(unrealized_card.render_card(cx))
-                                    .child(div_card.render_card(cx))
-                                    .child(fee_card.render_card(cx)),
-                            )
-                        })
-                        .when(active_nav == "nav.data_center", |root| {
-                            root.child(self.render_data_center(cx))
-                        })
-                        .when(active_nav == "nav.journal", |root| {
-                            root.child(self.render_journal(cx))
-                        })
-                        .when(active_nav == "nav.settings", |root| {
-                            root.child(self.render_settings(cx))
-                        })
-                        .when_some(training_state_opt, |root, trn_state| {
-                            root.child(self.render_training_page(&trn_state, cx))
-                        })
-                        .when(active_nav == "nav.assets", |root| {
-                            root.child(
-                                // Assets FIFO lots, Reconciliation, and Virtual-Scrolling Flows table (`M2-W04`, `M2-A-09`)
-                                v_flex()
-                                    .id("assets-and-journal-section")
-                                    .test_support()
-                                    .w_full()
-                                    .gap_3()
-                                    .child(section("assets.lots_section", cx))
-                                    .child(
-                                        div()
-                                            .id("fifo-lots-summary")
-                                            .test_support()
-                                            .w_full()
-                                            .child(table(
-                                                "fifo-lots-table",
-                                                &[
-                                                    "assets.account",
-                                                    "assets.asset",
-                                                    "assets.quantity",
-                                                    "assets.cost",
-                                                ],
-                                                &lot_rows,
-                                                cx,
-                                            ))
-                                            .test_text(lots_summary),
-                                    )
-                                    .child(section("assets.recon_section", cx))
-                                    .child(
-                                        div()
-                                            .id("reconciliation-summary")
-                                            .test_support()
-                                            .w_full()
-                                            .child(table(
-                                                "reconciliation-table",
-                                                &[
-                                                    "assets.account",
-                                                    "assets.asset",
-                                                    "assets.expected",
-                                                    "assets.observed",
-                                                    "assets.difference",
-                                                ],
-                                                &recon_rows,
-                                                cx,
-                                            ))
-                                            .test_text(recon_summary),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .w_full()
-                                            .justify_between()
-                                            .child(section("assets.flows_section", cx))
-                                            .child(
-                                                div()
-                                                    .id("journal-autosave-status")
-                                                    .test_support()
-                                                    .text_xs()
-                                                    .text_color(caption)
-                                                    .child(autosave_badge.clone())
-                                                    .test_text(autosave_badge),
-                                            ),
-                                    )
-                                    .child(
-                                        div().h(px(240.0)).w_full().child(
-                                            DataTable::new(&self.flows_table)
-                                                .stripe(true)
-                                                .bordered(true),
-                                        ),
-                                    ),
-                            )
-                            .child(self.render_asset_controls(cx))
-                        }),
-                )
-            })
+            .when_some(banners_el, |root, banners| root.child(banners))
+            .child(body)
     }
 }
 
@@ -1978,7 +1928,7 @@ impl Focusable for RightAiReviewPanel {
 
 impl Render for RightAiReviewPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let guard = self.state.lock().unwrap();
+        let guard = crate::lock_or_recover(&self.state);
         let scope_text = if let Some(pre) = &guard.pre_send_scope {
             format!(
                 "模型: {} | 账户: {} | 期间: {} | 含笔记: {} | 锁定范围: {}",
@@ -2010,9 +1960,14 @@ impl Render for RightAiReviewPanel {
         let include_notes = guard.scope.include_notes;
         let saved_reports = guard.saved_ai_reports.clone();
         let opened_evidence = guard.opened_ai_evidence.clone();
-        let running = self.controller.read(cx).ai_running;
-        let stream = self.controller.read(cx).stream_text.lock().unwrap().clone();
         drop(guard);
+        let ctl = self.controller.read(cx);
+        let running = ctl.ai_target == Some(AiRunTarget::Portfolio);
+        let stream = if running {
+            crate::lock_or_recover(&ctl.stream_text).clone()
+        } else {
+            String::new()
+        };
 
         v_flex()
             .id("ai-review-panel-root")
@@ -2297,7 +2252,7 @@ impl Focusable for BottomTaskStatusPanel {
 
 impl Render for BottomTaskStatusPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let guard = self.state.lock().unwrap();
+        let guard = crate::lock_or_recover(&self.state);
         let job_text = if let Some(snap) = &guard.last_job_snapshot {
             let status = match &snap.state {
                 JobState::Running => "执行中",
@@ -2318,6 +2273,7 @@ impl Render for BottomTaskStatusPanel {
         } else {
             "后台任务空闲".to_string()
         };
+        let has_active_sync = guard.active_sync_job.is_some();
         let notice = guard.ui_notice.clone();
         let error = guard
             .ui_error
@@ -2358,6 +2314,7 @@ impl Render for BottomTaskStatusPanel {
             .child(
                 Button::new("bottom-cancel-sync")
                     .small()
+                    .disabled(!has_active_sync)
                     .label(I18nCatalog::tr("action.cancel_sync"))
                     .on_click(cx.listener(|panel, _, _, cx| {
                         panel.controller.update(cx, |ctl, cx| ctl.cancel_sync(cx))
@@ -2381,7 +2338,8 @@ pub struct DeltaWorkbench {
     _subscription: Subscription,
     _poll_task: Task<()>,
     pending_exit: Option<crate::lifecycle::PendingExit>,
-    last_update_status: String,
+    update_apply_task: Option<Task<()>>,
+    last_update_revision: u64,
 }
 
 impl DeltaWorkbench {
@@ -2454,46 +2412,48 @@ impl DeltaWorkbench {
             &controller,
             window,
             |workbench, _, _: &WorkbenchUpdated, window, cx| {
-                let state = workbench.state.lock().unwrap();
-                let target = match &state.scope.target {
-                    ScopeTarget::AllAccounts => "all".into(),
-                    ScopeTarget::Accounts(ids) => ids.join(","),
-                    ScopeTarget::Portfolio(id) => format!("portfolio:{id}"),
-                    ScopeTarget::TrainingRun(id) => format!("training:{id}"),
+                // Drop `workbench.state` lock before updating `scope_fields` entities (`UI-B08`).
+                let (target, start_str, end_str, descriptor, right, bottom, current_ws_run) = {
+                    let state = crate::lock_or_recover(&workbench.state);
+                    let target = match &state.scope.target {
+                        ScopeTarget::AllAccounts => "all".into(),
+                        ScopeTarget::Accounts(ids) => ids.join(","),
+                        ScopeTarget::Portfolio(id) => format!("portfolio:{id}"),
+                        ScopeTarget::TrainingRun(id) => format!("training:{id}"),
+                    };
+                    let start_str = state
+                        .scope
+                        .start_date
+                        .map(|date| date.to_string())
+                        .unwrap_or_default();
+                    let end_str = state.scope.as_of_date.to_string();
+                    let descriptor = format!("{target}|{:?}|{}", state.scope.start_date, end_str);
+                    let current_ws_run = (state.layout.active_nav == "nav.training"
+                        && state.training.mode == crate::training_ui::TrainingViewMode::Workspace)
+                        .then(|| state.training.active_run_id.clone())
+                        .flatten();
+                    (
+                        target,
+                        start_str,
+                        end_str,
+                        descriptor,
+                        state.layout.right_ai_open,
+                        state.layout.bottom_tasks_open,
+                        current_ws_run,
+                    )
                 };
-                let descriptor = format!(
-                    "{target}|{:?}|{}",
-                    state.scope.start_date, state.scope.as_of_date
-                );
                 if descriptor != workbench.last_scope_descriptor {
                     workbench
                         .scope_fields
                         .set("form.scope_target", target, window, cx);
-                    workbench.scope_fields.set(
-                        "form.scope_start",
-                        state
-                            .scope
-                            .start_date
-                            .map(|date| date.to_string())
-                            .unwrap_or_default(),
-                        window,
-                        cx,
-                    );
-                    workbench.scope_fields.set(
-                        "form.scope_end",
-                        state.scope.as_of_date.to_string(),
-                        window,
-                        cx,
-                    );
+                    workbench
+                        .scope_fields
+                        .set("form.scope_start", start_str, window, cx);
+                    workbench
+                        .scope_fields
+                        .set("form.scope_end", end_str, window, cx);
                     workbench.last_scope_descriptor = descriptor;
                 }
-                let right = state.layout.right_ai_open;
-                let bottom = state.layout.bottom_tasks_open;
-                let current_ws_run = (state.layout.active_nav == "nav.training"
-                    && state.training.mode == crate::training_ui::TrainingViewMode::Workspace)
-                    .then(|| state.training.active_run_id.clone())
-                    .flatten();
-                drop(state);
                 if current_ws_run != workbench.last_training_workspace_run {
                     workbench.last_training_workspace_run = current_ws_run.clone();
                     if current_ws_run.is_some() {
@@ -2527,9 +2487,7 @@ impl DeltaWorkbench {
             if tick_controller
                 .update_in(cx, |ctl, window, cx| {
                     ctl.poll_sync(window, cx);
-                    if ctl.ai_running {
-                        cx.emit(WorkbenchUpdated);
-                    }
+                    ctl.poll_ai_stream(cx);
                 })
                 .is_err()
                 || workbench
@@ -2556,7 +2514,8 @@ impl DeltaWorkbench {
             _subscription: subscription,
             _poll_task: poll_task,
             pending_exit: None,
-            last_update_status: String::new(),
+            update_apply_task: None,
+            last_update_revision: crate::lifecycle::update_revision(),
         }
     }
 
@@ -2699,29 +2658,42 @@ fn rail_item(
 
 impl Render for DeltaWorkbench {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = self.state.lock().unwrap().clone();
-        let active_nav = state.layout.active_nav.clone();
-        let scope_text = format!(
-            "{} · {} · {}{} · {} · 数据 v{} / 账本 r{}",
-            I18nCatalog::tr(&active_nav),
-            state.scope.resolved_accounts.join(", "),
-            state
-                .scope
-                .start_date
-                .map(|date| format!("{date} 至 "))
-                .unwrap_or_default(),
-            state.scope.as_of_date,
-            state.scope.report_currency,
-            state.scope.dataset_version,
-            state.scope.ledger_revision
-        );
-        let accounts_text = if state.scope.resolved_accounts.is_empty() {
-            "无账户".to_string()
-        } else {
-            format!("账户 {}", state.scope.resolved_accounts.join(", "))
+        // Read only the header/status-bar metadata under the lock: zero `WorkbenchSharedState::clone()` (`UI-Q01`).
+        let (active_nav, scope_text, accounts_text, ai_open, tasks_open, as_of_currency) = {
+            let state = crate::lock_or_recover(&self.state);
+            let active_nav = state.layout.active_nav.clone();
+            let scope_text = format!(
+                "{} · {} · {}{} · {} · 数据 v{} / 账本 r{}",
+                I18nCatalog::tr(&active_nav),
+                state.scope.resolved_accounts.join(", "),
+                state
+                    .scope
+                    .start_date
+                    .map(|date| format!("{date} 至 "))
+                    .unwrap_or_default(),
+                state.scope.as_of_date,
+                state.scope.report_currency,
+                state.scope.dataset_version,
+                state.scope.ledger_revision
+            );
+            let accounts_text = if state.scope.resolved_accounts.is_empty() {
+                "无账户".to_string()
+            } else {
+                format!("账户 {}", state.scope.resolved_accounts.join(", "))
+            };
+            let as_of_currency = format!(
+                "截至 {} · {}",
+                state.scope.as_of_date, state.scope.report_currency
+            );
+            (
+                active_nav,
+                scope_text,
+                accounts_text,
+                state.layout.right_ai_open,
+                state.layout.bottom_tasks_open,
+                as_of_currency,
+            )
         };
-        let ai_open = state.layout.right_ai_open;
-        let tasks_open = state.layout.bottom_tasks_open;
         let update_badge =
             crate::lifecycle::update_state().and_then(|update| match update.status {
                 crate::lifecycle::UpdateStatus::Ready { version } => Some((
@@ -2950,27 +2922,49 @@ impl Render for DeltaWorkbench {
                             .gap_1()
                             .items_center()
                             .child(Icon::new(IconName::Calendar).xsmall())
-                            .child(format!(
-                                "截至 {} · {}",
-                                state.scope.as_of_date, state.scope.report_currency
-                            )),
+                            .child(as_of_currency),
                     ),
             )
     }
 }
 
 impl DeltaWorkbench {
-    /// Drain control-pipe requests and advance a pending save-then-exit (`S-29`, `S-31`).
+    /// Drain control-pipe and tray requests and advance a pending save-then-exit (`S-29`, `S-31`, `D-37`).
     pub(crate) fn tick_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use crate::lifecycle::{
             emit_event, next_control_request, options, ExitReason, PendingExit, APPLY_REQUESTED,
         };
+        use crate::tray::TrayCommand;
         use delta_app::{ControlCommand, ControlReply, ControlStatus};
+        let mut show_window_from_tray = false;
+        while let Some(tray_cmd) = crate::tray::next_tray_command() {
+            match tray_cmd {
+                TrayCommand::ShowWindow => {
+                    show_window_from_tray = true;
+                }
+                TrayCommand::QuitApp => {
+                    if self.pending_exit.is_none() {
+                        self.pending_exit = Some(PendingExit::new(ExitReason::UserQuit));
+                    }
+                }
+            }
+        }
+        if show_window_from_tray
+            && self.pending_exit.is_none()
+            && options().is_none_or(|options| options.allow_focus)
+        {
+            crate::tray::restore_main_window(window);
+        }
+        if crate::tray::take_user_quit_requested() && self.pending_exit.is_none() {
+            self.pending_exit = Some(PendingExit::new(ExitReason::UserQuit));
+        }
         while let Some((command, reply)) = next_control_request() {
             match command {
                 ControlCommand::Focus => {
-                    if options().is_some_and(|options| options.allow_focus) {
-                        window.activate_window();
+                    if self.pending_exit.is_none()
+                        && options().is_some_and(|options| options.allow_focus)
+                    {
+                        crate::tray::restore_main_window(window);
                     }
                     emit_event("control-focus", json!({}));
                     let _ = reply.send(ControlReply::new(ControlStatus::Ok, "focused"));
@@ -2992,12 +2986,26 @@ impl DeltaWorkbench {
         {
             self.pending_exit = Some(PendingExit::new(ExitReason::ApplyUpdate));
         }
-        let status = crate::lifecycle::update_state()
-            .map(|state| format!("{:?}", state.status))
-            .unwrap_or_default();
-        if status != self.last_update_status {
-            self.last_update_status = status;
+        if crate::tray::is_active() {
+            let active_work = {
+                let state = crate::lock_or_recover(&self.state);
+                if state.active_sync_job.is_some() {
+                    Some("同步进行中")
+                } else if state.training.prepare_job.is_some() {
+                    Some("训练数据准备进行中")
+                } else if self.controller.read(cx).ai_running {
+                    Some("AI 正在生成")
+                } else {
+                    None
+                }
+            };
+            crate::tray::sync_tooltip(active_work);
+        }
+        let rev = crate::lifecycle::update_revision();
+        if rev != self.last_update_revision {
+            self.last_update_revision = rev;
             cx.notify();
+            self.center_panel.update(cx, |_, cx| cx.notify());
         }
         if let Some(mut exit) = self.pending_exit.take() {
             if !self.advance_exit(&mut exit, window, cx) {
@@ -3034,10 +3042,17 @@ impl DeltaWorkbench {
                 crate::lifecycle::ExitReason::ApplyUpdate => {
                     crate::lifecycle::set_update_failed("UPDATE_BUSY", &reason);
                 }
+                crate::lifecycle::ExitReason::UserQuit => {}
             }
             true
         }
-        if exit.timed_out() {
+        if exit.timed_out() && !(matches!(exit.phase, ExitPhase::Finish) && exit.dispatched) {
+            if matches!(exit.reason, ExitReason::UserQuit) {
+                crate::tray::mark_force_exit();
+                crate::tray::dispose_active_tray();
+                cx.quit();
+                return true;
+            }
             return refuse(
                 exit,
                 ControlStatus::Busy,
@@ -3045,9 +3060,11 @@ impl DeltaWorkbench {
             );
         }
         let busy = {
-            let state = self.state.lock().unwrap();
+            let state = crate::lock_or_recover(&self.state);
             if state.active_sync_job.is_some() {
                 Some("同步任务进行中")
+            } else if state.training.prepare_job.is_some() {
+                Some("训练数据准备进行中")
             } else if self.controller.read(cx).ai_running {
                 Some("AI 正在生成")
             } else {
@@ -3057,6 +3074,33 @@ impl DeltaWorkbench {
         match exit.phase {
             ExitPhase::CheckBusy => {
                 if let Some(reason) = busy {
+                    if matches!(exit.reason, ExitReason::UserQuit) {
+                        if !exit.dispatched {
+                            self.controller.update(cx, |ctl, cx| {
+                                ctl.cancel_sync(cx);
+                                ctl.cancel_ai(cx);
+                            });
+                            let prepare_job = {
+                                let state = crate::lock_or_recover(&self.state);
+                                state
+                                    .training
+                                    .prepare_job
+                                    .map(|job| (state.host.clone(), job))
+                            };
+                            if let Some((host, job)) = prepare_job {
+                                let _ = host.cancel_job(job);
+                            }
+                            exit.dispatched = true;
+                            return false;
+                        }
+                        // Bounded wait for background job cancellation before proceeding to save.
+                        if exit.started.elapsed() < Duration::from_secs(3) {
+                            return false;
+                        }
+                        exit.phase = ExitPhase::SaveNote;
+                        exit.dispatched = false;
+                        return false;
+                    }
                     if matches!(exit.reason, ExitReason::ApplyUpdate)
                         && APPLY_CONFIRMED_BUSY.swap(false, std::sync::atomic::Ordering::SeqCst)
                     {
@@ -3065,6 +3109,16 @@ impl DeltaWorkbench {
                             ctl.cancel_sync(cx);
                             ctl.cancel_ai(cx);
                         });
+                        let prepare_job = {
+                            let state = crate::lock_or_recover(&self.state);
+                            state
+                                .training
+                                .prepare_job
+                                .map(|job| (state.host.clone(), job))
+                        };
+                        if let Some((host, job)) = prepare_job {
+                            let _ = host.cancel_job(job);
+                        }
                         exit.dispatched = true;
                         return false;
                     }
@@ -3094,10 +3148,15 @@ impl DeltaWorkbench {
                 false
             }
             ExitPhase::SaveNote => {
-                let editor = self.state.lock().unwrap().note_editor.clone();
+                let editor = crate::lock_or_recover(&self.state).note_editor.clone();
                 if exit.dispatched
                     && matches!(editor.status, delta_app::AutosaveStatus::SaveFailed { .. })
                 {
+                    if matches!(exit.reason, ExitReason::UserQuit) {
+                        exit.phase = ExitPhase::SaveLayout;
+                        exit.dispatched = false;
+                        return false;
+                    }
                     return refuse(
                         exit,
                         ControlStatus::SaveFailed,
@@ -3132,40 +3191,71 @@ impl DeltaWorkbench {
                     return false;
                 }
                 exit.phase = ExitPhase::Finish;
+                exit.dispatched = false;
                 false
             }
-            ExitPhase::Finish => {
-                match &exit.reason {
-                    ExitReason::Control(reply) => {
-                        let mut answer = ControlReply::new(ControlStatus::Ok, "saved; exiting");
-                        answer.relaunch_args = options()
-                            .map(|options| options.relaunch_args.clone())
-                            .unwrap_or_default();
-                        emit_event("exit-for-update", json!({}));
-                        let _ = reply.send(answer);
-                        cx.quit();
-                    }
-                    ExitReason::ApplyUpdate => {
+            ExitPhase::Finish => match &exit.reason {
+                ExitReason::UserQuit => {
+                    crate::tray::mark_force_exit();
+                    crate::tray::dispose_active_tray();
+                    cx.quit();
+                    true
+                }
+                ExitReason::Control(reply) => {
+                    let mut answer = ControlReply::new(ControlStatus::Ok, "saved; exiting");
+                    answer.relaunch_args = options()
+                        .map(|options| options.relaunch_args.clone())
+                        .unwrap_or_default();
+                    emit_event("exit-for-update", json!({}));
+                    crate::tray::mark_force_exit();
+                    crate::tray::dispose_active_tray();
+                    let _ = reply.send(answer);
+                    cx.quit();
+                    true
+                }
+                ExitReason::ApplyUpdate => {
+                    if !exit.dispatched {
+                        exit.dispatched = true;
+                        let window_was_open = !crate::tray::is_hidden_in_tray();
                         crate::lifecycle::set_update_status(UpdateStatus::Applying {
                             version: crate::lifecycle::update_state()
                                 .and_then(|state| state.offer.map(|offer| offer.manifest.version))
                                 .unwrap_or_default(),
                         });
-                        let host = self.state.lock().unwrap().host.clone();
-                        match crate::lifecycle::backup_and_launch_installer(&host) {
-                            Ok(()) => {
-                                emit_event("exit-for-update", json!({}));
-                                cx.quit();
-                            }
-                            Err(error) => crate::lifecycle::set_update_failed(
-                                error.code(),
-                                &error.to_string(),
-                            ),
-                        }
+                        let host = crate::lock_or_recover(&self.state).host.clone();
+                        let op = cx.background_executor().spawn(async move {
+                            crate::lifecycle::backup_and_launch_installer(&host, window_was_open)
+                        });
+                        self.update_apply_task =
+                            Some(cx.spawn_in(window, async move |workbench, cx| {
+                                let res = op.await;
+                                let _ = workbench.update(cx, |workbench, cx| {
+                                    workbench.update_apply_task = None;
+                                    match res {
+                                        Ok(()) => {
+                                            emit_event("exit-for-update", json!({}));
+                                            crate::tray::mark_force_exit();
+                                            crate::tray::dispose_active_tray();
+                                            cx.quit();
+                                        }
+                                        Err(error) => {
+                                            workbench.pending_exit = None;
+                                            crate::lifecycle::set_update_failed(
+                                                error.code(),
+                                                &error.to_string(),
+                                            );
+                                            workbench.last_update_revision =
+                                                crate::lifecycle::update_revision();
+                                            cx.notify();
+                                            workbench.center_panel.update(cx, |_, cx| cx.notify());
+                                        }
+                                    }
+                                });
+                            }));
                     }
+                    false
                 }
-                true
-            }
+            },
         }
     }
 
@@ -3289,8 +3379,11 @@ impl VerificationDirectory {
 pub fn run_fixed_scale_ui_bench(data_dir: &Path) -> Result<UiBenchReport, ErrorEnvelope> {
     let owned = VerificationDirectory::create(data_dir, "bench")?;
     let result = run_fixed_scale_bench_in_owned_directory(&owned.path);
-    owned.cleanup()?;
-    result
+    match (result, owned.cleanup()) {
+        (Err(err), _) => Err(err),
+        (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
+        (Ok(report), Ok(())) => Ok(report),
+    }
 }
 
 fn run_fixed_scale_bench_in_owned_directory(
@@ -3385,6 +3478,7 @@ fn run_fixed_scale_bench_in_owned_directory(
         .host
         .wait_job_finished(job_id, Duration::from_secs(5))?;
     let cancel_backend_latency_ms = cancel_t0.elapsed().as_millis() as u64;
+    let _ = shared.host.shutdown();
     if !matches!(snap.state, JobState::Cancelled(_)) {
         return Err(ErrorEnvelope::new(
             "BENCH_CANCEL_FAILED",
@@ -3443,6 +3537,7 @@ pub fn run_desktop_entrypoint() -> ExitCode {
             "delta (M5) - GPUI desktop investment review & training workbench\n\
              Flags:\n\
              - --data-dir <dir>\n\
+             - --background (start in the system tray without showing a window; install-dev uses it)\n\
              - --ui-smoke [--data-dir <dir>]\n\
              - --ui-bench [--data-dir <dir>]\n\
              - --m4-ui-smoke [--data-dir <dir>]\n\
@@ -3522,6 +3617,9 @@ pub fn run_desktop_entrypoint() -> ExitCode {
         };
     }
     if has_flag("--ui-smoke") {
+        // Opt out of Windows EcoQoS so `--ui-smoke --workbench-bench` first-screen and navigation
+        // timings are measured at normal execution speed (`UI-B10`).
+        let _ = delta_app::opt_out_of_execution_speed_throttling();
         let base = cli_data_dir.unwrap_or_else(std::env::temp_dir);
         let owned = match VerificationDirectory::create(&base, "smoke") {
             Ok(owned) => owned,
@@ -3536,18 +3634,23 @@ pub fn run_desktop_entrypoint() -> ExitCode {
             let mut svc = AppService::open(paths, "USD", "USD", "UTC", true)?;
             seed_ac02_fixture_in_service(&mut svc)?;
             let host = AppHost::from_service(svc);
-            crate::ui_verification::run_native_smoke(
+            let host_shutdown = host.clone();
+            let out = crate::ui_verification::run_native_smoke(
                 host,
                 tmp_dir.clone(),
                 entry_started,
                 if has_flag("--workbench-bench") { 10 } else { 1 },
-            )
+            );
+            let _ = host_shutdown.shutdown();
+            out
         })();
-        if let Err(error) = owned.cleanup() {
-            eprintln!("{}", sanitize_terminal_output(&error.message));
-            return ExitCode::from(1);
-        }
-        return match res {
+        let cleanup = owned.cleanup();
+        let final_res = match (res, cleanup) {
+            (Err(err), _) => Err(err),
+            (Ok(_), Err(cleanup_err)) => Err(cleanup_err),
+            (Ok(v), Ok(())) => Ok(v),
+        };
+        return match final_res {
             Ok(mut v) => {
                 v["build_info"] = delta_app::build_info("delta-desktop");
                 println!("{}", sanitize_terminal_output(&v.to_string()));
@@ -3592,6 +3695,14 @@ pub fn run_desktop_entrypoint() -> ExitCode {
         Some(Ok(instance)) => Some(instance),
         Some(Err(delta_app::InstanceError::AlreadyRunning(_))) => {
             let identity = identity.unwrap();
+            // D-36 `--background` must stay silent and never pop/focus an existing window (`UI-B15`).
+            if has_flag("--background") {
+                println!(
+                    "{}",
+                    json!({"status": "already-running-background", "identity": identity.name()})
+                );
+                return ExitCode::SUCCESS;
+            }
             let reply = delta_app::send_control_command(
                 identity,
                 delta_app::ControlCommand::Focus,
@@ -3674,7 +3785,7 @@ pub fn run_desktop_entrypoint() -> ExitCode {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(240),
         };
-        return match crate::ui_verification::run_native_resident(paths, options) {
+        let code = match crate::ui_verification::run_native_resident(paths, options) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 crate::lifecycle::emit_event(
@@ -3684,44 +3795,98 @@ pub fn run_desktop_entrypoint() -> ExitCode {
                 ExitCode::from(1)
             }
         };
+        crate::lifecycle::clear_control_receiver();
+        return code;
     }
 
     // Default interactive desktop window launch
     let data_dir = paths.data_dir.clone();
+    // `install-dev` starts the dev build this way after every install (D-36): tray icon only,
+    // no main window shown (or minimized on the taskbar if tray icon creation failed); clicking
+    // the tray icon or launching from the Start menu / desktop shows and focuses the window.
+    let background = has_flag("--background");
+    let display_name = identity
+        .map(InstallIdentity::display_name)
+        .unwrap_or("DELTA Dev");
     let host = match AppHost::spawn(paths, "USD", "USD", "UTC") {
         Ok(host) => host,
         Err(error) => {
+            crate::lifecycle::clear_control_receiver();
             eprintln!("{}", sanitize_terminal_output(&error.message));
             return ExitCode::from(1);
         }
     };
+    let host_shutdown = host.clone();
     crate::lifecycle::initialize_updates(data_dir.clone(), false);
+    let _tray_guard = crate::tray::start_interactive_tray(display_name);
+    let startup_mode = crate::tray::decide_startup_mode(background, crate::tray::is_active());
     let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
     app.run(move |cx| {
         gpui_kit::init(cx);
         crate::theme::apply_delta_theme(cx);
         let as_of = Utc::now().date_naive();
+        let show_initially = startup_mode != crate::tray::BackgroundStartupMode::TrayOnly;
         let options = WindowOptions {
             titlebar: Some(gpui_kit::TitlebarOptions {
-                title: Some(SharedString::from(
-                    identity
-                        .map(InstallIdentity::display_name)
-                        .unwrap_or("DELTA Dev"),
-                )),
+                title: Some(SharedString::from(display_name)),
                 ..Default::default()
             }),
             window_bounds: Some(gpui_kit::WindowBounds::Windowed(
                 gpui_kit::Bounds::centered(None, gpui_kit::size(px(1440.), px(900.)), cx),
             )),
             window_min_size: Some(gpui_kit::size(px(960.), px(600.))),
+            show: show_initially,
+            focus: startup_mode == crate::tray::BackgroundStartupMode::NormalWindow,
             ..WindowOptions::default()
         };
         cx.open_window(options, move |window, cx| {
+            crate::tray::register_main_window(show_initially);
+            if startup_mode == crate::tray::BackgroundStartupMode::MinimizedTaskbar {
+                window.minimize_window();
+            }
             let view = cx.new(|cx| DeltaWorkbench::new(host, data_dir, as_of, window, cx));
+            let shared_for_close = Arc::clone(view.read(cx).shared_state());
+            let quit_requested_once = std::sync::atomic::AtomicBool::new(false);
+            window.on_window_should_close(cx, move |_window, _cx| {
+                let close_action = crate::lock_or_recover(&shared_for_close)
+                    .layout
+                    .close_action;
+                match crate::tray::decide_window_close(
+                    close_action,
+                    crate::tray::is_active(),
+                    crate::tray::is_force_exiting(),
+                ) {
+                    crate::tray::CloseDecision::AllowImmediateClose => {
+                        crate::tray::dispose_active_tray();
+                        true
+                    }
+                    crate::tray::CloseDecision::HideToTray => {
+                        if crate::tray::hide_to_tray() {
+                            false
+                        } else {
+                            crate::tray::request_user_quit();
+                            false
+                        }
+                    }
+                    crate::tray::CloseDecision::GracefulQuit => {
+                        if quit_requested_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            crate::tray::mark_force_exit();
+                            crate::tray::dispose_active_tray();
+                            true
+                        } else {
+                            crate::tray::request_user_quit();
+                            false
+                        }
+                    }
+                }
+            });
             cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
         })
         .expect("open DELTA desktop window");
     });
+    crate::tray::dispose_active_tray();
+    let _ = host_shutdown.shutdown();
+    crate::lifecycle::clear_control_receiver();
     ExitCode::SUCCESS
 }
 
@@ -3744,37 +3909,20 @@ pub(crate) fn verification_app_paths(data_dir: &Path) -> delta_app::ResolvedAppP
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use delta_app::{
+        count_visible_windows_for_current_process, parse_decimal_lossless,
+        set_note_save_fault_injection_for_test, AccountBalanceSnapshotDto, AutosaveStatus,
+        ModelProtocol,
+    };
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::TestAppContext;
 
     fn temp_test_dir(tag: &str) -> PathBuf {
-        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let base = std::env::var_os("DELTA_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let dir = base.join(format!(
-            "delta_m2_desktop_{tag}_{}_{}_{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            Utc::now().timestamp_nanos_opt().unwrap_or(1)
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_support::temp_test_dir("delta_m2_desktop", tag)
     }
 
     fn click_control(cx: &mut gpui_kit::VisualTestContext, id: &'static str) {
-        let position = cx.update(|window, cx| {
-            window.render_frame(cx);
-            let bounds = window.find(id).bounds();
-            assert!(
-                bounds.size.width > px(0.) && bounds.size.height > px(0.),
-                "{id} has no rendered bounds"
-            );
-            bounds.center()
-        });
-        cx.simulate_click(position, gpui_kit::Modifiers::default());
-        cx.run_until_parked();
+        crate::test_support::click_id(cx, id);
     }
 
     #[gpui_kit::test]
@@ -4819,6 +4967,188 @@ pub mod tests {
 
         cx.update_window(handle, |_, window, _| window.remove_window())
             .unwrap();
+        host.shutdown().unwrap();
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn controller_preserves_sync_job_and_pending_scope_across_concurrent_actions(
+        cx: &mut TestAppContext,
+    ) {
+        apply_process_quiet_guards();
+        let tmp = temp_test_dir("controller_races");
+        let paths = resolve_app_paths(Some(BuildChannel::Source), Some(&tmp)).unwrap();
+        let mut svc = AppService::open(paths, "USD", "USD", "UTC", true).unwrap();
+        seed_ac02_fixture_in_service(&mut svc).unwrap();
+        let host = AppHost::from_service(svc);
+        cx.update(gpui_kit::init);
+        let (workbench, cx) = cx.add_window_view(|window, cx| {
+            DeltaWorkbench::new(
+                host.clone(),
+                tmp.clone(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                window,
+                cx,
+            )
+        });
+        let (controller, state) = cx.update(|_, cx| {
+            let view = workbench.read(cx);
+            (view.controller.clone(), Arc::clone(view.shared_state()))
+        });
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+
+        // UI-B05a: a background Refresh completing must not clobber a sync job started/cancelled
+        // on the UI thread while Refresh was running.
+        let job_id = state
+            .lock()
+            .unwrap()
+            .start_verification_cancellation_job(3000)
+            .unwrap();
+        cx.update(|window, cx| {
+            controller.update(cx, |ctl, cx| {
+                ctl.dispatch(UiAction::SaveLayout, window, cx);
+                // Cancel the sync job on the UI thread while SaveLayout is in flight.
+                ctl.cancel_sync(cx);
+            });
+        });
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        {
+            let g = state.lock().unwrap();
+            let snap = g
+                .last_job_snapshot
+                .as_ref()
+                .expect("cancel snapshot must survive SaveLayout completion");
+            assert!(matches!(snap.state, JobState::Cancelled(_)));
+        }
+        let _ = host.wait_job_finished(job_id, Duration::from_secs(5));
+
+        // UI-B05b: changing scope while a dirty note exists and an unrelated AI action fails must
+        // NOT drop pending_scope — the dirty note is flushed and the scope switch completes.
+        {
+            let mut g = state.lock().unwrap();
+            g.note_editor.body_buffer = "并发范围切换前保留的笔记".into();
+            g.note_editor.status = AutosaveStatus::Editing;
+        }
+        let target_scope = {
+            let mut scope =
+                AnalysisScope::all_accounts(NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(), "USD");
+            scope.target = ScopeTarget::Accounts(vec!["ACC-1".into()]);
+            scope
+        };
+        cx.update(|window, cx| {
+            controller.update(cx, |ctl, cx| {
+                // Trigger an unrelated background action (`ProbeModel`) that fails without flushing
+                // the dirty note while queuing a scope change (`UI-B05`).
+                ctl.dispatch(UiAction::ProbeModel, window, cx);
+                ctl.change_scope(target_scope, window, cx);
+            });
+        });
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        assert_eq!(state.lock().unwrap().scope.resolved_accounts, vec!["ACC-1"]);
+
+        cx.update(|window, _| window.remove_window());
+        host.shutdown().unwrap();
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn settings_close_action_defaults_to_tray_and_persists_choice(cx: &mut TestAppContext) {
+        apply_process_quiet_guards();
+        let tmp = temp_test_dir("close_action_settings");
+        // Legacy layout.json without `close_action` must deserialize cleanly to MinimizeToTray.
+        let legacy_path = layout_config_path(&tmp);
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(
+            &legacy_path,
+            serde_json::to_vec_pretty(&json!({
+                "version": LAYOUT_SCHEMA_VERSION,
+                "active_nav": "nav.overview",
+                "right_ai_open": true,
+                "bottom_tasks_open": true,
+                "color_convention": "red_up_green_down",
+                "locale": "zh_cn",
+                "report_currency": "USD",
+                "display_timezone": "UTC"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (loaded_legacy, fallback) = load_or_default_layout(&tmp);
+        assert!(fallback.is_none());
+        assert_eq!(
+            loaded_legacy.close_action,
+            crate::tray::CloseAction::MinimizeToTray
+        );
+
+        let paths = resolve_app_paths(Some(BuildChannel::Source), Some(&tmp)).unwrap();
+        let svc = AppService::open(paths, "USD", "USD", "UTC", true).unwrap();
+        let host = AppHost::from_service(svc);
+        cx.update(gpui_kit::init);
+        let (workbench, cx) = cx.add_window_view(|window, cx| {
+            DeltaWorkbench::new(
+                host.clone(),
+                tmp.clone(),
+                NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+                window,
+                cx,
+            )
+        });
+        let (controller, state) = cx.update(|_, cx| {
+            let view = workbench.read(cx);
+            (view.controller.clone(), Arc::clone(view.shared_state()))
+        });
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        assert_eq!(
+            state.lock().unwrap().layout.close_action,
+            crate::tray::CloseAction::MinimizeToTray
+        );
+        assert!(!crate::tray::is_active());
+
+        // Navigate to Settings and switch close button to Quit.
+        cx.update(|window, cx| {
+            controller.update(cx, |ctl, cx| ctl.navigate("nav.settings", window, cx));
+        });
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        click_control(cx, "settings-close-quit");
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        assert_eq!(
+            state.lock().unwrap().layout.close_action,
+            crate::tray::CloseAction::Quit
+        );
+        let (reloaded_quit, fallback) = load_or_default_layout(&tmp);
+        assert!(fallback.is_none());
+        assert_eq!(reloaded_quit.close_action, crate::tray::CloseAction::Quit);
+
+        // Switch back to MinimizeToTray and verify persistence.
+        click_control(cx, "settings-close-to-tray");
+        controller
+            .condition::<WorkbenchUpdated>(cx, |ctl, _| ctl.is_idle())
+            .await;
+        assert_eq!(
+            state.lock().unwrap().layout.close_action,
+            crate::tray::CloseAction::MinimizeToTray
+        );
+        let (reloaded_tray, fallback) = load_or_default_layout(&tmp);
+        assert!(fallback.is_none());
+        assert_eq!(
+            reloaded_tray.close_action,
+            crate::tray::CloseAction::MinimizeToTray
+        );
+        assert_eq!(count_visible_windows_for_current_process(), 0);
+
+        cx.update(|window, _| window.remove_window());
         host.shutdown().unwrap();
         fs::remove_dir_all(&tmp).unwrap();
     }

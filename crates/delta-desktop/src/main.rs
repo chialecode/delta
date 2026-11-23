@@ -15,13 +15,14 @@ fn main() -> ExitCode {
 /// Redirected/piped handles are left untouched.
 #[cfg(windows)]
 fn attach_parent_console_for_text_flags() {
-    use windows_sys::Win32::System::Console::{
-        AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE},
     };
     let text_flag = std::env::args().skip(1).any(|a| {
         matches!(
             a.as_str(),
-            "--help" | "-h" | "--version" | "-V" | "--build-info"
+            "--help" | "-h" | "--version" | "-V" | "--build-info" | "--restore-args"
         ) || a.ends_with("-ui-smoke")
             || a.ends_with("-ui-bench")
     });
@@ -30,7 +31,8 @@ fn attach_parent_console_for_text_flags() {
     }
     // SAFETY: plain Win32 calls without pointers; failure only means no console is available.
     unsafe {
-        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             AttachConsole(ATTACH_PARENT_PROCESS);
         }
     }

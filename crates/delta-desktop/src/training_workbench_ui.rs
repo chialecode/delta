@@ -31,8 +31,8 @@ use gpui_kit::{
 use rust_decimal::prelude::*;
 
 use crate::{
-    chart_canvas::{parse_hex_color, ChartOverlay, OverlayHLine, OverlaySegment},
-    training_ui::{TrainingSidePanel, TrainingUiAction},
+    chart_canvas::{parse_hex_color, ChartOverlay, OverlayHLine, OverlayLineStyle, OverlaySegment},
+    training_ui::{TrainingSidePanel, TrainingUiAction, TrainingViewMode},
     training_workbench::{
         buy_quantity, command_for_key, floor_to_lot, sell_quantity, ChartClickOutcome, ConfirmKind,
         KeyMods, WorkbenchCommand, WorkbenchState, WorkbenchTool, BUY_FRACTIONS, MA_PERIODS,
@@ -71,14 +71,24 @@ pub(crate) fn workbench_overlay(
     };
     for order in &ws.open_orders {
         if let Some(price) = order_line_price(&order.order_type) {
+            let display_price = wb
+                .dragging_order
+                .as_ref()
+                .filter(|(id, _, _)| id == &order.order_id)
+                .map(|(_, _, preview)| *preview)
+                .unwrap_or(price);
             overlay.hlines.push(OverlayHLine {
-                price: dec_f64(price),
+                price: dec_f64(display_price),
                 color: if order.side == OrderSide::Buy {
                     0x1e88e5
                 } else {
                     0xe53935
                 },
-                dashed: !wb.locked_orders.contains(&order.order_id),
+                style: if wb.locked_orders.contains(&order.order_id) {
+                    OverlayLineStyle::Solid
+                } else {
+                    OverlayLineStyle::Dashed
+                },
                 thick: true,
             });
         }
@@ -87,7 +97,7 @@ pub(crate) fn workbench_overlay(
         overlay.hlines.push(OverlayHLine {
             price: dec_f64(pos.avg_unit_cost),
             color: 0x9e9e9e,
-            dashed: true,
+            style: OverlayLineStyle::Dashed,
             thick: false,
         });
     }
@@ -95,7 +105,7 @@ pub(crate) fn workbench_overlay(
         overlay.hlines.push(OverlayHLine {
             price: dec_f64(draft.price),
             color: 0xf0b90b,
-            dashed: true,
+            style: OverlayLineStyle::Dashed,
             thick: true,
         });
     }
@@ -105,13 +115,14 @@ pub(crate) fn workbench_overlay(
     if wb.show_drawings {
         for d in &wb.drawings {
             let color = parse_hex_color(&d.color);
-            let dashed = d.line_style != "solid";
+            let style = OverlayLineStyle::from_drawing_style(&d.line_style);
+            let thick = wb.selected_drawing.as_deref() == Some(d.drawing_id.as_str());
             match (d.kind.as_str(), d.anchors.as_slice()) {
                 ("horizontal", [(_, p), ..]) => overlay.hlines.push(OverlayHLine {
                     price: dec_f64(*p),
                     color,
-                    dashed,
-                    thick: wb.selected_drawing.as_deref() == Some(d.drawing_id.as_str()),
+                    style,
+                    thick,
                 }),
                 (kind @ ("ray" | "segment"), [(b0, p0), (b1, p1), ..]) => {
                     overlay.segments.push(OverlaySegment {
@@ -119,7 +130,8 @@ pub(crate) fn workbench_overlay(
                         to: (*b1 as f64, dec_f64(*p1)),
                         ray: kind == "ray",
                         color,
-                        dashed,
+                        style,
+                        thick,
                     })
                 }
                 _ => {}
@@ -132,17 +144,17 @@ pub(crate) fn workbench_overlay(
             to: (b1 as f64, dec_f64(p1)),
             ray: false,
             color: 0x8e24aa,
-            dashed: true,
+            style: OverlayLineStyle::Dashed,
+            thick: false,
         });
     }
-    if let Some((b, p)) = wb.pending_anchors.first() {
+    if let Some((_b, p)) = wb.pending_anchors.first() {
         overlay.hlines.push(OverlayHLine {
             price: dec_f64(*p),
             color: 0x8e24aa,
-            dashed: true,
+            style: OverlayLineStyle::Dashed,
             thick: false,
         });
-        let _ = b;
     }
     overlay
 }
@@ -173,36 +185,22 @@ pub(crate) fn quick_quantities(
 }
 
 impl CenterWorkspacePanel {
-    /// Pointer → (global bar index, price, pointer y in px, plot bounds).
+    /// Pointer → `(global bar index, price)` via the shared `chart_canvas` projection (`UI-Q04`).
     pub(crate) fn training_pointer_bar_price(
         &self,
         position: gpui_kit::Point<gpui_kit::Pixels>,
     ) -> Option<(usize, f64)> {
-        let bounds = (*self.training_plot_bounds.lock().unwrap())?;
-        let (x, y) = crate::chart_canvas::pointer_ratio(position, bounds)?;
-        let g = self.state.lock().unwrap();
+        let bounds = (*crate::lock_or_recover(&self.training_plot_bounds))?;
+        let g = crate::lock_or_recover(&self.state);
         let slice = &g.training.workspace.as_ref()?.chart_slice;
-        if slice.bars.is_empty() {
-            return None;
-        }
-        let index = slice.visible_start_index
-            + ((x * slice.bars.len() as f32).floor() as usize).min(slice.bars.len() - 1);
-        let min = slice.lod_candles.iter().map(|c| c.low).reduce(f64::min)?;
-        let max = slice.lod_candles.iter().map(|c| c.high).reduce(f64::max)?;
-        Some((index, min + (max - min) * f64::from(1. - y)))
+        crate::chart_canvas::pointer_bar_price(position, bounds, slice)
     }
 
     pub(crate) fn price_to_y(&self, price: f64) -> Option<f32> {
-        let bounds = (*self.training_plot_bounds.lock().unwrap())?;
-        let g = self.state.lock().unwrap();
+        let bounds = (*crate::lock_or_recover(&self.training_plot_bounds))?;
+        let g = crate::lock_or_recover(&self.state);
         let slice = &g.training.workspace.as_ref()?.chart_slice;
-        let min = slice.lod_candles.iter().map(|c| c.low).reduce(f64::min)?;
-        let max = slice.lod_candles.iter().map(|c| c.high).reduce(f64::max)?;
-        let span = (max - min).max(1e-9);
-        Some(
-            f32::from(bounds.origin.y)
-                + f32::from(bounds.size.height) * (1. - ((price - min) / span) as f32),
-        )
+        crate::chart_canvas::price_to_y(price, bounds, slice)
     }
 
     /// Mouse-down on the chart. Returns `true` when the workbench consumed it (order-line grab,
@@ -211,13 +209,14 @@ impl CenterWorkspacePanel {
     pub(crate) fn workbench_chart_down(
         &mut self,
         position: gpui_kit::Point<gpui_kit::Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((index, price_f)) = self.training_pointer_bar_price(position) else {
             return false;
         };
         let (run_id, open_lines, aggregated, tick, close, default_qty) = {
-            let g = self.state.lock().unwrap();
+            let g = crate::lock_or_recover(&self.state);
             let Some(ws) = g.training.workspace.as_ref() else {
                 return false;
             };
@@ -253,40 +252,88 @@ impl CenterWorkspacePanel {
                 continue;
             };
             if (line_y - pointer_y).abs() <= ORDER_LINE_GRAB_PX {
-                let mut g = self.state.lock().unwrap();
+                let mut g = crate::lock_or_recover(&self.state);
                 if g.training.wb.locked_orders.contains(&order_id) {
                     g.ui_notice = "该挂单已锁定，解锁后才能拖动改价".into();
                 } else {
-                    g.training.wb.dragging_order = Some((order_id, price));
+                    g.training.wb.dragging_order = Some((order_id, price, price));
                 }
                 cx.notify();
                 return true;
             }
         }
-        let price = crate::training_workbench::round_to_tick(
-            Decimal::from_f64(price_f).unwrap_or_default(),
-            tick,
-        );
-        let mut g = self.state.lock().unwrap();
-        let wb = &mut g.training.wb;
-        if wb.tool == WorkbenchTool::None && !wb.draw_order_enabled {
+        let Some(price_dec) = Decimal::from_f64(price_f) else {
             return false;
-        }
-        let outcome = wb.chart_click(index as i64, price, close, default_qty);
-        drop(g);
+        };
+        let price = crate::training_workbench::round_to_tick(price_dec, tick);
+        let outcome = {
+            let mut g = crate::lock_or_recover(&self.state);
+            let wb = &mut g.training.wb;
+            if wb.tool == WorkbenchTool::None && !wb.draw_order_enabled {
+                return false;
+            }
+            wb.chart_click(index as i64, price, close, default_qty)
+        };
         match outcome {
             ChartClickOutcome::SaveDrawing(drawing) => {
-                self.pending_workbench_action =
-                    Some(TrainingUiAction::SaveDrawing { run_id, drawing });
+                // Dispatch immediately on mouse-down so dragging/releasing outside the chart
+                // can never drop a completed drawing (`UI-B07`).
+                self.dispatch_training(
+                    Ok(TrainingUiAction::SaveDrawing { run_id, drawing }),
+                    window,
+                    cx,
+                );
             }
             ChartClickOutcome::DraftOpened => {
-                self.state.lock().unwrap().ui_notice =
+                crate::lock_or_recover(&self.state).ui_notice =
                     "已生成下单草稿：选择方向后点“确认下单”或按 Ctrl+Enter；Esc 取消".into();
             }
             _ => {}
         }
         cx.notify();
         true
+    }
+
+    /// Updates live preview position while dragging an unlocked order line (`UI-B07`).
+    pub(crate) fn workbench_chart_drag_move(
+        &mut self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, price_f)) = self.training_pointer_bar_price(position) else {
+            return;
+        };
+        let Some(price_dec) = Decimal::from_f64(price_f) else {
+            return;
+        };
+        let mut g = crate::lock_or_recover(&self.state);
+        let Some(tick) = g.training.workspace.as_ref().map(|ws| ws.account.tick_size) else {
+            return;
+        };
+        let preview = crate::training_workbench::round_to_tick(price_dec, tick);
+        if preview <= Decimal::ZERO {
+            return;
+        }
+        if let Some((_, _, cur_preview)) = g.training.wb.dragging_order.as_mut() {
+            if *cur_preview != preview {
+                *cur_preview = preview;
+                drop(g);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Cancels an active order-line drag if the pointer is released outside the chart (`UI-B07`).
+    pub(crate) fn workbench_chart_cancel_drag(&mut self, cx: &mut Context<Self>) {
+        if crate::lock_or_recover(&self.state)
+            .training
+            .wb
+            .dragging_order
+            .take()
+            .is_some()
+        {
+            cx.notify();
+        }
     }
 
     /// Mouse-up on the chart: finishes an order-line drag (a modify request, never a fill).
@@ -296,32 +343,42 @@ impl CenterWorkspacePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(action) = self.pending_workbench_action.take() {
-            self.dispatch_training(Ok(action), window, cx);
-            return;
-        }
-        let Some((order_id, old_price)) =
-            self.state.lock().unwrap().training.wb.dragging_order.take()
+        let Some((order_id, old_price, _preview)) = crate::lock_or_recover(&self.state)
+            .training
+            .wb
+            .dragging_order
+            .take()
         else {
             return;
         };
         let Some((_, price_f)) = self.training_pointer_bar_price(position) else {
+            cx.notify();
+            return;
+        };
+        let Some(new_price_dec) = Decimal::from_f64(price_f) else {
+            cx.notify();
             return;
         };
         let request = {
-            let g = self.state.lock().unwrap();
+            let g = crate::lock_or_recover(&self.state);
             let Some(ws) = g.training.workspace.as_ref() else {
+                drop(g);
+                cx.notify();
                 return;
             };
             let Some(order) = ws.open_orders.iter().find(|o| o.order_id == order_id) else {
+                drop(g);
+                cx.notify();
                 return;
             };
             let Some((id, new_price)) = g.training.wb.drag_release(
                 &order_id,
                 old_price,
-                Decimal::from_f64(price_f).unwrap_or_default(),
+                new_price_dec,
                 ws.account.tick_size,
             ) else {
+                drop(g);
+                cx.notify();
                 return;
             };
             let (limit_price, stop_price) = match order.order_type {
@@ -437,10 +494,14 @@ impl CenterWorkspacePanel {
     }
 
     pub(crate) fn toggle_training_play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let idle = self.controller.read(cx).is_idle();
         {
-            let mut g = self.state.lock().unwrap();
+            let mut g = crate::lock_or_recover(&self.state);
             let pb = &mut g.training.wb.playback;
             pb.playing = !pb.playing;
+            if idle {
+                pb.in_flight = false;
+            }
             pb.last_pause_reason = None;
         }
         self.training_play_last = None;
@@ -473,13 +534,20 @@ impl CenterWorkspacePanel {
         // Executor clock: real time in the app, the controllable test clock in tests.
         let now = cx.background_executor().now();
         let (playing, interval, run_id, prepare) = {
-            let g = self.state.lock().unwrap();
-            let run_id = g
-                .training
-                .workspace
-                .as_ref()
-                .filter(|ws| ws.run.status == SimRunStatus::Active)
-                .map(|ws| ws.run.run_id.clone());
+            let g = crate::lock_or_recover(&self.state);
+            // Playback may only advance bars while the user is actually viewing the training
+            // workspace; navigating away or switching mode pauses playback cleanly (`UI-B02`).
+            let in_workspace = g.layout.active_nav == "nav.training"
+                && g.training.mode == TrainingViewMode::Workspace;
+            let run_id = in_workspace
+                .then(|| {
+                    g.training
+                        .workspace
+                        .as_ref()
+                        .filter(|ws| ws.run.status == SimRunStatus::Active)
+                        .map(|ws| ws.run.run_id.clone())
+                })
+                .flatten();
             (
                 g.training.wb.playback.playing,
                 g.training.wb.playback.interval_ms(),
@@ -495,14 +563,21 @@ impl CenterWorkspacePanel {
                             now.duration_since(last) >= Duration::from_millis(interval)
                         }) =>
                 {
-                    let start = self.state.lock().unwrap().training.wb.playback.tick();
+                    let start = crate::lock_or_recover(&self.state)
+                        .training
+                        .wb
+                        .playback
+                        .tick();
                     if start {
                         self.training_play_last = Some(now);
                         self.dispatch_training(Ok(TrainingUiAction::PlayStep(run_id)), window, cx);
                     }
                 }
                 None => {
-                    self.state.lock().unwrap().training.wb.playback.playing = false;
+                    let mut g = crate::lock_or_recover(&self.state);
+                    g.training.wb.playback.playing = false;
+                    g.training.wb.playback.in_flight = false;
+                    drop(g);
                     cx.notify();
                 }
                 _ => {}
@@ -517,12 +592,12 @@ impl CenterWorkspacePanel {
             self.training_prepare_last = Some(now);
             self.dispatch_training(Ok(TrainingUiAction::PollPrepareJob), window, cx);
         }
-        let g = self.state.lock().unwrap();
+        let g = crate::lock_or_recover(&self.state);
         g.training.wb.playback.playing || g.training.prepare_job.is_some() || !idle
     }
 
     pub(crate) fn render_workbench_toolbar(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         ws: &TrainingWorkspaceSnapshotDto,
         cx: &mut Context<Self>,
@@ -889,10 +964,6 @@ impl CenterWorkspacePanel {
                 "确认放弃本局？本局按当前收盘价结算到练习账户并计入分析。",
                 TrainingUiAction::AbandonRun(run_id.to_string()),
             ),
-            ConfirmKind::FinishRun => (
-                "确认结束训练？",
-                TrainingUiAction::FinishRun(run_id.to_string()),
-            ),
         };
         let action = std::sync::Arc::new(std::sync::Mutex::new(Some(action)));
         Some(
@@ -1006,7 +1077,7 @@ impl CenterWorkspacePanel {
 
     /// Right-column "练习账本": account, position, proportions, quick buttons, open orders, fills.
     pub(crate) fn render_practice_ledger(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         ws: &TrainingWorkspaceSnapshotDto,
         cx: &mut Context<Self>,
@@ -1325,7 +1396,7 @@ impl CenterWorkspacePanel {
 
     /// History / analysis / transfer overlay panel (`S-53`).
     pub(crate) fn render_training_side_panel(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -1620,15 +1691,19 @@ pub(crate) fn aggregated_slice(
 }
 
 /// Info row: crosshair (or latest) bar OHLC and change, plus playback progress (`S-54`).
+/// Uses `display_slice` and `display_tf` so higher-timeframe aggregated views report matching
+/// timeframe and OHLC values (`UI-B14`).
 pub(crate) fn render_info_row(
     ws: &TrainingWorkspaceSnapshotDto,
+    display_slice: &delta_app::KlineWindowSliceDto,
+    display_tf: &str,
     viewport: Option<&delta_app::KlineViewport>,
     cx: &mut Context<CenterWorkspacePanel>,
 ) -> AnyElement {
-    let bars = &ws.chart_slice.bars;
+    let bars = &display_slice.bars;
     let local = viewport
         .and_then(|vp| vp.crosshair_index)
-        .and_then(|g| g.checked_sub(ws.chart_slice.visible_start_index))
+        .and_then(|g| g.checked_sub(display_slice.visible_start_index))
         .filter(|&i| i < bars.len())
         .or_else(|| bars.len().checked_sub(1));
     let ohlc = local
@@ -1658,11 +1733,7 @@ pub(crate) fn render_info_row(
     let remaining = (ws.run.total_steps - ws.run.current_step_index).max(0);
     let text = SharedString::from(format!(
         "{} · {} · 第 {} / {} 根 · 还剩 {} 根 · {ohlc}",
-        ws.run.display_symbol,
-        ws.run.timeframe,
-        ws.run.current_step_index,
-        ws.run.total_steps,
-        remaining
+        ws.run.display_symbol, display_tf, ws.run.current_step_index, ws.run.total_steps, remaining
     ));
     div()
         .id("trn-wb-info-row")
@@ -1682,7 +1753,7 @@ pub(crate) fn render_info_row(
 impl CenterWorkspacePanel {
     /// List-view card: start a default BTC/USDT practice run or prepare the data first (`S-48`).
     pub(crate) fn render_default_btc_start(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {

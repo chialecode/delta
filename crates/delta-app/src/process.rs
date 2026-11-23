@@ -18,7 +18,10 @@ pub struct WindowEvidence {
 }
 
 pub fn observed_window_details() -> Vec<WindowEvidence> {
-    WINDOW_DETAILS.lock().unwrap().clone()
+    WINDOW_DETAILS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 pub fn current_process_priority() -> String {
@@ -209,6 +212,17 @@ impl QuietJobObject {
         child.kill().map_err(|e| e.to_string())?;
         Ok(())
     }
+
+    fn count_visible_windows(&self) -> usize {
+        #[cfg(windows)]
+        {
+            count_visible_windows_for_filter(None, Some(self.handle))
+        }
+        #[cfg(not(windows))]
+        {
+            0
+        }
+    }
 }
 
 impl Drop for QuietJobObject {
@@ -305,21 +319,42 @@ where
         let _ = child.wait();
         return Err(error);
     }
-    use std::io::Read;
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let out_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    const MAX_CAPTURED_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+    fn read_capped<R: std::io::Read>(mut reader: R, limit: usize) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let mut truncated = false;
+        loop {
+            let n = reader.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            if out.len() < limit {
+                let take = (limit - out.len()).min(n);
+                out.extend_from_slice(&chunk[..take]);
+                if take < n {
+                    truncated = true;
+                }
+            } else {
+                truncated = true;
+            }
+        }
+        if truncated {
+            out.extend_from_slice(b"\n...[output truncated at 32 MiB cap]");
+        }
+        Ok(out)
+    }
+
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let out_reader = std::thread::spawn(move || read_capped(stdout, MAX_CAPTURED_OUTPUT_BYTES));
+    let err_reader = std::thread::spawn(move || read_capped(stderr, MAX_CAPTURED_OUTPUT_BYTES));
     let started = std::time::Instant::now();
     let mut timed_out = false;
     let status = loop {
-        let visible = count_visible_windows_for_current_process();
+        // Inspect only windows created inside `child_job`, never the parent desktop app's own
+        // main window or unrelated process-wide high-water marks (`APP-B06`).
+        let visible = child_job.count_visible_windows();
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
         }
@@ -459,6 +494,195 @@ where
     }
 }
 
+/// Whether the process `process_id` (or this process for `None`) belongs to any job object.
+pub fn process_in_job(process_id: Option<u32>) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let (process, owned) = match process_id {
+            None => (GetCurrentProcess(), false),
+            Some(pid) => (OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid), true),
+        };
+        if process.is_null() {
+            return false;
+        }
+        let mut in_job = 0;
+        let ok = IsProcessInJob(process, std::ptr::null_mut(), &mut in_job) != 0;
+        if owned {
+            CloseHandle(process);
+        }
+        ok && in_job != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = process_id;
+        false
+    }
+}
+
+/// Whether `process_id` belongs to this process's own [`QuietJobObject`] (`ACTIVE_JOB`).
+///
+/// Use this instead of `process_in_job(Some(pid))` after launching via the desktop shell:
+/// `delta-desktop` creates and assigns itself to its own `QuietJobObject` at startup, and
+/// Windows 10/11 PCA/Shell routinely places GUI apps started via `ShellExecute` into a system
+/// job, so checking against `NULL` ("any job") falsely reports `true` even though the app is
+/// `explorer.exe`'s child and completely outside the caller's job.
+pub fn process_in_active_job(process_id: u32) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let job = ACTIVE_JOB.load(Ordering::SeqCst);
+        if job.is_null() {
+            return false;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);
+        if process.is_null() {
+            return false;
+        }
+        let mut in_job = 0;
+        let ok = IsProcessInJob(process, job, &mut in_job) != 0;
+        CloseHandle(process);
+        ok && in_job != 0
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = process_id;
+        false
+    }
+}
+
+/// Asks the desktop shell (`explorer.exe`, `Shell.Application` of the desktop window) to start
+/// `program` with the `ShowWindow` command `show`, then waits up to 15 s for the new process of
+/// that executable whose parent is not the same executable and returns its id. The program is
+/// explorer's child, so it is in no job of the caller even when that job forbids breaking away
+/// and ends its processes on close (an agent's command sandbox). It gets the shell's
+/// environment, not the caller's. A missing `program` is refused before the shell is asked,
+/// because the shell would show a modal error.
+pub fn spawn_via_desktop_shell<I, S>(program: &Path, args: I, show: i32) -> Result<u32, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    if !cfg!(windows) {
+        return Err("starting through the desktop shell is Windows only".into());
+    }
+    if !program.is_file() {
+        return Err(format!("{} does not exist", program.display()));
+    }
+    let directory = program.parent().unwrap_or(Path::new("."));
+    let params: Vec<String> = args
+        .into_iter()
+        .map(|a| quote_windows_arg(&a.as_ref().to_string_lossy()))
+        .collect();
+    let mut env = BTreeMap::new();
+    env.insert(
+        "DELTA_LAUNCH_EXE".to_string(),
+        program.display().to_string(),
+    );
+    env.insert("DELTA_LAUNCH_ARGS".to_string(), params.join(" "));
+    env.insert(
+        "DELTA_LAUNCH_DIR".to_string(),
+        directory.display().to_string(),
+    );
+    env.insert("DELTA_LAUNCH_SHOW".to_string(), show.to_string());
+    let result = run_quiet_command_with_timeout(
+        OsStr::new("powershell.exe"),
+        [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Sta",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            DESKTOP_SHELL_LAUNCH_SCRIPT,
+        ],
+        Some(directory),
+        &env,
+        std::time::Duration::from_secs(45),
+    )?;
+    if result.timed_out || result.status_code != Some(0) {
+        return Err(format!(
+            "desktop shell launch failed (exit {:?}, timed out {}): {}",
+            result.status_code,
+            result.timed_out,
+            result.stderr.trim()
+        ));
+    }
+    result
+        .stdout
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| {
+            format!(
+                "desktop shell launch printed no process id: {:?}",
+                result.stdout.trim()
+            )
+        })
+}
+
+const DESKTOP_SHELL_LAUNCH_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+$exe = $env:DELTA_LAUNCH_EXE; $argLine = $env:DELTA_LAUNCH_ARGS; $dir = $env:DELTA_LAUNCH_DIR; $show = [int]$env:DELTA_LAUNCH_SHOW
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { exit 2 }
+$name = [IO.Path]::GetFileName($exe).Replace("'", "''")
+function Get-Same { @(Get-CimInstance Win32_Process -Filter "Name='$name'" | Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath, $exe, [StringComparison]::OrdinalIgnoreCase) }) }
+$before = @{}; foreach ($p in Get-Same) { $before[[int]$p.ProcessId] = $true }
+$exp = @{}; foreach ($p in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")) { $exp[[int]$p.ProcessId] = $true }
+$f = [Reflection.BindingFlags]; $m = [Reflection.Missing]::Value
+$t = [Type]::GetTypeFromCLSID([Guid]'9BA05972-F6A8-11CF-A442-00A0C90A8F39')
+$sw = [Activator]::CreateInstance($t)
+$d = $t.InvokeMember('FindWindowSW', $f::InvokeMethod, $null, $sw, @($m, $m, 8, 0, 1))
+if ($null -eq $d) { exit 3 }
+$doc = $d.GetType().InvokeMember('Document', $f::GetProperty, $null, $d, $null)
+$app = $doc.GetType().InvokeMember('Application', $f::GetProperty, $null, $doc, $null)
+[void]$app.GetType().InvokeMember('ShellExecute', $f::InvokeMethod, $null, $app, @($exe, $argLine, $dir, 'open', $show))
+$deadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $deadline) {
+  $now = Get-Same; $ids = @{}; foreach ($p in $now) { $ids[[int]$p.ProcessId] = $true }
+  $cand = @($now | Where-Object { -not $before.ContainsKey([int]$_.ProcessId) -and -not $ids.ContainsKey([int]$_.ParentProcessId) })
+  $root = @($cand | Where-Object { $exp.ContainsKey([int]$_.ParentProcessId) }) | Select-Object -First 1
+  if (-not $root) { $root = $cand | Select-Object -First 1 }
+  if ($root) { [Console]::Out.Write([int]$root.ProcessId); exit 0 }
+  Start-Sleep -Milliseconds 200
+}
+exit 4"#;
+
+/// Quotes one argument for a Windows command line (`CommandLineToArgvW` rules).
+fn quote_windows_arg(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|c| c.is_whitespace() || c == '"') {
+        return arg.to_string();
+    }
+    let mut out = String::from("\"");
+    let mut slashes = 0usize;
+    for c in arg.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(slashes * 2 + 1));
+                out.push('"');
+                slashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(slashes));
+                out.push(c);
+                slashes = 0;
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(slashes * 2));
+    out.push('"');
+    out
+}
+
 /// `CreateProcessW` is called with handle inheritance enabled, so a detached process would
 /// also inherit this process's own inheritable stdio handles (for example the pipe a gate or
 /// `delta-cli install-dev | tee` reads). The reader would then wait for EOF until the detached
@@ -468,13 +692,15 @@ fn stop_inheriting_own_stdio() {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+        use windows_sys::Win32::Foundation::{
+            SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+        };
         for handle in [
             std::io::stdin().as_raw_handle(),
             std::io::stdout().as_raw_handle(),
             std::io::stderr().as_raw_handle(),
         ] {
-            if !handle.is_null() {
+            if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
                 // Failure (no handle, or a console handle) leaves the previous behaviour.
                 unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
             }
@@ -537,19 +763,20 @@ pub fn window_is_perceivable(handle: isize) -> bool {
     }
 }
 
-/// Window sentinel (`EnumWindows` + `window_is_perceivable` + `GetWindowThreadProcessId`)
-/// that counts visible top-level windows belonging to the current process (`D-25` / S-10).
-pub fn count_visible_windows_for_current_process() -> usize {
-    #[cfg(windows)]
+#[cfg(windows)]
+fn count_visible_windows_for_filter(
+    target_pid: Option<u32>,
+    target_job: Option<windows_sys::Win32::Foundation::HANDLE>,
+) -> usize {
     unsafe {
         use windows_sys::Win32::Foundation::{HWND, LPARAM};
-        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             EnumWindows, GetWindowTextW, GetWindowThreadProcessId,
         };
 
         struct CallbackCtx {
-            target_pid: u32,
+            target_pid: Option<u32>,
+            target_job: windows_sys::Win32::Foundation::HANDLE,
             count: AtomicUsize,
         }
 
@@ -558,9 +785,8 @@ pub fn count_visible_windows_for_current_process() -> usize {
             if window_is_perceivable(hwnd as isize) {
                 let mut pid: u32 = 0;
                 GetWindowThreadProcessId(hwnd, &mut pid);
-                let mut belongs = pid == ctx.target_pid;
-                let job = ACTIVE_JOB.load(Ordering::SeqCst);
-                if !job.is_null() {
+                let mut belongs = ctx.target_pid.is_some_and(|target| pid == target);
+                if !ctx.target_job.is_null() {
                     use windows_sys::Win32::System::JobObjects::IsProcessInJob;
                     use windows_sys::Win32::System::Threading::{
                         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -568,7 +794,7 @@ pub fn count_visible_windows_for_current_process() -> usize {
                     let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
                     if !process.is_null() {
                         let mut in_job = 0;
-                        if IsProcessInJob(process, job, &mut in_job) != 0 {
+                        if IsProcessInJob(process, ctx.target_job, &mut in_job) != 0 {
                             belongs |= in_job != 0;
                         }
                         windows_sys::Win32::Foundation::CloseHandle(process);
@@ -581,7 +807,10 @@ pub fn count_visible_windows_for_current_process() -> usize {
                         as usize;
                     let title =
                         sanitize_terminal_output(&String::from_utf16_lossy(&title[..length]));
-                    let mut details = WINDOW_DETAILS.lock().unwrap();
+                    // Never unwind across the Win32 `extern "system"` callback boundary (`XCR-U04`).
+                    let mut details = WINDOW_DETAILS
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if !details
                         .iter()
                         .any(|w| w.process_id == pid && w.title == title)
@@ -597,12 +826,25 @@ pub fn count_visible_windows_for_current_process() -> usize {
         }
 
         let ctx = CallbackCtx {
-            target_pid: GetCurrentProcessId(),
+            target_pid,
+            target_job: target_job.unwrap_or(std::ptr::null_mut()),
             count: AtomicUsize::new(0),
         };
         let _ = EnumWindows(Some(enum_proc), &ctx as *const CallbackCtx as LPARAM);
         let observed = ctx.count.load(Ordering::Relaxed);
         OBSERVED_WINDOWS.fetch_max(observed, Ordering::SeqCst);
+        observed
+    }
+}
+
+/// Window sentinel (`EnumWindows` + `window_is_perceivable` + `GetWindowThreadProcessId`)
+/// that counts visible top-level windows belonging to the current process (`D-25` / S-10).
+pub fn count_visible_windows_for_current_process() -> usize {
+    #[cfg(windows)]
+    {
+        let job = ACTIVE_JOB.load(Ordering::SeqCst);
+        let pid = unsafe { windows_sys::Win32::System::Threading::GetCurrentProcessId() };
+        let _ = count_visible_windows_for_filter(Some(pid), (!job.is_null()).then_some(job));
         OBSERVED_WINDOWS.load(Ordering::SeqCst)
     }
     #[cfg(not(windows))]
@@ -615,6 +857,55 @@ pub fn count_visible_windows_for_current_process() -> usize {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn desktop_shell_arguments_follow_command_line_quoting() {
+        assert_eq!(quote_windows_arg("--background"), "--background");
+        assert_eq!(quote_windows_arg(""), "\"\"");
+        assert_eq!(
+            quote_windows_arg(r"Programs\DELTA Dev\delta.exe"),
+            r#""Programs\DELTA Dev\delta.exe""#
+        );
+        assert_eq!(quote_windows_arg(r#"a"b"#), r#""a\"b""#);
+        assert_eq!(quote_windows_arg(r"dir\ x\\"), r#""dir\ x\\\\""#);
+    }
+
+    #[test]
+    fn desktop_shell_launch_refuses_a_missing_program_without_asking_the_shell() {
+        let missing = std::env::temp_dir().join("delta-missing-program-for-shell-launch.exe");
+        let error = spawn_via_desktop_shell(&missing, ["--background"], 7).unwrap_err();
+        assert!(error.contains("does not exist"), "{error}");
+    }
+
+    #[test]
+    fn process_in_active_job_returns_false_for_unrelated_process() {
+        // Without an active job (or for a process outside `ACTIVE_JOB`), the check must not
+        // falsely claim the target belongs to our job.
+        assert!(!process_in_active_job(0));
+        let pid = std::process::id();
+        if ACTIVE_JOB.load(Ordering::SeqCst).is_null() {
+            assert!(!process_in_active_job(pid));
+        }
+    }
+
+    /// Opt-in (`DELTA_RUN_SHELL_LAUNCH_TEST=1`, it starts a real process through explorer):
+    /// a hidden `ping` started through the desktop shell is in no job. Run it inside a job
+    /// that forbids breaking away and ends its processes on close to check the escape.
+    #[test]
+    fn desktop_shell_launch_starts_the_program_outside_every_job() {
+        if std::env::var("DELTA_RUN_SHELL_LAUNCH_TEST").as_deref() != Ok("1") {
+            return;
+        }
+        let ping = std::env::var_os("SystemRoot")
+            .map(|root| Path::new(&root).join("System32").join("PING.EXE"))
+            .expect("SystemRoot");
+        let pid = spawn_via_desktop_shell(&ping, ["-n", "4", "127.0.0.1"], 0).unwrap();
+        assert!(!process_in_job(Some(pid)), "process {pid} is in a job");
+        assert!(
+            !process_in_active_job(pid),
+            "process {pid} is in ACTIVE_JOB"
+        );
+    }
 
     /// Child half of the test below: launch a detached sleeper and return immediately.
     fn launch_detached_sleeper() {

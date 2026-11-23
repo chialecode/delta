@@ -46,7 +46,7 @@ B 交付前核实所有包：代码存在、完整流程和关键失败可运行
 
 <a id="gate-tiers"></a>**两级门禁（2026-11-14 用户决定）。** 整套 `verify-stage` 只在 B 把整个阶段交给 A 时跑一次；阶段内的修改、A 审查的修复、返工、按反馈的修复与阶段内追加，都只跑约 5 分钟内的 `python scripts/quick_gate.py`，不为这些再跑整套门禁（[质量门禁](quality-gates.md#gate-tiers)）。
 
-<a id="dev-install-at-handoff"></a>**需要人工检查时自动安装开发版（2026-11-13 用户要求，11-14 纠正）。** 每次下一步需要用户人工检查时（B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查；不是某个工作包或小功能做完时），交接的 Agent 先执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（运行中的先保存退出再重开，从不碰正式版），版本与 `source_fingerprint` 写进交接说明与报告；本机没装 `delta-dev` 时如实记录跳过。不让用户自己打包或安装；只为自动验证的打包与门禁都不安装。
+<a id="dev-install-at-handoff"></a>**需要人工检查时自动安装开发版（2026-11-13 用户要求，11-14 纠正，11-22 托盘一致化）。** 每次下一步需要用户人工检查时（B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查；不是某个工作包或小功能做完时），交接的 Agent 先执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（运行中的先保存退出；装完不论原来是否在运行或窗口是否打开都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点，D-36 / D-37；从不碰正式版；回执 `in_job: true` 时请用户从开始菜单打开一次），版本与 `source_fingerprint` 写进交接说明与报告；本机还没装 `delta-dev` 时直接首次安装，同样仅常驻托盘启动；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变（先跑 `package-build` 生成新版本）。不让用户自己打包或安装；只为自动验证的打包与门禁都不安装。
 
 A 检查实现时核对被测源码指纹（`git rev-parse HEAD` 与工作树状态）：源码未变且证据充分的检查直接复用，重点复验高风险金融不变量与本轮改动；局部确定问题由 A 直接修复并复验，跨模块编码缺口使用一次完整 `F-xx` 清单交回。工程自检、A 技术审核、产品验收分别判断。
 

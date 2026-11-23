@@ -5,20 +5,20 @@
 //! recovery and atomic commit path as the M4 commands.
 
 use chrono::Utc;
-use delta_core::{to_canonical_text, SimCommand, SimEvent, SimState, SIM_ENGINE_VERSION_M5};
+use delta_core::{to_canonical_text, SimCommand, SimReplayer, SimState, SIM_ENGINE_VERSION_M5};
 use delta_data::{
     PracticeAccountEntryRecord, PracticeAccountRecord, PracticeEntryKind, SimCheckpointReason,
-    SimCheckpointRecord, SimRunStatus, SimulationStepCommit, TrainingDrawingRecord,
-    TrainingSessionRecord,
+    SimCheckpointRecord, SimRunStatus, SimulationRecoveryBundle, SimulationStepCommit,
+    TrainingDrawingRecord, TrainingSessionRecord,
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::service::{AppService, ErrorEnvelope};
 use crate::training::{
-    is_run_identity_masked, map_sim_err, map_storage_err, scrub_sim_event, sim_fill_to_record,
-    sim_order_to_record, CreateTrainingRunRequest, TrainingMarketCategory, TrainingRunSummaryDto,
-    TrainingStepReceiptDto,
+    changed_orders, is_run_identity_masked, map_sim_err, map_sim_err_scrubbed, map_storage_err,
+    sim_fill_to_record, sim_order_to_record, CreateTrainingRunRequest, TrainingMarketCategory,
+    TrainingRunSummaryDto, TrainingStepReceiptDto,
 };
 
 /// Opening deposit of a newly created practice account (`S-52`).
@@ -333,13 +333,14 @@ impl AppService {
         run_id: &str,
         req: ModifyTrainingOrderRequest,
     ) -> Result<TrainingStepReceiptDto, ErrorEnvelope> {
+        let (bundle, state, replayer) = self.verify_and_recover_sim_state_with_replayer(run_id)?;
         let cmd = SimCommand::ModifyOrder {
             order_id: req.order_id,
             quantity: req.quantity,
             limit_price: req.limit_price,
             stop_price: req.stop_price,
         };
-        self.commit_m5_command(run_id, cmd, "modify_order")
+        self.commit_m5_command_with(run_id, bundle, state, replayer, cmd, "modify_order")
     }
 
     /// Undo the latest submit / quick fill / modify / cancel of the current bar. Never crosses a
@@ -348,7 +349,7 @@ impl AppService {
         &mut self,
         run_id: &str,
     ) -> Result<TrainingStepReceiptDto, ErrorEnvelope> {
-        let (bundle, _) = self.verify_and_recover_sim_state(run_id)?;
+        let (bundle, state, replayer) = self.verify_and_recover_sim_state_with_replayer(run_id)?;
         if bundle.run.engine_version != SIM_ENGINE_VERSION_M5 {
             return Err(practice_err(
                 "ENGINE_FEATURE_UNAVAILABLE",
@@ -358,27 +359,33 @@ impl AppService {
                 ),
             ));
         }
-        let (_, _, replayer) = self
-            .compute_recovery_full(&bundle)
-            .map_err(|f| f.into_envelope("RUN_DAMAGED"))?;
         let Some((target_seq, _)) = replayer.undo_target() else {
             return Err(practice_err(
                 "UNDO_UNAVAILABLE",
                 "本根 K 线内没有可撤销的操作（撤销不会越过已推进的 K 线）",
             ));
         };
-        self.commit_m5_command(run_id, SimCommand::UndoLast { target_seq }, "undo_last")
+        self.commit_m5_command_with(
+            run_id,
+            bundle,
+            state,
+            replayer,
+            SimCommand::UndoLast { target_seq },
+            "undo_last",
+        )
     }
 
-    /// Commit a non-advancing m5 command through the undo replayer; the order/fill projection is
-    /// rebuilt from the resulting state in the same savepoint as the event.
-    fn commit_m5_command(
+    /// Commit a non-advancing m5 command through the already-recovered undo replayer (`TRN-Q01`);
+    /// the order/fill projection is rebuilt from the resulting state in the same savepoint as the event.
+    fn commit_m5_command_with(
         &mut self,
         run_id: &str,
+        bundle: SimulationRecoveryBundle,
+        state: SimState,
+        mut replayer: SimReplayer,
         cmd: SimCommand,
         event_kind: &str,
     ) -> Result<TrainingStepReceiptDto, ErrorEnvelope> {
-        let (bundle, state) = self.verify_and_recover_sim_state(run_id)?;
         if bundle.run.engine_version != SIM_ENGINE_VERSION_M5 {
             return Err(practice_err(
                 "ENGINE_FEATURE_UNAVAILABLE",
@@ -401,15 +408,13 @@ impl AppService {
             .session
             .clone()
             .ok_or_else(|| practice_err("SESSION_NOT_FOUND", "missing training_session"))?;
-        let (_, _, mut replayer) = self
-            .compute_recovery_full(&bundle)
-            .map_err(|f| f.into_envelope("RUN_DAMAGED"))?;
+        let masked = is_run_identity_masked(&bundle.run, &session);
         let new_seq = bundle.run.latest_seq + 1;
         let cmd_json = serde_json::to_string(&cmd)
             .map_err(|e| practice_err("SERIALIZE_FAILED", e.to_string()))?;
         let (next_state, events) = replayer
             .apply(&state, new_seq as u64, cmd, None)
-            .map_err(map_sim_err)?;
+            .map_err(|err| map_sim_err_scrubbed(err, masked, &session.real_instrument_id))?;
         let new_state_hash = next_state.state_hash();
         let now = Utc::now();
         let step_commit = SimulationStepCommit {
@@ -447,13 +452,7 @@ impl AppService {
                 .replace_run_projection(run_id, &orders, &fills)
                 .map_err(|e| map_storage_err("STEP_COMMIT_FAILED", e))
         })?;
-        self.receipt_for(
-            run_id,
-            &bundle.run.quote_currency,
-            new_seq,
-            new_state_hash,
-            &events,
-        )
+        self.build_step_receipt(run_id, new_seq, new_state_hash, &events)
     }
 
     pub(crate) fn with_savepoint<T>(
@@ -477,39 +476,6 @@ impl AppService {
             .execute_batch(&sql)
             .map_err(|e| practice_err(code, e.to_string()))?;
         out
-    }
-
-    fn receipt_for(
-        &mut self,
-        run_id: &str,
-        quote_currency: &str,
-        seq: i64,
-        state_hash: String,
-        events: &[SimEvent],
-    ) -> Result<TrainingStepReceiptDto, ErrorEnvelope> {
-        let run = self
-            .store()
-            .get_simulation_run(run_id)
-            .map_err(|e| map_storage_err("RUN_NOT_FOUND", e))?;
-        let session = self
-            .store()
-            .get_training_session(run_id)
-            .map_err(|e| map_storage_err("SESSION_NOT_FOUND", e))?;
-        let masked = is_run_identity_masked(&run, &session);
-        let (close_to_idx, date_to_idx) = self.load_visible_index_maps(run_id)?;
-        let events = events
-            .iter()
-            .map(|ev| scrub_sim_event(ev, masked, quote_currency, &close_to_idx, &date_to_idx))
-            .collect();
-        let summary = self.build_training_run_summary_dto(&run, &session)?;
-        Ok(TrainingStepReceiptDto {
-            run: summary,
-            seq,
-            state_hash,
-            events,
-            split_cancelled_order_ids: Vec::new(),
-            corporate_action_notices: Vec::new(),
-        })
     }
 
     // ------------------------------------------------------------------
@@ -572,16 +538,11 @@ impl AppService {
                 .map_err(|e| map_storage_err("ABANDON_FAILED", e))?;
             svc.settle_practice_run(run_id, &session, equity, "放弃本局结算")
         })?;
-        self.receipt_for(
-            run_id,
-            &bundle.run.quote_currency,
-            new_seq,
-            new_state_hash,
-            &events,
-        )
+        self.build_step_receipt(run_id, new_seq, new_state_hash, &events)
     }
 
-    /// "Restart" = abandon this run and start a new one with the same settings (`S-52`).
+    /// "Restart" = abandon this run and start a new one with the same settings (`S-52`),
+    /// wrapped in a single savepoint so a failed creation leaves the original run intact (`TRN-B12`).
     pub fn restart_training_run(
         &mut self,
         run_id: &str,
@@ -617,10 +578,13 @@ impl AppService {
             use_practice_account: session.practice_account_id.is_some(),
             allocation: None,
         };
-        if !run.status.is_ended() {
-            self.abandon_training_run(run_id)?;
-        }
-        self.create_training_run(req)
+        let needs_abandon = !run.status.is_ended();
+        self.with_savepoint("restart_training_run", "RESTART_TRAINING_FAILED", |svc| {
+            if needs_abandon {
+                svc.abandon_training_run(run_id)?;
+            }
+            svc.create_training_run(req)
+        })
     }
 
     /// Higher-timeframe view built only from the host-truncated visible base bars (`S-50`).
@@ -675,15 +639,34 @@ impl AppService {
     // ------------------------------------------------------------------
 
     pub fn training_history(&self) -> Result<Vec<TrainingHistoryRowDto>, ErrorEnvelope> {
-        let mut runs = self.list_training_runs()?;
-        runs.sort_by(|a, b| {
+        let mut raw_runs: Vec<_> = self
+            .store()
+            .list_simulation_runs()
+            .map_err(|e| map_storage_err("LIST_RUNS_FAILED", e))?
+            .into_iter()
+            .filter(|r| r.kind == "training")
+            .collect();
+        raw_runs.sort_by(|a, b| {
             a.created_at
                 .cmp(&b.created_at)
                 .then(a.run_id.cmp(&b.run_id))
         });
-        let mut out = Vec::with_capacity(runs.len());
-        for (i, run) in runs.into_iter().enumerate() {
-            let report = self.get_training_report(&run.run_id).ok();
+        let mut out = Vec::with_capacity(raw_runs.len());
+        for raw_run in raw_runs {
+            let Ok(session) = self.store().get_training_session(&raw_run.run_id) else {
+                continue;
+            };
+            let report =
+                self.read_verified_sim_state(&raw_run.run_id)
+                    .ok()
+                    .and_then(|(bundle, state)| {
+                        self.evaluate_report_for_state(&bundle.run, &session, state)
+                            .ok()
+                    });
+            let run = match &report {
+                Some(rep) => rep.run.clone(),
+                None => self.build_training_run_summary_dto(&raw_run, &session)?,
+            };
             let funding_label = match &run.practice_account_id {
                 Some(id) => format!("练习账户 {}", id.trim_start_matches("PRACTICE:")),
                 None if run.engine_version == delta_core::SIM_ENGINE_VERSION => {
@@ -691,8 +674,9 @@ impl AppService {
                 }
                 None => "独立资金".to_string(),
             };
+            let index = out.len() + 1;
             out.push(TrainingHistoryRowDto {
-                index: i + 1,
+                index,
                 status: run.status,
                 market_category: run.market_category.clone(),
                 timeframe: run.timeframe.clone(),
@@ -739,12 +723,22 @@ impl AppService {
             .store()
             .list_practice_entries(&acc.id)
             .map_err(|e| map_storage_err("PRACTICE_ACCOUNT_FAILED", e))?;
+        let raw_runs = self
+            .store()
+            .list_simulation_runs()
+            .map_err(|e| map_storage_err("LIST_RUNS_FAILED", e))?;
         let mut runs = Vec::new();
-        for summary in self.list_training_runs()? {
-            if summary.practice_account_id.as_deref() != Some(acc.id.as_str()) {
+        for raw_run in raw_runs {
+            if raw_run.kind != "training" {
                 continue;
             }
-            let rid = summary.run_id.as_str();
+            let Ok(session) = self.store().get_training_session(&raw_run.run_id) else {
+                continue;
+            };
+            if session.practice_account_id.as_deref() != Some(acc.id.as_str()) {
+                continue;
+            }
+            let rid = raw_run.run_id.as_str();
             let allocation = -entries
                 .iter()
                 .filter(|e| {
@@ -758,20 +752,24 @@ impl AppService {
                     e.run_id.as_deref() == Some(rid) && e.kind == PracticeEntryKind::RunSettlement
                 })
                 .map(|e| e.amount);
-            let (_, state) = self.read_verified_sim_state(rid)?;
-            let report = self.get_training_report(rid)?.report;
+            let (bundle, state) = self.read_verified_sim_state(rid)?;
+            let mark_equity = state.total_equity_at_last_close();
+            let undo_count = state.undo_count;
+            let report = self
+                .evaluate_report_for_state(&bundle.run, &session, state)?
+                .report;
             runs.push(delta_core::AccountRunInput {
-                run_id: summary.run_id.clone(),
-                market_category: summary.market_category.clone(),
-                timeframe: summary.timeframe.clone(),
+                run_id: raw_run.run_id.clone(),
+                market_category: session.market_category.clone(),
+                timeframe: session.timeframe.clone(),
                 allocation,
                 settlement,
-                mark_equity: state.total_equity_at_last_close(),
+                mark_equity,
                 closed_groups: report.closed_trade_groups.clone(),
                 total_fees: report.total_fees_quote,
                 planned_closed_group_count: report.plan_execution.planned_closed_group_count,
                 plan_compliant_count: report.plan_execution.compliant_count,
-                undo_count: state.undo_count,
+                undo_count,
             });
         }
         let inputs: Vec<delta_core::AccountEntryInput> = entries
@@ -1031,19 +1029,6 @@ impl crate::host::AppHost {
     ) -> Result<crate::service::JobId, ErrorEnvelope> {
         self.execute(move |svc| Ok(svc.start_prepare_training_data(request, timeout)))
     }
-}
-
-fn changed_orders(
-    run_id: &str,
-    before: &SimState,
-    after: &SimState,
-) -> Vec<delta_data::SimOrderRecord> {
-    after
-        .orders
-        .iter()
-        .filter(|(oid, o)| before.orders.get(*oid) != Some(*o))
-        .map(|(_, o)| sim_order_to_record(run_id, o))
-        .collect()
 }
 
 fn entries_to_dto(entries: &[PracticeAccountEntryRecord]) -> Vec<PracticeEntryDto> {

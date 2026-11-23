@@ -1,4 +1,5 @@
 use super::*;
+use crate::training::test_support::TestSandbox;
 use chrono::{NaiveDate, TimeZone, Utc};
 use delta_core::{
     parse_decimal_lossless as dec, AdjustmentKind, EconomicEventType, LedgerEventInput,
@@ -8,54 +9,15 @@ use delta_data::{CannedHttpResponse, LoopbackTestServer, StatementPreset};
 use rust_decimal::Decimal;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-static NEXT_SANDBOX_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-struct Sandbox(PathBuf);
+struct Sandbox(PathBuf, TestSandbox);
 impl Sandbox {
     fn new() -> Self {
-        apply_process_quiet_guards();
-        let id = NEXT_SANDBOX_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::var_os("DELTA_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let path = base.join(format!(
-            "delta-regression-{}-{}-{}",
-            std::process::id(),
-            id,
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        let inner = TestSandbox::new("regression");
+        let root = inner.root().to_path_buf();
+        Self(root, inner)
     }
     fn app(&self) -> AppService {
-        let data = self.0.join("data");
-        let docs = self.0.join("docs");
-        AppService::open(
-            ResolvedAppPaths {
-                channel: BuildChannel::Source,
-                data_dir: data,
-                documents_dir: docs.clone(),
-                default_export_dir: docs.join("exports"),
-                default_backup_dir: docs.join("backups"),
-                credential_prefix: "delta-dev".into(),
-            },
-            "USD",
-            "USD",
-            "UTC",
-            true,
-        )
-        .unwrap()
-    }
-}
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        for _ in 0..40 {
-            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        fs::remove_dir_all(&self.0).unwrap();
+        self.1.open_service()
     }
 }
 fn fixture_root() -> PathBuf {
@@ -586,20 +548,18 @@ fn cancelled_sync_publishes_no_version() {
         .wait_job(id, std::time::Duration::from_secs(1))
         .unwrap();
     assert!(matches!(snapshot.state, JobState::TimedOut(_)));
-    // The worker may still be closing its SQLite savepoint. The lock lease outlives AppService.
-    let start = std::time::Instant::now();
-    loop {
-        let count: i64 = app
-            .store()
-            .conn()
-            .query_row("SELECT COUNT(*) FROM dataset_version", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-        if start.elapsed() > std::time::Duration::from_millis(50) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    // Wait for the worker thread to finish rolling back its SQLite savepoint and release its lease.
+    let finished = app
+        .jobs()
+        .wait_finished(id, std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(finished.worker_finished);
+    let count: i64 = app
+        .store()
+        .conn()
+        .query_row("SELECT COUNT(*) FROM dataset_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]

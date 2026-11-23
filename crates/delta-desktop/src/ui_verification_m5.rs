@@ -6,19 +6,19 @@
 
 use std::{
     path::Path,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
 };
 
 use chrono::{NaiveDate, TimeZone as _, Utc};
 use delta_app::{
     count_visible_windows_for_current_process, market_fixture::MarketFixtureServer, AppHost,
-    CreateTrainingRunRequest, ErrorEnvelope, OrderSide, PrepareTrainingDataRequest, SimOrderType,
-    SimRunStatus, TimeInForce, Timeframe, TrainingDrawingDto, TrainingMarketCategory,
-    TrainingOrderRequestDto, TrainingWorkspaceSnapshotDto, BUILTIN_FEE_CRYPTO_RATE_ID,
-    DEFAULT_TRAINING_INSTRUMENT,
+    CreateTrainingRunRequest, ErrorEnvelope, KlineWindowSliceDto, OrderSide,
+    PrepareTrainingDataRequest, SimOrderType, SimRunStatus, TimeInForce, Timeframe,
+    TrainingDrawingDto, TrainingMarketCategory, TrainingOrderRequestDto,
+    TrainingWorkspaceSnapshotDto, BUILTIN_FEE_CRYPTO_RATE_ID, DEFAULT_TRAINING_INSTRUMENT,
 };
-use gpui_kit::component::{v_flex, ActiveTheme as _, Root};
+use gpui_kit::component::{v_flex, ActiveTheme as _};
 use gpui_kit::{
     AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, Window,
 };
@@ -33,16 +33,15 @@ use crate::{
     training_workbench::WorkbenchState,
     training_workbench_ui::workbench_overlay,
     ui_verification::{
-        hidden_options, initialize_native_window, native_window, paint_native_window, percentiles,
-        quiet_window_check, wait_workbench_idle_and_paint,
+        finish_verification, paint_native_window, percentiles, quiet_window_check,
+        run_in_hidden_window, wait_workbench_idle_and_paint,
     },
     workbench::{verification_app_paths, DeltaWorkbench, VerificationDirectory},
     KlineChartView, MarketColorConvention,
 };
 
-/// `M5-K02` budgets: per-step p95 and actual interval p95 at 150 ms/bar.
-pub const M5_K02_STEP_P95_BUDGET_MS: f64 = 100.0;
-pub const M5_K02_INTERVAL_P95_BUDGET_MS: f64 = 200.0;
+/// `M5-K02` budgets: per-step p95 and actual interval p95 at 150 ms/bar (`XCR-01`).
+pub use delta_app::{M5_K02_INTERVAL_P95_BUDGET_MS, M5_K02_STEP_P95_BUDGET_MS};
 const PLAY_INTERVAL_MS: u64 = 150;
 
 fn fixture_end() -> chrono::DateTime<Utc> {
@@ -162,236 +161,238 @@ pub fn run_m5_ui_smoke(cli_data_dir: Option<&Path>) -> Result<M5UiSmokeReport, E
         )?;
         let host_for_ui = host.clone();
         let data_dir = tmp_dir.clone();
-        let output: Arc<Mutex<Option<Result<M5UiSmokeReport, ErrorEnvelope>>>> =
-            Arc::new(Mutex::new(None));
-        let slot = Arc::clone(&output);
-
-        gpui_kit::application()
-            .with_assets(gpui_kit::assets::Assets)
-            .run(move |cx| {
-                gpui_kit::init(cx);
-                crate::theme::apply_delta_theme(cx);
-                let wb = Arc::new(Mutex::new(None));
-                let captured = Arc::clone(&wb);
-                let opened = cx.open_window(hidden_options(), move |window, cx| {
-                    let view = cx.new(|cx| {
-                        DeltaWorkbench::new(
-                            host_for_ui,
-                            data_dir,
-                            NaiveDate::from_ymd_opt(2026, 11, 10).unwrap(),
-                            window,
-                            cx,
-                        )
-                    });
-                    *captured.lock().unwrap() = Some(view.clone());
-                    cx.new(|cx| Root::new(view, window, cx))
-                });
-                let handle = match opened {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *slot.lock().unwrap() = Some(Err(window_err(e)));
-                        cx.quit();
-                        return;
-                    }
+        let rep = run_in_hidden_window(
+            move |window, cx| {
+                DeltaWorkbench::new(
+                    host_for_ui,
+                    data_dir,
+                    NaiveDate::from_ymd_opt(2026, 11, 10).unwrap(),
+                    window,
+                    cx,
+                )
+            },
+            async move |cx, handle, view, hwnd| {
+                let deadline = Instant::now() + Duration::from_secs(90);
+                let paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let dispatch = |cx: &mut gpui_kit::AsyncApp, action: TrainingUiAction| {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |view, cx| {
+                            view.controller.update(cx, |ctl, cx| {
+                                ctl.dispatch(UiAction::Training(Box::new(action)), window, cx)
+                            });
+                        });
+                    })
+                    .map_err(window_err)
                 };
-                let hwnd = match native_window() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *slot.lock().unwrap() = Some(Err(e));
-                        cx.quit();
-                        return;
-                    }
+                let read = |cx: &mut gpui_kit::AsyncApp| {
+                    cx.update_window(handle.into(), |_, _, cx| {
+                        let state = view.read(cx).shared_state().clone();
+                        let training = crate::lock_or_recover(&state).training.clone();
+                        training
+                    })
+                    .map_err(window_err)
                 };
-                cx.spawn(async move |cx| {
-                    let outcome: Result<M5UiSmokeReport, ErrorEnvelope> = async {
-                        initialize_native_window(hwnd)?;
-                        let deadline = Instant::now() + Duration::from_secs(90);
-                        let paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let dispatch = |cx: &mut gpui_kit::AsyncApp, action: TrainingUiAction| {
-                            cx.update_window(handle.into(), |_, window, cx| {
-                                let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                                view.update(cx, |view, cx| {
-                                    view.controller.update(cx, |ctl, cx| {
-                                        ctl.dispatch(
-                                            UiAction::Training(Box::new(action)),
-                                            window,
-                                            cx,
-                                        )
-                                    });
-                                });
-                            })
-                            .map_err(window_err)
-                        };
-                        let read = |cx: &mut gpui_kit::AsyncApp| {
-                            cx.update_window(handle.into(), |_, _, cx| {
-                                let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                                let state = view.read(cx).shared_state().clone();
-                                let g = state.lock().unwrap();
-                                g.training.clone()
-                            })
-                            .map_err(window_err)
-                        };
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                            view.update(cx, |view, cx| {
-                                view.controller
-                                    .update(cx, |ctl, cx| ctl.navigate("nav.training", window, cx))
-                            });
-                        })
-                        .map_err(window_err)?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        dispatch(
-                            cx,
-                            TrainingUiAction::StartDefaultRun {
-                                timeframe: Timeframe::D1,
-                                hidden_mode: true,
-                            },
-                        )?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let t = read(cx)?;
-                        let ws = t.workspace.clone().ok_or_else(|| {
-                            ErrorEnvelope::new("M5_SMOKE_NO_RUN", "默认比特币局没有开出来", false)
-                        })?;
-                        let run_id = ws.run.run_id.clone();
-                        if t.mode != TrainingViewMode::Workspace || ws.run.practice_account_id.is_none()
-                        {
-                            return Err(ErrorEnvelope::new(
-                                "M5_SMOKE_RUN_SHAPE",
-                                "默认局应进入工作台并使用练习账户",
-                                false,
-                            ));
-                        }
-                        // Continuous play through the panel ticker for a few steps.
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                            let center = view.read(cx).center_panel().clone();
-                            center.update(cx, |panel, cx| {
-                                panel.state.lock().unwrap().training.wb.playback.speed_index = 3;
-                                panel.toggle_training_play(window, cx);
-                            });
-                        })
-                        .map_err(window_err)?;
-                        loop {
-                            cx.background_executor().timer(Duration::from_millis(50)).await;
-                            paint_native_window(hwnd)?;
-                            let t = read(cx)?;
-                            let step = t.workspace.as_ref().map_or(0, |w| w.run.current_step_index);
-                            if step >= 5 || !t.wb.playback.playing {
-                                break;
-                            }
-                            if Instant::now() >= deadline {
-                                return Err(ErrorEnvelope::new("M5_SMOKE_TIMEOUT", "连续播放超时", false));
-                            }
-                        }
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let view = wb.lock().unwrap().as_ref().unwrap().clone();
-                            let center = view.read(cx).center_panel().clone();
-                            center.update(cx, |panel, cx| {
-                                if panel.state.lock().unwrap().training.wb.playback.playing {
-                                    panel.toggle_training_play(window, cx);
-                                }
-                            });
-                        })
-                        .map_err(window_err)?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let played = read(cx)?
-                            .workspace
-                            .as_ref()
-                            .map_or(0, |w| w.run.current_step_index);
-
-                        // Quick buy then undo: fill count goes 0 → 1 → 0.
-                        let before = read(cx)?.workspace.unwrap();
-                        let close = before.chart_slice.bars.last().map(|b| b.close).unwrap_or_default();
-                        let qty = crate::training_workbench::floor_to_lot(
-                            Decimal::from(1000) / close,
-                            before.account.lot_size,
-                        );
-                        let fills_before = before.fills.len();
-                        dispatch(cx, TrainingUiAction::QuickTrade { run_id: run_id.clone(), side: OrderSide::Buy, quantity: qty })?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let after_buy = read(cx)?.workspace.unwrap().fills.len();
-                        dispatch(cx, TrainingUiAction::UndoLast(run_id.clone()))?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let after_undo = read(cx)?.workspace.unwrap().fills.len();
-                        let quick_fill_then_undo =
-                            after_buy == fills_before + 1 && after_undo == fills_before;
-
-                        dispatch(
-                            cx,
-                            TrainingUiAction::SaveDrawing {
-                                run_id: run_id.clone(),
-                                drawing: TrainingDrawingDto {
-                                    drawing_id: String::new(),
-                                    kind: "horizontal".into(),
-                                    anchors: vec![(1, close)],
-                                    color: "#f0b90b".into(),
-                                    line_style: "solid".into(),
-                                },
-                            },
-                        )?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let drawings_saved = read(cx)?.wb.drawings.len();
-
-                        dispatch(cx, TrainingUiAction::FinishRun(run_id.clone()))?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        dispatch(cx, TrainingUiAction::RevealRun(run_id.clone()))?;
-                        wait_workbench_idle_and_paint(cx, handle, &wb, hwnd, deadline).await?;
-                        let t = read(cx)?;
-                        let finished_status = t
-                            .report
-                            .as_ref()
-                            .map(|r| format!("{:?}", r.run.status))
-                            .unwrap_or_default();
-                        let revealed_instrument = t
-                            .reveal
-                            .as_ref()
-                            .map(|r| r.real_instrument_id.clone())
-                            .unwrap_or_default();
-                        let chart_paints = PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
-                        quiet_window_check()?;
-                        let ok = played >= 1
-                            && quick_fill_then_undo
-                            && drawings_saved == 1
-                            && chart_paints > 0
-                            && revealed_instrument == DEFAULT_TRAINING_INSTRUMENT;
-                        Ok(M5UiSmokeReport {
-                            status: if ok { "passed" } else { "failed" }.into(),
-                            mode: "m5-native-hidden-window-smoke".into(),
-                            data_source: "loopback market fixture (synthetic, Binance/OKX-shaped); not a live service".into(),
-                            executed_at: Utc::now().to_rfc3339(),
-                            build_profile: if cfg!(debug_assertions) { "dev" } else { "release" }.into(),
-                            native_window_created: true,
-                            visible_windows: count_visible_windows_for_current_process(),
-                            focus_stolen: false,
-                            run_id: run_id.clone(),
-                            timeframe: ws.run.timeframe.clone(),
-                            practice_account: true,
-                            played_steps: played,
-                            quick_fill_then_undo,
-                            drawings_saved,
-                            chart_paints,
-                            finished_status,
-                            revealed_instrument,
-                            elapsed_ms: started.elapsed().as_millis() as u64,
-                            build_info: delta_app::build_info("delta-desktop"),
-                        })
-                    }
-                    .await;
-                    *slot.lock().unwrap() = Some(outcome);
-                    let _ = cx.update_window(handle.into(), |_, window, cx| {
-                        window.remove_window();
-                        cx.quit();
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |view, cx| {
+                        view.controller
+                            .update(cx, |ctl, cx| ctl.navigate("nav.training", window, cx))
                     });
                 })
-                .detach();
-            });
+                .map_err(window_err)?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                dispatch(
+                    cx,
+                    TrainingUiAction::StartDefaultRun {
+                        timeframe: Timeframe::D1,
+                        hidden_mode: true,
+                    },
+                )?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let t = read(cx)?;
+                let ws = t.workspace.clone().ok_or_else(|| {
+                    ErrorEnvelope::new("M5_SMOKE_NO_RUN", "默认比特币局没有开出来", false)
+                })?;
+                let run_id = ws.run.run_id.clone();
+                if t.mode != TrainingViewMode::Workspace || ws.run.practice_account_id.is_none() {
+                    return Err(ErrorEnvelope::new(
+                        "M5_SMOKE_RUN_SHAPE",
+                        "默认局应进入工作台并使用练习账户",
+                        false,
+                    ));
+                }
+                // Continuous play through the panel ticker for a few steps.
+                cx.update_window(handle.into(), |_, window, cx| {
+                    let center = view.read(cx).center_panel().clone();
+                    center.update(cx, |panel, cx| {
+                        crate::lock_or_recover(&panel.state)
+                            .training
+                            .wb
+                            .playback
+                            .speed_index = 3;
+                        panel.toggle_training_play(window, cx);
+                    });
+                })
+                .map_err(window_err)?;
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(50))
+                        .await;
+                    paint_native_window(hwnd)?;
+                    let t = read(cx)?;
+                    let step = t.workspace.as_ref().map_or(0, |w| w.run.current_step_index);
+                    if step >= 5 || !t.wb.playback.playing {
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(ErrorEnvelope::new(
+                            "M5_SMOKE_TIMEOUT",
+                            "连续播放超时",
+                            false,
+                        ));
+                    }
+                }
+                cx.update_window(handle.into(), |_, window, cx| {
+                    let center = view.read(cx).center_panel().clone();
+                    center.update(cx, |panel, cx| {
+                        if crate::lock_or_recover(&panel.state)
+                            .training
+                            .wb
+                            .playback
+                            .playing
+                        {
+                            panel.toggle_training_play(window, cx);
+                        }
+                    });
+                })
+                .map_err(window_err)?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let played = read(cx)?
+                    .workspace
+                    .as_ref()
+                    .map_or(0, |w| w.run.current_step_index);
+
+                // Quick buy then undo: fill count goes 0 → 1 → 0.
+                let before = read(cx)?.workspace.ok_or_else(|| {
+                    ErrorEnvelope::new("M5_SMOKE_NO_RUN", "训练工作台状态丢失", false)
+                })?;
+                let close = before
+                    .chart_slice
+                    .bars
+                    .last()
+                    .map(|b| b.close)
+                    .unwrap_or_default();
+                if close <= Decimal::ZERO {
+                    return Err(ErrorEnvelope::new(
+                        "M5_SMOKE_INVALID_CLOSE",
+                        "缺少正收盘价，无法计算快捷买单数量",
+                        false,
+                    ));
+                }
+                let qty = crate::training_workbench::floor_to_lot(
+                    Decimal::from(1000) / close,
+                    before.account.lot_size,
+                );
+                let fills_before = before.fills.len();
+                dispatch(
+                    cx,
+                    TrainingUiAction::QuickTrade {
+                        run_id: run_id.clone(),
+                        side: OrderSide::Buy,
+                        quantity: qty,
+                    },
+                )?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let after_buy = read(cx)?
+                    .workspace
+                    .ok_or_else(|| {
+                        ErrorEnvelope::new("M5_SMOKE_NO_RUN", "快捷买单后工作台状态丢失", false)
+                    })?
+                    .fills
+                    .len();
+                dispatch(cx, TrainingUiAction::UndoLast(run_id.clone()))?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let after_undo = read(cx)?
+                    .workspace
+                    .ok_or_else(|| {
+                        ErrorEnvelope::new("M5_SMOKE_NO_RUN", "撤销后工作台状态丢失", false)
+                    })?
+                    .fills
+                    .len();
+                let quick_fill_then_undo =
+                    after_buy == fills_before + 1 && after_undo == fills_before;
+
+                dispatch(
+                    cx,
+                    TrainingUiAction::SaveDrawing {
+                        run_id: run_id.clone(),
+                        drawing: TrainingDrawingDto {
+                            drawing_id: String::new(),
+                            kind: "horizontal".into(),
+                            anchors: vec![(1, close)],
+                            color: "#f0b90b".into(),
+                            line_style: "solid".into(),
+                        },
+                    },
+                )?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let drawings_saved = read(cx)?.wb.drawings.len();
+
+                dispatch(cx, TrainingUiAction::FinishRun(run_id.clone()))?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                dispatch(cx, TrainingUiAction::RevealRun(run_id.clone()))?;
+                wait_workbench_idle_and_paint(cx, handle, &view, hwnd, deadline).await?;
+                let t = read(cx)?;
+                let finished_status = t
+                    .report
+                    .as_ref()
+                    .map(|r| format!("{:?}", r.run.status))
+                    .unwrap_or_default();
+                let revealed_instrument = t
+                    .reveal
+                    .as_ref()
+                    .map(|r| r.real_instrument_id.clone())
+                    .unwrap_or_default();
+                let chart_paints = PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
+                quiet_window_check()?;
+                let ok = played >= 1
+                    && quick_fill_then_undo
+                    && drawings_saved == 1
+                    && chart_paints > 0
+                    && revealed_instrument == DEFAULT_TRAINING_INSTRUMENT;
+                Ok(M5UiSmokeReport {
+                    status: if ok { "passed" } else { "failed" }.into(),
+                    mode: "m5-native-hidden-window-smoke".into(),
+                    data_source: "loopback market fixture (synthetic, Binance/OKX-shaped); not a live service".into(),
+                    executed_at: Utc::now().to_rfc3339(),
+                    build_profile: if cfg!(debug_assertions) { "dev" } else { "release" }.into(),
+                    native_window_created: true,
+                    visible_windows: count_visible_windows_for_current_process(),
+                    focus_stolen: false,
+                    run_id: run_id.clone(),
+                    timeframe: ws.run.timeframe.clone(),
+                    practice_account: true,
+                    played_steps: played,
+                    quick_fill_then_undo,
+                    drawings_saved,
+                    chart_paints,
+                    finished_status,
+                    revealed_instrument,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    build_info: delta_app::build_info("delta-desktop"),
+                })
+            },
+            || {
+                Err(ErrorEnvelope::new(
+                    "M5_SMOKE_INTERRUPTED",
+                    "M5 原生窗口验证没有产生结果",
+                    false,
+                ))
+            },
+        );
         let _ = host.shutdown();
         drop(fixture);
-        let taken = output.lock().unwrap().take();
-        let rep = taken.ok_or_else(|| {
-            ErrorEnvelope::new("M5_SMOKE_INTERRUPTED", "M5 原生窗口验证没有产生结果", false)
-        })??;
+        let rep = rep?;
         if rep.status != "passed" {
             return Err(ErrorEnvelope::new(
                 "M5_SMOKE_FAILED",
@@ -401,12 +402,12 @@ pub fn run_m5_ui_smoke(cli_data_dir: Option<&Path>) -> Result<M5UiSmokeReport, E
         }
         Ok(rep)
     })();
-    owned.cleanup()?;
-    inner
+    finish_verification(&owned, inner)
 }
 
 struct M5PlaybackBenchView {
     snapshot: TrainingWorkspaceSnapshotDto,
+    slice: Arc<KlineWindowSliceDto>,
     wb: WorkbenchState,
 }
 
@@ -415,7 +416,7 @@ impl Render for M5PlaybackBenchView {
         let ws = &self.snapshot;
         let chart = KlineChartView::new(
             "m5-k02-bench-chart",
-            ws.chart_slice.clone(),
+            Arc::clone(&self.slice),
             MarketColorConvention::RedUpGreenDown,
         )
         .with_masked_training_labels(ws.run.display_symbol.clone(), ws.bar_labels.clone())
@@ -486,6 +487,13 @@ pub fn run_m5_k02_playback_bench(
             .last()
             .map(|b| b.close)
             .unwrap_or_default();
+        if close <= Decimal::ZERO {
+            return Err(ErrorEnvelope::new(
+                "M5_BENCH_INVALID_CLOSE",
+                "基准首根收盘价无效",
+                false,
+            ));
+        }
         let lot = snap0.account.lot_size;
         // Position + fill marker, then 5 resting order lines far from the market.
         let qty = crate::training_workbench::floor_to_lot(Decimal::from(5_000) / close, lot);
@@ -541,192 +549,174 @@ pub fn run_m5_k02_playback_bench(
         let host_b = host.clone();
         let run_b = run_id.clone();
         let power_b = power_throttling.clone();
-        let output: Arc<Mutex<Option<Result<M5PlaybackBenchReport, ErrorEnvelope>>>> =
-            Arc::new(Mutex::new(None));
-        let slot = Arc::clone(&output);
-
-        gpui_kit::application()
-            .with_assets(gpui_kit::assets::Assets)
-            .run(move |cx| {
-                gpui_kit::init(cx);
-                crate::theme::apply_delta_theme(cx);
-                let captured = Arc::new(Mutex::new(None));
-                let entity_slot = Arc::clone(&captured);
-                let opened = cx.open_window(hidden_options(), move |window, cx| {
-                    let view = cx.new(|_| M5PlaybackBenchView { snapshot: initial, wb: wb0 });
-                    *entity_slot.lock().unwrap() = Some(view.clone());
-                    cx.new(|cx| Root::new(view, window, cx))
-                });
-                let handle = match opened {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *slot.lock().unwrap() = Some(Err(window_err(e)));
-                        cx.quit();
-                        return;
-                    }
-                };
-                let hwnd = match native_window() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        *slot.lock().unwrap() = Some(Err(e));
-                        cx.quit();
-                        return;
-                    }
-                };
-                cx.spawn(async move |cx| {
-                    let outcome: Result<M5PlaybackBenchReport, ErrorEnvelope> = async {
-                        initialize_native_window(hwnd)?;
-                        let view = captured.lock().unwrap().take().unwrap();
-                        cx.update_window(handle.into(), |_, window, _| {
-                            quiet_window_check()?;
-                            window.refresh();
-                            Ok::<(), ErrorEnvelope>(())
-                        })
-                        .map_err(window_err)??;
-                        paint_native_window(hwnd)?;
-                        let mut step_us = Vec::with_capacity(MEASURED);
-                        let mut interval_us = Vec::with_capacity(MEASURED);
-                        let mut paint_start = 0;
-                        let mut last_start: Option<Instant> = None;
-                        let mut stats = (0usize, 0usize, 0usize, 0usize);
-                        let mut phases: [Vec<u64>; 5] = Default::default();
-                        for step in 1..=(WARMUP + MEASURED) {
-                            if let Some(prev) = last_start {
-                                let due = prev + Duration::from_millis(PLAY_INTERVAL_MS);
-                                let now = Instant::now();
-                                if due > now {
-                                    cx.background_executor().timer(due - now).await;
-                                }
-                            }
-                            if step == WARMUP + 1 {
-                                paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
-                            }
-                            let t0 = Instant::now();
-                            let receipt = host_b.advance_training_bar(&run_b)?;
-                            let t_adv = Instant::now();
-                            if receipt.run.status != SimRunStatus::Active {
-                                return Err(ErrorEnvelope::new("M5_BENCH_RUN_ENDED", "基准局提前结束", false));
-                            }
-                            let total = receipt.run.visible_bar_count;
-                            let mut vp = vp.clone();
-                            vp.total_bars = total;
-                            vp.visible_start = total.saturating_sub(VISIBLE);
-                            vp.visible_end = total;
-                            let snap = host_b.get_training_workspace_snapshot(&run_b, Some(vp), 1200)?;
-                            let t_snap = Instant::now();
-                            let drawings = host_b.list_training_drawings(&run_b)?;
-                            let t_draw = Instant::now();
-                            let _account = host_b.show_practice_account(&snap.run.quote_currency)?;
-                            let t_acc = Instant::now();
-                            stats = (
-                                snap.chart_slice.bars.len(),
-                                drawings.len(),
-                                snap.open_orders.len(),
-                                snap.fills.len(),
-                            );
-                            cx.update_window(handle.into(), |_, window, cx| {
-                                view.update(cx, |v, cx| {
-                                    v.snapshot = snap;
-                                    v.wb.drawings = drawings;
-                                    cx.notify();
-                                });
-                                window.refresh();
-                            })
-                            .map_err(window_err)?;
-                            paint_native_window(hwnd)?;
-                            let elapsed = t0.elapsed().as_micros() as u64;
-                            if step > WARMUP {
-                                let us = |a: Instant, b: Instant| b.duration_since(a).as_micros() as u64;
-                                let end = Instant::now();
-                                for (i, v) in [us(t0, t_adv), us(t_adv, t_snap), us(t_snap, t_draw), us(t_draw, t_acc), us(t_acc, end)].into_iter().enumerate() {
-                                    phases[i].push(v);
-                                }
-                                step_us.push(elapsed);
-                                if let Some(prev) = last_start {
-                                    interval_us.push(t0.duration_since(prev).as_micros() as u64);
-                                }
-                            }
-                            last_start = Some(t0);
-                        }
-                        let paints = PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
-                        let (s50, s95, s99) = percentiles(&step_us);
-                        let (i50, i95, i99) = percentiles(&interval_us);
-                        let ms = |us: u64| us as f64 / 1000.0;
-                        let passed = ms(s95) <= M5_K02_STEP_P95_BUDGET_MS
-                            && ms(i95) <= M5_K02_INTERVAL_P95_BUDGET_MS
-                            && stats.0 == VISIBLE
-                            && stats.1 == 20
-                            && stats.2 == 5
-                            && paints >= MEASURED;
-                        let rep = cx
-                            .update_window(handle.into(), |_, window, _| {
-                                quiet_window_check()?;
-                                Ok::<_, ErrorEnvelope>(M5PlaybackBenchReport {
-                                    status: if passed { "passed" } else { "failed" }.into(),
-                                    case_id: "M5-K02".into(),
-                                    kpi_id: "M5-K02".into(),
-                                    data_source: "loopback market fixture (synthetic 1h BTC/USDT); not a live service".into(),
-                                    executed_at: Utc::now().to_rfc3339(),
-                                    build_profile: "release".into(),
-                                    power_throttling: power_b.clone(),
-                                    hardware_logical_cores: std::thread::available_parallelism()
-                                        .map(|n| n.get())
-                                        .unwrap_or(1),
-                                    cpu: std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unknown".into()),
-                                    gpu: format!("{:?}", window.gpu_specs()),
-                                    window_size: format!("{:?}", window.bounds().size),
-                                    visible_windows: count_visible_windows_for_current_process(),
-                                    focus_stolen: false,
-                                    timeframe: "1h".into(),
-                                    visible_bars: stats.0,
-                                    drawings: stats.1,
-                                    order_lines: stats.2,
-                                    fill_markers: stats.3,
-                                    play_interval_ms: PLAY_INTERVAL_MS,
-                                    warmup_steps: WARMUP,
-                                    measured_steps: step_us.len(),
-                                    native_chart_paints: paints,
-                                    step_p50_ms: ms(s50),
-                                    step_p95_ms: ms(s95),
-                                    step_p99_ms: ms(s99),
-                                    interval_p50_ms: ms(i50),
-                                    interval_p95_ms: ms(i95),
-                                    interval_p99_ms: ms(i99),
-                                    step_budget_p95_ms: M5_K02_STEP_P95_BUDGET_MS,
-                                    interval_budget_p95_ms: M5_K02_INTERVAL_P95_BUDGET_MS,
-                                    passed,
-                                    phase_p95_ms: ["advance", "snapshot", "drawings", "account", "render_paint"]
-                                        .iter()
-                                        .zip(&phases)
-                                        .map(|(k, v)| (k.to_string(), ms(percentiles(v).1)))
-                                        .collect(),
-                                    step_times_us: step_us.clone(),
-                                    interval_times_us: interval_us.clone(),
-                                    measurement: "release; hidden non-activating HWND 1400x950; 1h practice run, 1000 visible bars, MA5/10/20/60 + MACD/RSI, 20 drawings, 5 order lines, cost line and fill markers; 20 warmup + 300 measured steps scheduled every 150 ms; step = advance_training_bar (atomic save + matching) + snapshot (indicators + slice) + drawings + practice account + overlay + GPUI layout/paint + synchronous WM_PAINT".into(),
-                                    build_info: delta_app::build_info("delta-desktop"),
-                                })
-                            })
-                            .map_err(window_err)??;
-                        Ok(rep)
-                    }
-                    .await;
-                    *slot.lock().unwrap() = Some(outcome);
-                    let _ = cx.update_window(handle.into(), |_, window, cx| {
-                        window.remove_window();
-                        cx.quit();
-                    });
+        let rep = run_in_hidden_window(
+            move |_, _| {
+                let slice = Arc::new(initial.chart_slice.clone());
+                M5PlaybackBenchView {
+                    snapshot: initial,
+                    slice,
+                    wb: wb0,
+                }
+            },
+            async move |cx, handle, view, hwnd| {
+                cx.update_window(handle.into(), |_, window, _| {
+                    quiet_window_check()?;
+                    window.refresh();
+                    Ok::<(), ErrorEnvelope>(())
                 })
-                .detach();
-            });
+                .map_err(window_err)??;
+                paint_native_window(hwnd)?;
+                let mut step_us = Vec::with_capacity(MEASURED);
+                let mut interval_us = Vec::with_capacity(MEASURED);
+                let mut paint_start = 0;
+                let mut last_start: Option<Instant> = None;
+                let mut stats = (0usize, 0usize, 0usize, 0usize);
+                let mut phases: [Vec<u64>; 5] = Default::default();
+                for step in 1..=(WARMUP + MEASURED) {
+                    if let Some(prev) = last_start {
+                        let due = prev + Duration::from_millis(PLAY_INTERVAL_MS);
+                        let now = Instant::now();
+                        if due > now {
+                            cx.background_executor().timer(due - now).await;
+                        }
+                    }
+                    if step == WARMUP + 1 {
+                        paint_start = PAINTED_CHART_FRAMES.load(Ordering::Relaxed);
+                    }
+                    let t0 = Instant::now();
+                    let receipt = host_b.advance_training_bar(&run_b)?;
+                    let t_adv = Instant::now();
+                    if receipt.run.status != SimRunStatus::Active {
+                        return Err(ErrorEnvelope::new(
+                            "M5_BENCH_RUN_ENDED",
+                            "基准局提前结束",
+                            false,
+                        ));
+                    }
+                    let total = receipt.run.visible_bar_count;
+                    let mut vp = vp.clone();
+                    vp.total_bars = total;
+                    vp.visible_start = total.saturating_sub(VISIBLE);
+                    vp.visible_end = total;
+                    let snap = host_b.get_training_workspace_snapshot(&run_b, Some(vp), 1200)?;
+                    let t_snap = Instant::now();
+                    let drawings = host_b.list_training_drawings(&run_b)?;
+                    let t_draw = Instant::now();
+                    let _account = host_b.show_practice_account(&snap.run.quote_currency)?;
+                    let t_acc = Instant::now();
+                    stats = (
+                        snap.chart_slice.bars.len(),
+                        drawings.len(),
+                        snap.open_orders.len(),
+                        snap.fills.len(),
+                    );
+                    let next_slice = Arc::new(snap.chart_slice.clone());
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        view.update(cx, |v, cx| {
+                            v.snapshot = snap;
+                            v.slice = next_slice;
+                            v.wb.drawings = drawings;
+                            cx.notify();
+                        });
+                        window.refresh();
+                    })
+                    .map_err(window_err)?;
+                    paint_native_window(hwnd)?;
+                    let elapsed = t0.elapsed().as_micros() as u64;
+                    if step > WARMUP {
+                        let us = |a: Instant, b: Instant| b.duration_since(a).as_micros() as u64;
+                        let end = Instant::now();
+                        for (i, v) in [
+                            us(t0, t_adv),
+                            us(t_adv, t_snap),
+                            us(t_snap, t_draw),
+                            us(t_draw, t_acc),
+                            us(t_acc, end),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            phases[i].push(v);
+                        }
+                        step_us.push(elapsed);
+                        if let Some(prev) = last_start {
+                            interval_us.push(t0.duration_since(prev).as_micros() as u64);
+                        }
+                    }
+                    last_start = Some(t0);
+                }
+                let paints = PAINTED_CHART_FRAMES.load(Ordering::Relaxed) - paint_start;
+                let (s50, s95, s99) = percentiles(&step_us);
+                let (i50, i95, i99) = percentiles(&interval_us);
+                let ms = |us: u64| us as f64 / 1000.0;
+                let passed = ms(s95) <= M5_K02_STEP_P95_BUDGET_MS
+                    && ms(i95) <= M5_K02_INTERVAL_P95_BUDGET_MS
+                    && stats.0 == VISIBLE
+                    && stats.1 == 20
+                    && stats.2 == 5
+                    && paints >= MEASURED;
+                cx.update_window(handle.into(), |_, window, _| {
+                    quiet_window_check()?;
+                    Ok::<_, ErrorEnvelope>(M5PlaybackBenchReport {
+                        status: if passed { "passed" } else { "failed" }.into(),
+                        case_id: "M5-K02".into(),
+                        kpi_id: "M5-K02".into(),
+                        data_source: "loopback market fixture (synthetic 1h BTC/USDT); not a live service".into(),
+                        executed_at: Utc::now().to_rfc3339(),
+                        build_profile: "release".into(),
+                        power_throttling: power_b.clone(),
+                        hardware_logical_cores: std::thread::available_parallelism()
+                            .map(|n| n.get())
+                            .unwrap_or(1),
+                        cpu: std::env::var("PROCESSOR_IDENTIFIER")
+                            .unwrap_or_else(|_| "unknown".into()),
+                        gpu: format!("{:?}", window.gpu_specs()),
+                        window_size: format!("{:?}", window.bounds().size),
+                        visible_windows: count_visible_windows_for_current_process(),
+                        focus_stolen: false,
+                        timeframe: "1h".into(),
+                        visible_bars: stats.0,
+                        drawings: stats.1,
+                        order_lines: stats.2,
+                        fill_markers: stats.3,
+                        play_interval_ms: PLAY_INTERVAL_MS,
+                        warmup_steps: WARMUP,
+                        measured_steps: step_us.len(),
+                        native_chart_paints: paints,
+                        step_p50_ms: ms(s50),
+                        step_p95_ms: ms(s95),
+                        step_p99_ms: ms(s99),
+                        interval_p50_ms: ms(i50),
+                        interval_p95_ms: ms(i95),
+                        interval_p99_ms: ms(i99),
+                        step_budget_p95_ms: M5_K02_STEP_P95_BUDGET_MS,
+                        interval_budget_p95_ms: M5_K02_INTERVAL_P95_BUDGET_MS,
+                        passed,
+                        phase_p95_ms: ["advance", "snapshot", "drawings", "account", "render_paint"]
+                            .iter()
+                            .zip(&phases)
+                            .map(|(k, v)| (k.to_string(), ms(percentiles(v).1)))
+                            .collect(),
+                        step_times_us: step_us.clone(),
+                        interval_times_us: interval_us.clone(),
+                        measurement: "release; hidden non-activating HWND 1400x950; 1h practice run, 1000 visible bars, MA5/10/20/60 + MACD/RSI, 20 drawings, 5 order lines, cost line and fill markers; 20 warmup + 300 measured steps scheduled every 150 ms; step = advance_training_bar (atomic save + matching) + snapshot (indicators + slice) + drawings + practice account + overlay + GPUI layout/paint + synchronous WM_PAINT".into(),
+                        build_info: delta_app::build_info("delta-desktop"),
+                    })
+                })
+                .map_err(window_err)?
+            },
+            || {
+                Err(ErrorEnvelope::new(
+                    "M5_BENCH_INTERRUPTED",
+                    "M5-K02 基准没有产生结果",
+                    false,
+                ))
+            },
+        );
         let _ = host.shutdown();
         drop(fixture);
-        let taken = output.lock().unwrap().take();
-        let rep = taken.ok_or_else(|| {
-            ErrorEnvelope::new("M5_BENCH_INTERRUPTED", "M5-K02 基准没有产生结果", false)
-        })??;
-        Ok(rep)
+        rep
     })();
-    owned.cleanup()?;
     // The report is returned even when the budget is missed; the caller decides the exit code.
-    inner
+    finish_verification(&owned, inner)
 }

@@ -21,6 +21,7 @@ EXCLUDED = {
     "vendor", "third-party", "__pycache__", ".pytest_cache", ".worktrees",
     "workers",
 }
+SCANNED_SUFFIXES = {".md", ".json", ".toml", ".yml", ".yaml", ".py", ".rs", ".ps1", ".sh", ".txt"}
 REQ_FILE = "docs/requirements/product-requirements.md"
 AC_FILE = "docs/engineering/delivery-plan.md"
 KINDS = {
@@ -28,6 +29,7 @@ KINDS = {
     "decision", "research", "evidence", "template",
 }
 STAGES = {"M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M6": 6, "M7": 7}
+DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")
 FORBIDDEN_FILE_PATTERNS = (
     re.compile(r"(?:^|/)\.env(?:\.(?!example$)[^/]+)?$", re.I),
     re.compile(r"\.(?:sqlite|sqlite3|db|wal|shm|pem|key|p12|pfx)$", re.I),
@@ -44,19 +46,19 @@ SECRET_PATTERNS = (
 
 
 def prose(text: str) -> str:
-    """Remove fenced code; allow both backtick and tilde fences."""
+    """Remove fenced code; allow both backtick and tilde fences (CommonMark 0..3 leading spaces)."""
     out, fence = [], None
     for line in text.splitlines():
-        mark = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if fence is None and mark:
-            fence = mark.group(1)
+        if fence is None:
+            mark = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+            if mark:
+                fence = mark.group(1)
+                continue
+            out.append(line)
             continue
-        if fence is not None:
-            stripped = line.strip()
-            if len(stripped) >= len(fence) and set(stripped) == {fence[0]}:
-                fence = None
-            continue
-        out.append(line)
+        close = re.match(r"^ {0,3}(`{3,}|~{3,})\s*$", line)
+        if close and close.group(1)[0] == fence[0] and len(close.group(1)) >= len(fence):
+            fence = None
     return "\n".join(out)
 
 
@@ -64,7 +66,7 @@ def anchors(text: str) -> set[str]:
     content, found, counts = prose(text), set(), Counter()
     for heading in re.findall(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$", content, re.M):
         heading = re.sub(r"<[^>]+>", "", heading)
-        heading = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", heading).lower()
+        heading = re.sub(r"\[([^]]+)\]\([^)]*\)", r"\1", heading).strip().lower()
         slug = "".join(c for c in heading if c.isalnum() or c in "_-" or c.isspace())
         slug = re.sub(r"\s", "-", slug)
         found.add(f"{slug}-{counts[slug]}" if counts[slug] else slug)
@@ -103,18 +105,53 @@ def check(root: Path) -> tuple[list[str], int, int]:
             errors.append(f"{name}: invalid JSON: {exc}")
             return {}
 
-    documents = {}
+    def scan_hygiene(rel: str, raw: str) -> None:
+        if rel == "scripts/check_docs.py":
+            return
+        if DRIVE_PATH_RE.search(raw):
+            errors.append(f"{rel}: machine-specific absolute path")
+        for label, pattern in SECRET_PATTERNS:
+            if pattern.search(raw):
+                errors.append(f"{rel}: forbidden {label}")
+
+    # Single repository walk: collect Markdown documents and run file/secret/path hygiene once.
+    documents: dict[str, str] = {}
     for directory, children, files in os.walk(root, followlinks=False):
         children[:] = [name for name in children if name not in EXCLUDED]
         for filename in files:
-            if not filename.endswith(".md"):
-                continue
             path = Path(directory) / filename
-            relative = path.relative_to(root)
-            if not path.resolve().is_relative_to(root):
-                errors.append(f"Markdown symlink escapes repository: {relative}")
+            rel = path.relative_to(root).as_posix()
+            for pattern in FORBIDDEN_FILE_PATTERNS:
+                if pattern.search(rel):
+                    errors.append(f"{rel}: forbidden sensitive or database file in repository")
+            suffix = path.suffix.lower()
+            is_md = suffix == ".md"
+            if not is_md and suffix not in SCANNED_SUFFIXES:
                 continue
-            documents[relative.as_posix()] = path.read_text(encoding="utf-8-sig")
+            try:
+                resolved = path.resolve()
+            except OSError as exc:
+                errors.append(f"{rel}: unreadable path: {exc}")
+                continue
+            if not resolved.is_relative_to(root):
+                if is_md:
+                    errors.append(f"Markdown symlink escapes repository: {rel}")
+                else:
+                    errors.append(f"{rel}: symlink escapes repository")
+                continue
+            try:
+                raw_bytes = path.read_bytes()
+            except OSError as exc:
+                errors.append(f"{rel}: unreadable file: {exc}")
+                continue
+            try:
+                raw = raw_bytes.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                errors.append(f"{rel}: invalid UTF-8 encoding")
+                raw = raw_bytes.decode("utf-8", errors="replace")
+            if is_md:
+                documents[rel] = raw
+            scan_hygiene(rel, raw)
 
     registry = read_json("docs/governance/document-registry.json")
     if registry.get("schemaVersion") != 1:
@@ -159,8 +196,6 @@ def check(root: Path) -> tuple[list[str], int, int]:
         content = prose(text)
         if re.search(r"^\s*\[[^]]+\]:", content, re.M) or re.search(r"\[[^]]+\]\[[^]]*\]", content):
             errors.append(f"{name}: use inline links, reference-style links unsupported")
-        if re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]", text):
-            errors.append(f"{name}: machine-specific absolute path")
         for match in re.finditer(r"!?\[[^]\n]+\]\((<[^>]+>|[^\s)]+)(?:\s+\"[^\"]*\")?\)", content):
             target = match.group(1).strip("<>")
             parsed = urlsplit(target)
@@ -240,27 +275,6 @@ def check(root: Path) -> tuple[list[str], int, int]:
             if ac_id not in ac_set:
                 errors.append(f"{name}: unknown acceptance reference: {ac_id}")
 
-    # Publication and secret/path hygiene across repository files.
-    for directory, children, files in os.walk(root, followlinks=False):
-        children[:] = [name for name in children if name not in EXCLUDED]
-        for filename in files:
-            path = Path(directory) / filename
-            rel = path.relative_to(root).as_posix()
-            for pattern in FORBIDDEN_FILE_PATTERNS:
-                if pattern.search(rel):
-                    errors.append(f"{rel}: forbidden sensitive or database file in repository")
-            if path.suffix.lower() in {".md", ".json", ".toml", ".yml", ".yaml", ".py", ".rs", ".ps1", ".sh", ".txt"}:
-                try:
-                    raw = path.read_text(encoding="utf-8-sig")
-                except (OSError, UnicodeDecodeError):
-                    continue
-                if rel != "scripts/check_docs.py":
-                    if re.search(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]", raw):
-                        errors.append(f"{rel}: machine-specific absolute path")
-                    for label, pattern in SECRET_PATTERNS:
-                        if pattern.search(raw):
-                            errors.append(f"{rel}: forbidden {label}")
-
     # Once a stage case manifest exists, its required cases and work-package coverage become enforceable.
     stage_prefix = str(current_stage or "M1")
     case_rel = f"docs/delivery/{stage_prefix.lower()}-stage-cases.json"
@@ -290,7 +304,7 @@ def check(root: Path) -> tuple[list[str], int, int]:
                     errors.append(f"{cid}: unknown AC: {aid}")
             for package in case.get("work_packages", []):
                 packages.add(package)
-                if package not in plan_text:
+                if not re.search(rf"\b{re.escape(package)}\b", plan_text):
                     errors.append(f"{cid}: unknown work package: {package}")
         for cid, count in case_ids.items():
             if not re.fullmatch(rf"{stage_prefix}-[AML]-\d{{2}}", cid) or count != 1:

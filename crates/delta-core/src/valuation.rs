@@ -62,6 +62,67 @@ pub fn is_cash_or_stablecoin_currency(symbol_or_asset_id: &str) -> bool {
     is_fiat_currency(&code) || matches!(code.as_str(), "USDT" | "USDC")
 }
 
+fn lookup_pair_single_date(
+    base: &str,
+    quote: &str,
+    d: NaiveDate,
+    rates_by_pair_date: &HashMap<(String, String, NaiveDate), Decimal>,
+) -> Option<Decimal> {
+    if let Some(r) = rates_by_pair_date.get(&(base.to_string(), quote.to_string(), d)) {
+        return (*r > Decimal::ZERO).then_some(*r);
+    }
+    // Same-version inverse rate (M1-W02 requirement)
+    if let Some(inv) = rates_by_pair_date.get(&(quote.to_string(), base.to_string(), d)) {
+        if *inv > Decimal::ZERO {
+            return Some(
+                (Decimal::ONE / *inv)
+                    .round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero)
+                    .normalize(),
+            );
+        }
+    }
+    None
+}
+
+fn is_non_fiat_pair(from_ccy: &str, to_ccy: &str) -> bool {
+    !is_fiat_currency(from_ccy) || !is_fiat_currency(to_ccy)
+}
+
+fn merge_quality(a: QualityStatus, b: QualityStatus) -> QualityStatus {
+    let rank = |q: QualityStatus| match q {
+        QualityStatus::Exact => 0,
+        QualityStatus::CarriedForward => 1,
+        QualityStatus::Warning => 2,
+        QualityStatus::Partial => 3,
+        QualityStatus::Unavailable => 4,
+    };
+    if rank(b) > rank(a) {
+        b
+    } else {
+        a
+    }
+}
+
+fn standalone_fees_in_scope(
+    projection: &LedgerProjectionResult,
+    scope_set: &BTreeSet<String>,
+    book_fx: Decimal,
+) -> Decimal {
+    projection
+        .transactions
+        .iter()
+        .flat_map(|tx| &tx.postings)
+        .filter(|p| {
+            p.category == LedgerCategory::FeeExpense
+                && p.ledger_account_id
+                    .strip_prefix("L:")
+                    .and_then(|rest| rest.rsplit_once(':'))
+                    .is_some_and(|(acct, _)| scope_set.contains(acct))
+        })
+        .map(|p| p.book_amount * book_fx)
+        .sum()
+}
+
 /// Resolve an FX rate on `target_date` following S-07 / A-07:
 /// - Exact match on `target_date` -> `QualityStatus::Exact`
 /// - Fiat reference rate (ECB/Frankfurter) non-publication day -> use most recent published rate
@@ -85,24 +146,7 @@ pub fn resolve_fx_rate_s07(
         });
     }
 
-    let lookup_single_date = |d: NaiveDate| -> Option<Decimal> {
-        if let Some(r) = rates_by_pair_date.get(&(base.clone(), quote.clone(), d)) {
-            return (*r > Decimal::ZERO).then_some(*r);
-        }
-        // Same-version inverse rate (M1-W02 requirement)
-        if let Some(inv) = rates_by_pair_date.get(&(quote.clone(), base.clone(), d)) {
-            if *inv > Decimal::ZERO {
-                return Some(
-                    (Decimal::ONE / *inv)
-                        .round_dp_with_strategy(10, RoundingStrategy::MidpointAwayFromZero)
-                        .normalize(),
-                );
-            }
-        }
-        None
-    };
-
-    if let Some(rate) = lookup_single_date(target_date) {
+    if let Some(rate) = lookup_pair_single_date(&base, &quote, target_date, rates_by_pair_date) {
         return Some(FxQuoteLookup {
             rate,
             source_date: target_date,
@@ -110,53 +154,83 @@ pub fn resolve_fx_rate_s07(
         });
     }
 
+    // Exact same-day USD triangulation before any carry-forward.
     if base != "USD" && quote != "USD" {
-        let first = resolve_fx_rate_s07(
-            &base,
-            "USD",
-            target_date,
-            !is_fiat_currency(&base),
-            rates_by_pair_date,
-        );
-        let second = resolve_fx_rate_s07(
-            "USD",
-            &quote,
-            target_date,
-            !is_fiat_currency(&quote),
-            rates_by_pair_date,
-        );
-        if let (Some(first), Some(second)) = (first, second) {
-            return Some(FxQuoteLookup {
-                rate: first.rate.checked_mul(second.rate)?,
-                source_date: first.source_date.min(second.source_date),
-                quality: if first.quality == QualityStatus::CarriedForward
-                    || second.quality == QualityStatus::CarriedForward
-                {
-                    QualityStatus::CarriedForward
-                } else {
-                    QualityStatus::Exact
-                },
-            });
-        }
-    }
-
-    // For stablecoins, crypto trades 24x7; do NOT carry forward across missing days if missing on target_date,
-    // or if fiat, carry forward up to 4 calendar days (S-07).
-    if !is_stablecoin_pair {
-        for days_back in 1..=4 {
-            if let Some(prev_date) = target_date.checked_sub_days(chrono::Days::new(days_back)) {
-                if let Some(rate) = lookup_single_date(prev_date) {
-                    return Some(FxQuoteLookup {
-                        rate,
-                        source_date: prev_date,
-                        quality: QualityStatus::CarriedForward,
-                    });
-                }
+        if let (Some(first), Some(second)) = (
+            lookup_pair_single_date(&base, "USD", target_date, rates_by_pair_date),
+            lookup_pair_single_date("USD", &quote, target_date, rates_by_pair_date),
+        ) {
+            if let Some(rate) = first.checked_mul(second) {
+                return Some(FxQuoteLookup {
+                    rate: crate::decimal::canon_decimal(rate),
+                    source_date: target_date,
+                    quality: QualityStatus::Exact,
+                });
             }
         }
     }
 
-    None
+    // For non-fiat pairs (crypto / stablecoins trade 24x7), do NOT carry forward direct pair;
+    // for fiat pairs, carry forward up to 4 calendar days (S-07).
+    let direct_cf = if !is_stablecoin_pair {
+        (1..=4).find_map(|days_back| {
+            let prev_date = target_date.checked_sub_days(chrono::Days::new(days_back))?;
+            let rate = lookup_pair_single_date(&base, &quote, prev_date, rates_by_pair_date)?;
+            Some(FxQuoteLookup {
+                rate,
+                source_date: prev_date,
+                quality: QualityStatus::CarriedForward,
+            })
+        })
+    } else {
+        None
+    };
+
+    // Triangulated carry-forward via USD (non-fiat legs remain exact-date only; fiat legs can
+    // carry forward unless caller explicitly suppressed carry-forward on a pure-fiat pair).
+    let triangulated_cf = if base != "USD" && quote != "USD" {
+        let base_no_cf =
+            !is_fiat_currency(&base) || (is_stablecoin_pair && is_fiat_currency(&quote));
+        let quote_no_cf =
+            !is_fiat_currency(&quote) || (is_stablecoin_pair && is_fiat_currency(&base));
+        let first = resolve_fx_rate_s07(&base, "USD", target_date, base_no_cf, rates_by_pair_date);
+        let second =
+            resolve_fx_rate_s07("USD", &quote, target_date, quote_no_cf, rates_by_pair_date);
+        match (first, second) {
+            (Some(first), Some(second)) => {
+                first
+                    .rate
+                    .checked_mul(second.rate)
+                    .map(|rate| FxQuoteLookup {
+                        rate: crate::decimal::canon_decimal(rate),
+                        source_date: first.source_date.min(second.source_date),
+                        quality: if first.quality == QualityStatus::CarriedForward
+                            || second.quality == QualityStatus::CarriedForward
+                        {
+                            QualityStatus::CarriedForward
+                        } else {
+                            QualityStatus::Exact
+                        },
+                    })
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    match (direct_cf, triangulated_cf) {
+        (Some(direct), Some(tri)) => {
+            if direct.source_date >= tri.source_date {
+                Some(direct)
+            } else {
+                Some(tri)
+            }
+        }
+        (Some(direct), None) => Some(direct),
+        (None, Some(tri)) => Some(tri),
+        (None, None) => None,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,35 +293,62 @@ pub fn evaluate_portfolio(
         }
     }
 
-    let is_stable = |ccy: &str| matches!(ccy.to_ascii_uppercase().as_str(), "USDT" | "USDC");
-
+    let resolve_fx_at = |from_ccy: &str,
+                         date: NaiveDate,
+                         quality: &mut QualityStatus,
+                         carried_forward_fx: &mut Vec<(String, NaiveDate, NaiveDate)>,
+                         missing_inputs: &mut Vec<String>,
+                         missing_prefix: &str|
+     -> Option<Decimal> {
+        let non_fiat = is_non_fiat_pair(from_ccy, report_currency);
+        match resolve_fx_rate_s07(from_ccy, report_currency, date, non_fiat, fx_rates) {
+            Some(found) => {
+                if found.quality == QualityStatus::CarriedForward {
+                    *quality = merge_quality(*quality, QualityStatus::CarriedForward);
+                    let entry = (
+                        format!("{from_ccy}/{report_currency}"),
+                        date,
+                        found.source_date,
+                    );
+                    if !carried_forward_fx.contains(&entry) {
+                        carried_forward_fx.push(entry);
+                    }
+                }
+                Some(found.rate)
+            }
+            None => {
+                *quality = merge_quality(*quality, QualityStatus::Partial);
+                let item = format!("{missing_prefix}:{from_ccy}/{report_currency}@{date}");
+                if !missing_inputs.contains(&item) {
+                    missing_inputs.push(item);
+                }
+                None
+            }
+        }
+    };
     let resolve_fx = |from_ccy: &str,
                       quality: &mut QualityStatus,
                       carried_forward_fx: &mut Vec<(String, NaiveDate, NaiveDate)>,
                       missing_inputs: &mut Vec<String>|
      -> Option<Decimal> {
-        let stable = is_stable(from_ccy) || is_stable(report_currency);
-        match resolve_fx_rate_s07(from_ccy, report_currency, as_of_date, stable, fx_rates) {
-            Some(found) => {
-                if found.quality == QualityStatus::CarriedForward {
-                    if *quality == QualityStatus::Exact {
-                        *quality = QualityStatus::CarriedForward;
-                    }
-                    carried_forward_fx.push((
-                        format!("{from_ccy}/{report_currency}"),
-                        as_of_date,
-                        found.source_date,
-                    ));
-                }
-                Some(found.rate)
-            }
-            None => {
-                *quality = QualityStatus::Partial;
-                missing_inputs.push(format!("fx:{from_ccy}/{report_currency}@{as_of_date}"));
-                None
-            }
-        }
+        resolve_fx_at(
+            from_ccy,
+            as_of_date,
+            quality,
+            carried_forward_fx,
+            missing_inputs,
+            "fx",
+        )
     };
+
+    // Resolve book_currency -> report_currency once for this valuation point to avoid repeated
+    // lookups and duplicate `carried_forward_fx` / `missing_inputs` entries.
+    let book_fx_opt = resolve_fx(
+        &projection.book_currency,
+        &mut quality,
+        &mut carried_forward_fx,
+        &mut missing_inputs,
+    );
 
     for ((acct, ccy), qty) in &projection.cash_balances {
         if !scope_set.contains(acct) || qty.is_zero() {
@@ -269,14 +370,9 @@ pub fn evaluate_portfolio(
         }
         if !holding.cost_known {
             has_unknown_cost = true;
-            quality = QualityStatus::Partial;
+            quality = merge_quality(quality, QualityStatus::Partial);
             missing_inputs.push(format!("cost_basis:{acct}:{asset}"));
-        } else if let Some(book_to_rep_fx) = resolve_fx(
-            &projection.book_currency,
-            &mut quality,
-            &mut carried_forward_fx,
-            &mut missing_inputs,
-        ) {
+        } else if let Some(book_to_rep_fx) = book_fx_opt {
             total_carrying_cost += (holding.carrying_cost * book_to_rep_fx).normalize();
         }
 
@@ -297,7 +393,7 @@ pub fn evaluate_portfolio(
                 holdings_market_value += (holding.quantity * price * fx).normalize();
             }
             (None, _) => {
-                quality = QualityStatus::Partial;
+                quality = merge_quality(quality, QualityStatus::Partial);
                 missing_inputs.push(format!("price:{asset}@{as_of_date}"));
             }
             (_, None) => {}
@@ -313,10 +409,19 @@ pub fn evaluate_portfolio(
         }
         if !transit.cost_known {
             has_unknown_cost = true;
+            quality = merge_quality(quality, QualityStatus::Partial);
             missing_inputs.push(format!("transit_cost:{}", transit.asset_id));
         }
+        let transit_quote_ccy = if transit.is_cash {
+            transit.quote_currency.as_str()
+        } else {
+            asset_quote_currencies
+                .get(&transit.asset_id)
+                .map(String::as_str)
+                .unwrap_or(transit.quote_currency.as_str())
+        };
         if let Some(rate) = resolve_fx(
-            &transit.quote_currency,
+            transit_quote_ccy,
             &mut quality,
             &mut carried_forward_fx,
             &mut missing_inputs,
@@ -327,18 +432,13 @@ pub fn evaluate_portfolio(
                 holdings_market_value += transit.quantity * *price * rate;
             } else {
                 missing_inputs.push(format!("transit_price:{}", transit.asset_id));
-                quality = QualityStatus::Partial;
+                quality = merge_quality(quality, QualityStatus::Partial);
             }
         }
-        if let Some(rate) = resolve_fx(
-            &projection.book_currency,
-            &mut quality,
-            &mut carried_forward_fx,
-            &mut missing_inputs,
-        ) {
+        if let Some(rate) = book_fx_opt {
             if transit.is_cash {
                 transit_cash_cost += transit.carrying_cost * rate;
-            } else {
+            } else if transit.cost_known {
                 total_carrying_cost += transit.carrying_cost * rate;
             }
         }
@@ -387,50 +487,48 @@ pub fn evaluate_portfolio(
                 currency,
                 report_currency,
                 date,
-                !is_fiat_currency(currency) || !is_fiat_currency(report_currency),
+                is_non_fiat_pair(currency, report_currency),
                 fx_rates,
             );
             if let (Some(price), Some(rate)) = (price, rate) {
+                if rate.quality == QualityStatus::CarriedForward {
+                    quality = merge_quality(quality, QualityStatus::CarriedForward);
+                    let entry = (
+                        format!("{currency}/{report_currency}"),
+                        date,
+                        rate.source_date,
+                    );
+                    if !carried_forward_fx.contains(&entry) {
+                        carried_forward_fx.push(entry);
+                    }
+                }
                 net_external_cash_flow += flow.position_quantity * *price * rate.rate;
             } else {
                 missing_inputs.push(format!("position_transfer_value:{asset}@{date}"));
-                quality = QualityStatus::Partial;
+                quality = merge_quality(quality, QualityStatus::Partial);
             }
         } else if report_currency.eq_ignore_ascii_case(&projection.book_currency) {
             net_external_cash_flow += flow.book_amount;
-        } else if let Some(rate) = resolve_fx_rate_s07(
+        } else if let Some(rate) = resolve_fx_at(
             &flow.native_currency,
-            report_currency,
             flow.occurred_at.date_naive(),
-            !is_fiat_currency(&flow.native_currency) || !is_fiat_currency(report_currency),
-            fx_rates,
+            &mut quality,
+            &mut carried_forward_fx,
+            &mut missing_inputs,
+            "flow_fx",
         ) {
-            net_external_cash_flow += flow.native_amount * rate.rate;
-        } else {
-            quality = QualityStatus::Partial;
-            missing_inputs.push(format!(
-                "flow_fx:{}/{}@{}",
-                flow.native_currency,
-                report_currency,
-                flow.occurred_at.date_naive()
-            ));
+            net_external_cash_flow += flow.native_amount * rate;
         }
     }
 
     if !projection.pending_valuation_reasons.is_empty() {
-        quality = QualityStatus::Partial;
+        quality = merge_quality(quality, QualityStatus::Partial);
         for reason in &projection.pending_valuation_reasons {
             missing_inputs.push(reason.clone());
         }
     }
 
-    let book_fx = resolve_fx(
-        &projection.book_currency,
-        &mut quality,
-        &mut carried_forward_fx,
-        &mut missing_inputs,
-    )
-    .unwrap_or(Decimal::ZERO);
+    let book_fx = book_fx_opt.unwrap_or(Decimal::ZERO);
     realized_pnl_sum *= book_fx;
     dividend_sum *= book_fx;
     fee_sum *= book_fx;
@@ -455,18 +553,7 @@ pub fn evaluate_portfolio(
         } else {
             let unrea =
                 (holdings_market_value - total_carrying_cost + cash_value - cash_cost).normalize();
-            let standalone_fees: Decimal = projection
-                .transactions
-                .iter()
-                .flat_map(|tx| &tx.postings)
-                .filter(|p| {
-                    p.category == LedgerCategory::FeeExpense
-                        && scope_set
-                            .iter()
-                            .any(|acct| p.ledger_account_id.starts_with(&format!("L:{acct}:")))
-                })
-                .map(|p| p.book_amount * book_fx)
-                .sum();
+            let standalone_fees = standalone_fees_in_scope(projection, &scope_set, book_fx);
             let components =
                 (realized_pnl_sum + unrea + dividend_sum - standalone_fees).normalize();
             let tot = (net_worth - net_external_cash_flow).normalize();
@@ -483,7 +570,7 @@ pub fn evaluate_portfolio(
                 && report_currency.eq_ignore_ascii_case(&projection.book_currency)
                 && translation.abs() > Decimal::new(1, 7)
             {
-                quality = QualityStatus::Warning;
+                quality = merge_quality(quality, QualityStatus::Warning);
                 warnings.push(format!("pnl_components_difference:{translation}"));
             }
             (
@@ -567,12 +654,20 @@ pub fn compute_twr(sub_periods: &[SubPeriodSnapshot]) -> Result<Decimal, String>
                 sp.v_start_after_flow
             ));
         }
+        if sp.v_end_before_next_flow < Decimal::ZERO {
+            return Err(format!(
+                "sub-period {idx} has negative ending value {}",
+                sp.v_end_before_next_flow
+            ));
+        }
         let one_plus_r = sp.v_end_before_next_flow / sp.v_start_after_flow;
-        compound *= one_plus_r;
+        compound = compound
+            .checked_mul(one_plus_r)
+            .ok_or_else(|| format!("TWR compound product overflow at sub-period {idx}"))?;
     }
-    Ok((compound - Decimal::ONE)
-        .round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero)
-        .normalize())
+    Ok(crate::decimal::canon_decimal(
+        (compound - Decimal::ONE).round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,7 +683,7 @@ pub enum XirrStatus {
     },
 }
 
-/// Compute MWR / XIRR using range scan + bisection / secant refinement (Financial Engine Sec 5.2, AC-07, AC-18).
+/// Compute MWR / XIRR using range scan + bisection refinement (Financial Engine Sec 5.2, AC-07, AC-18).
 /// Cash flows: investor perspective (initial value & inflows are negative, outflows & ending value are positive).
 pub fn compute_xirr(cash_flows: &[(NaiveDate, Decimal)]) -> XirrStatus {
     // Merge same-day cash flows
@@ -613,32 +708,49 @@ pub fn compute_xirr(cash_flows: &[(NaiveDate, Decimal)]) -> XirrStatus {
 
     let d0 = flows[0].0;
     let npv = |r: f64| -> f64 {
+        let base = 1.0 + r;
+        if base <= 0.0 {
+            return f64::NAN;
+        }
         flows
             .iter()
             .map(|(d, cf)| {
                 let days = (*d - d0).num_days() as f64;
-                cf / (1.0 + r).powf(days / 365.0)
+                cf / base.powf(days / 365.0)
             })
             .sum()
     };
 
-    // Range scan across (-0.95, 10.0) to detect all sign changes (including multiple roots)
-    let mut scan_points = Vec::new();
-    let mut cur = -0.95_f64;
-    while cur <= 10.0 {
-        scan_points.push(cur);
-        cur += if cur < 1.0 { 0.05 } else { 0.25 };
+    // Exact scan grid covering (-0.9999, 1000.0): log-spaced near -1, exact 0.05 steps across
+    // [-0.95, 1.0] (hitting exact 0.0), exact 0.25 steps across (1.0, 10.0], and log extension
+    // up to 1000.0 for short-horizon portfolios.
+    let mut scan_points = vec![-0.9999_f64, -0.999, -0.995, -0.99, -0.98];
+    for step in -19..=20 {
+        scan_points.push((step as f64) * 0.05);
     }
+    for step in 5..=40 {
+        scan_points.push((step as f64) * 0.25);
+    }
+    scan_points.extend_from_slice(&[12.0, 15.0, 20.0, 30.0, 50.0, 100.0, 250.0, 500.0, 1000.0]);
 
     let mut brackets = Vec::new();
-    for win in scan_points.windows(2) {
-        let (a, b) = (win[0], win[1]);
-        let fa = npv(a);
-        let fb = npv(b);
+    let values: Vec<f64> = scan_points.iter().map(|&r| npv(r)).collect();
+    for i in 0..scan_points.len() {
+        let a = scan_points[i];
+        let fa = values[i];
+        if !fa.is_finite() {
+            continue;
+        }
         if fa.abs() < 1e-11 {
             brackets.push((a, a));
-        } else if fa * fb < 0.0 {
-            brackets.push((a, b));
+            continue;
+        }
+        if i + 1 < scan_points.len() {
+            let b = scan_points[i + 1];
+            let fb = values[i + 1];
+            if fb.is_finite() && fb.abs() >= 1e-11 && fa.signum() != fb.signum() {
+                brackets.push((a, b));
+            }
         }
     }
 
@@ -651,14 +763,20 @@ pub fn compute_xirr(cash_flows: &[(NaiveDate, Decimal)]) -> XirrStatus {
     for (mut lo, mut hi) in brackets {
         last_bracket = (format!("{lo:.4}"), format!("{hi:.4}"));
         let mut flo = npv(lo);
+        if !flo.is_finite() {
+            continue;
+        }
         for _ in 0..80 {
             let mid = 0.5 * (lo + hi);
             let fmid = npv(mid);
+            if !fmid.is_finite() {
+                break;
+            }
             if fmid.abs() < 1e-11 || (hi - lo).abs() < 1e-11 {
                 lo = mid;
                 break;
             }
-            if flo * fmid <= 0.0 {
+            if flo.signum() != fmid.signum() {
                 hi = mid;
             } else {
                 lo = mid;
@@ -666,9 +784,9 @@ pub fn compute_xirr(cash_flows: &[(NaiveDate, Decimal)]) -> XirrStatus {
             }
         }
         if let Some(dec) = Decimal::from_f64_retain(lo) {
-            let rounded = dec
-                .round_dp_with_strategy(6, RoundingStrategy::MidpointAwayFromZero)
-                .normalize();
+            let rounded = crate::decimal::canon_decimal(
+                dec.round_dp_with_strategy(6, RoundingStrategy::MidpointAwayFromZero),
+            );
             if !roots.contains(&rounded) {
                 roots.push(rounded);
             }
@@ -772,7 +890,6 @@ pub fn evaluate_period_breakdown(
 ) -> PeriodBreakdownReport {
     let scope_set: BTreeSet<String> = account_scope.iter().cloned().collect();
     let scope_vec: Vec<String> = scope_set.iter().cloned().collect();
-    let is_stable = |ccy: &str| matches!(ccy.to_ascii_uppercase().as_str(), "USDT" | "USDC");
 
     let mut missing_inputs = end_valuation.missing_inputs.clone();
     for m in &start_valuation.missing_inputs {
@@ -780,11 +897,13 @@ pub fn evaluate_period_breakdown(
             missing_inputs.push(m.clone());
         }
     }
-    let warnings = end_valuation.warnings.clone();
-    let mut quality = end_valuation.quality;
-    if start_valuation.quality == QualityStatus::Partial {
-        quality = QualityStatus::Partial;
+    let mut warnings = end_valuation.warnings.clone();
+    for w in &start_valuation.warnings {
+        if !warnings.contains(w) {
+            warnings.push(w.clone());
+        }
     }
+    let mut quality = merge_quality(start_valuation.quality, end_valuation.quality);
 
     // Apply latest manual valuations per (account_id, asset_or_liability_id) whose as_of <= target_date
     let resolve_manual_net = |target_date: NaiveDate,
@@ -807,10 +926,18 @@ pub fn evaluate_period_breakdown(
         let mut net = Decimal::ZERO;
         let mut used = Vec::new();
         for mv in latest_by_key.values() {
-            let stable = is_stable(&mv.currency) || is_stable(report_currency);
-            match resolve_fx_rate_s07(&mv.currency, report_currency, target_date, stable, fx_rates)
-            {
+            let non_fiat = is_non_fiat_pair(&mv.currency, report_currency);
+            match resolve_fx_rate_s07(
+                &mv.currency,
+                report_currency,
+                target_date,
+                non_fiat,
+                fx_rates,
+            ) {
                 Some(found) => {
+                    if found.quality == QualityStatus::CarriedForward {
+                        *qual = merge_quality(*qual, QualityStatus::CarriedForward);
+                    }
                     let converted = (mv.value.abs() * found.rate).normalize();
                     if mv.is_liability {
                         net -= converted;
@@ -820,7 +947,7 @@ pub fn evaluate_period_breakdown(
                     used.push((*mv).clone());
                 }
                 None => {
-                    *qual = QualityStatus::Partial;
+                    *qual = merge_quality(*qual, QualityStatus::Partial);
                     let item = format!(
                         "manual_valuation_fx:{}:{}/{}@{}",
                         mv.asset_or_liability_id, mv.currency, report_currency, target_date
@@ -884,11 +1011,20 @@ pub fn evaluate_period_breakdown(
         (end_valuation.net_external_cash_flow - start_valuation.net_external_cash_flow).normalize();
     let inv_pnl = (known_ending - known_opening - net_flow).normalize();
 
+    let book_fx_start = resolve_fx_rate_s07(
+        &start_projection.book_currency,
+        report_currency,
+        start_valuation.as_of_date,
+        is_non_fiat_pair(&start_projection.book_currency, report_currency),
+        fx_rates,
+    )
+    .map(|r| r.rate)
+    .unwrap_or(Decimal::ONE);
     let book_fx_end = resolve_fx_rate_s07(
         &end_projection.book_currency,
         report_currency,
         end_date,
-        is_stable(&end_projection.book_currency) || is_stable(report_currency),
+        is_non_fiat_pair(&end_projection.book_currency, report_currency),
         fx_rates,
     )
     .map(|r| r.rate)
@@ -898,7 +1034,7 @@ pub fn evaluate_period_breakdown(
         .realized_fx_pnl_by_account
         .iter()
         .filter(|(a, _)| scope_set.contains(*a))
-        .map(|(_, v)| *v * book_fx_end)
+        .map(|(_, v)| *v * book_fx_start)
         .sum();
     let realized_fx_end: Decimal = end_projection
         .realized_fx_pnl_by_account
@@ -920,21 +1056,9 @@ pub fn evaluate_period_breakdown(
 
     let div_delta = (end_valuation.dividend_income - start_valuation.dividend_income).normalize();
 
-    let standalone_fees = |proj: &LedgerProjectionResult| -> Decimal {
-        proj.transactions
-            .iter()
-            .flat_map(|tx| &tx.postings)
-            .filter(|p| {
-                p.category == LedgerCategory::FeeExpense
-                    && scope_set
-                        .iter()
-                        .any(|acct| p.ledger_account_id.starts_with(&format!("L:{acct}:")))
-            })
-            .map(|p| p.book_amount * book_fx_end)
-            .sum()
-    };
-    let fee_delta =
-        (standalone_fees(end_projection) - standalone_fees(start_projection)).normalize();
+    let fee_delta = (standalone_fees_in_scope(end_projection, &scope_set, book_fx_end)
+        - standalone_fees_in_scope(start_projection, &scope_set, book_fx_start))
+    .normalize();
 
     let translation_delta = (end_valuation
         .scope_and_currency_effect_pnl
@@ -995,5 +1119,157 @@ pub fn evaluate_period_breakdown(
         quality,
         missing_inputs,
         warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decimal::parse_decimal_lossless;
+    use crate::ledger::{
+        replay_ledger_events, EconomicEventType, InTransitAsset, LedgerEventInput,
+    };
+    use chrono::TimeZone;
+
+    fn dec(s: &str) -> Decimal {
+        parse_decimal_lossless(s).unwrap()
+    }
+
+    #[test]
+    fn non_fiat_fx_never_carries_forward_while_direct_fiat_prefers_freshest_date() {
+        let wed = NaiveDate::from_ymd_opt(2026, 1, 7).unwrap();
+        let thu = NaiveDate::from_ymd_opt(2026, 1, 8).unwrap();
+        let fri = NaiveDate::from_ymd_opt(2026, 1, 9).unwrap();
+        let sat = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+
+        let mut fx = HashMap::new();
+        fx.insert(("BTC".into(), "USD".into(), fri), dec("50000"));
+        fx.insert(("DAI".into(), "USD".into(), fri), dec("1.001"));
+        fx.insert(("USDT".into(), "USD".into(), sat), dec("0.9995"));
+        fx.insert(("USD".into(), "HKD".into(), fri), dec("7.8"));
+        fx.insert(("EUR".into(), "HKD".into(), fri), dec("8.5"));
+        fx.insert(("EUR".into(), "USD".into(), thu), dec("1.05"));
+        fx.insert(("USD".into(), "HKD".into(), wed), dec("7.7"));
+
+        // Non-fiat BTC & DAI must NOT carry forward onto Saturday.
+        assert!(resolve_fx_rate_s07("BTC", "USD", sat, true, &fx).is_none());
+        assert!(resolve_fx_rate_s07("DAI", "USD", sat, true, &fx).is_none());
+
+        // USDT/HKD on Saturday: exact Saturday USDT/USD * carried-forward Friday USD/HKD.
+        let usdt_hkd = resolve_fx_rate_s07("USDT", "HKD", sat, true, &fx).unwrap();
+        assert_eq!(usdt_hkd.quality, QualityStatus::CarriedForward);
+        assert_eq!(usdt_hkd.source_date, fri);
+        assert_eq!(usdt_hkd.rate, dec("7.7961"));
+
+        // EUR/HKD on Saturday: prefers fresher Friday direct EUR/HKD (8.5) over stale Thu/Wed USD triangulation.
+        let eur_hkd = resolve_fx_rate_s07("EUR", "HKD", sat, false, &fx).unwrap();
+        assert_eq!(eur_hkd.quality, QualityStatus::CarriedForward);
+        assert_eq!(eur_hkd.source_date, fri);
+        assert_eq!(eur_hkd.rate, dec("8.5"));
+    }
+
+    #[test]
+    fn evaluate_portfolio_marks_unknown_transit_partial_and_blocks_crypto_carry_forward() {
+        let fri = NaiveDate::from_ymd_opt(2026, 1, 9).unwrap();
+        let sat = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let dep = LedgerEventInput {
+            event_id: "E1".into(),
+            account_id: "ACC-1".into(),
+            event_type: EconomicEventType::Deposit,
+            occurred_at: chrono::Utc.with_ymd_and_hms(2026, 1, 9, 10, 0, 0).unwrap(),
+            sequence_no: 1,
+            asset_id: "USD".into(),
+            instrument_id: None,
+            quantity: dec("1000"),
+            price: None,
+            quote_currency: "USD".into(),
+            fee_amount: Decimal::ZERO,
+            fee_currency: "USD".into(),
+            cost_known: true,
+            counterparty_account_id: None,
+            transfer_group_id: None,
+            correction_group_id: None,
+            revision: 1,
+            active_in_correction_group: true,
+            source_ref: None,
+        };
+        let mut proj = replay_ledger_events("USD", &[dep], &HashMap::new(), 1).unwrap();
+        // Inject unknown-cost in-transit position between two in-scope accounts.
+        proj.in_transit_assets.push(InTransitAsset {
+            source_account: "ACC-1".into(),
+            destination_account: "ACC-2".into(),
+            asset_id: "AAPL".into(),
+            quote_currency: "USD".into(),
+            quantity: dec("2"),
+            carrying_cost: Decimal::ZERO,
+            cost_known: false,
+            is_cash: false,
+        });
+        let mut prices = HashMap::new();
+        prices.insert(("AAPL".to_string(), sat), dec("150"));
+        let rep = evaluate_portfolio(
+            &proj,
+            &["ACC-1".into(), "ACC-2".into()],
+            "USD",
+            sat,
+            &prices,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(rep.quality, QualityStatus::Partial);
+        assert!(rep.realized_pnl.is_none());
+        assert!(rep.missing_inputs.iter().any(|m| m == "transit_cost:AAPL"));
+
+        // Non-fiat DAI cash must not carry forward Friday FX onto Saturday.
+        let mut proj_dai = proj;
+        proj_dai.in_transit_assets.clear();
+        proj_dai
+            .cash_balances
+            .insert(("ACC-1".into(), "DAI".into()), dec("100"));
+        let mut fx = HashMap::new();
+        fx.insert(("DAI".into(), "USD".into(), fri), dec("1"));
+        let rep_dai = evaluate_portfolio(
+            &proj_dai,
+            &["ACC-1".into()],
+            "USD",
+            sat,
+            &HashMap::new(),
+            &HashMap::new(),
+            &fx,
+            &HashMap::new(),
+        );
+        assert_eq!(rep_dai.quality, QualityStatus::Partial);
+        assert!(rep_dai
+            .missing_inputs
+            .iter()
+            .any(|m| m.starts_with("fx:DAI/USD@")));
+    }
+
+    #[test]
+    fn compute_twr_rejects_negative_ending_nav_and_xirr_handles_short_horizon() {
+        let err = compute_twr(&[
+            SubPeriodSnapshot {
+                v_start_after_flow: dec("100"),
+                v_end_before_next_flow: dec("-50"),
+            },
+            SubPeriodSnapshot {
+                v_start_after_flow: dec("100"),
+                v_end_before_next_flow: dec("-50"),
+            },
+        ])
+        .unwrap_err();
+        assert!(err.contains("negative ending value"));
+
+        // Short-horizon gain (+10% over 7 days -> annualized > 1000%, previously NoRoot)
+        let d0 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let d1 = NaiveDate::from_ymd_opt(2026, 1, 8).unwrap();
+        let xirr = compute_xirr(&[(d0, dec("-1000")), (d1, dec("1100"))]);
+        assert!(matches!(xirr, XirrStatus::Converged { rate, .. } if rate > dec("10")));
+
+        // Exact r = 10.0 endpoint (11x in 1 year)
+        let d_yr = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let xirr_10 = compute_xirr(&[(d0, dec("-100")), (d_yr, dec("1100"))]);
+        assert!(matches!(xirr_10, XirrStatus::Converged { rate, .. } if rate == dec("10")));
     }
 }

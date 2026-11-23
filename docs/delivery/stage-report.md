@@ -1,6 +1,6 @@
 # M5 v1.0 阶段验证与交付报告
 
-更新：2026-11-15；角色：Agent B（实现与自检）、Agent A（集中技术审核）。唯一计划：[M5 计划](stage-plan.md) v1.0，用例见 [m5-stage-cases.json](m5-stage-cases.json)；用户口径见 [D-33、D-34、D-35](../decisions/confirmed-decisions.md)。分支 `codex/m5-training-workbench`；固定阶段父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`；B 交付时整套门禁的被测源码指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`，**A 审核修正后的最终源码指纹 `9d51a55f4950522f5bfdbf25cba7629e94d3e899e210a14257036f976ec7f3e2`**（差异与验证见 [A 集中技术审核](#a-review)）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准（B 交付时的 SHA 写在交接说明中）。未跟踪的 `workers/` 未读取、构建、修改或暂存；未 push、未操作 PR、未发布版本。
+更新：2026-11-22；角色：Agent B（实现与自检）、Agent A（集中技术审核）。唯一计划：[M5 计划](stage-plan.md) v1.0，用例见 [m5-stage-cases.json](m5-stage-cases.json)；用户口径见 [D-33、D-34、D-35、D-36、D-37](../decisions/confirmed-decisions.md)。分支 `codex/m5-training-workbench`；固定阶段父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`；B 交付时整套门禁的被测源码指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`，A 审核修正后的源码指纹 `9d51a55f4950522f5bfdbf25cba7629e94d3e899e210a14257036f976ec7f3e2`（差异与验证见 [A 集中技术审核](#a-review)），**2026-11-22 托盘与开发版常驻增补后的当前源码指纹 `2c21972c0c51118c5bee45b38612a69f438aee8c5a66376ad97042368213fc06`**（见 [D-36 / D-37 增补验证](#d36)）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准（B 交付时的 SHA 写在交接说明中）。未跟踪的 `workers/` 未读取、构建、修改或暂存；未 push、未操作 PR、未发布版本。
 
 ## 当前判断
 
@@ -65,6 +65,24 @@ A 对照计划 v1.0、阶段 diff（父提交 `a44f86f` → B 交付提交 `708e
 
 **修正后验证**：`python scripts/quick_gate.py` passed（74 s，`-p delta-app` 84 项测试）；`python scripts/quick_gate.py --all` passed（108 s，全工作区 clippy 与测试）；`deps.py --audit` passed。按[两级门禁](../dev-rules/quality-gates.md#gate-tiers)，整套 `verify-stage`（M5 含 `--ui-smoke --ui-bench --live-data`，以及 M1～M4 回归）的证据仍对应 B 交付指纹 `c97131fc…`，没有重跑；A 修正只改动 `delta-app` 的 `training_data.rs` 与 `training_m5_tests.rs`，最终指纹 `9d51a55f…` 由快速门禁覆盖。审核时按指示没有碰 `delta-dev`；随后按用户要求重装开发版（[开发流程](../dev-rules/development-workflow.md#dev-install-at-handoff)）：`package-build` + `install-dev` 把 `0.1.2-dev.20261115093401`（`source_fingerprint = 9d51a55f…`，安装包 `dist/delta-dev-setup-0.1.2-dev.20261115093401-x64.exe`，`sha256 = aedb8bca…6696`）静默装到 `delta-dev`，替换 `0.1.2-dev.20261115084615`；正式版 `delta` 未触碰。
 
+<a id="d36"></a>
+## 阶段内追加：系统托盘、关闭最小化到托盘与开发版外壳常驻启动（D-36 / D-37，2026-11-16 / 2026-11-22）
+
+用户要求开发版常驻运行、每次本机重装后只在系统托盘后台启动，并为桌面端补齐 Windows 系统托盘、关闭按钮默认最小化到托盘（可配置）及正式版自更新按原窗口状态恢复。
+
+| 要求 | 实现位置 | 验证 |
+| --- | --- | --- |
+| 每次 `install-dev` 安装成功后都以 `--background` 纯托盘启动，不论原来是否在运行或窗口是否打开；运行中先经控制管道保存退出，绝不强杀 | `crates/delta-cli/src/installer.rs`：`install_dev` 统一经 `background_launch_args` 追加 `--background`；真实 `delta-dev` 在作业对象里时经 `spawn_via_desktop_shell(..., SW_SHOWNORMAL)` 由 `explorer.exe` 启动，回执记录 `background`、`via_shell`、`in_job`；`--test-identity` 保留 `spawn_detached_app` | 单元测试 `install_dev_always_starts_the_app_in_the_background_once`；本机实测 `package-build` + `install-dev` 覆盖 `was_running: false` 与 `was_running: true`（经 `delta-dev-control` 管道 `quit-for-update` 优雅退出并升级）两条路径，均返回 `restarted: true`、`background: true`、`via_shell: true`、`in_job: false`，无 `in_job` 告警 |
+| 准确核对 `in_job`，避免 `delta-desktop` 自建 `QuietJobObject` 或 Windows 外壳/PCA 系统作业误报 `in_job: true` | `crates/delta-app/src/process.rs`：`process_in_active_job(pid)` 只校验 `ACTIVE_JOB`；桌面外壳启动脚本优先匹配父进程为 `explorer.exe` 的新进程 | 单元测试 `process_in_active_job_returns_false_for_unrelated_process`、`desktop_shell_arguments_follow_command_line_quoting`；命令退出后独立核查确认 `delta-dev.exe` 持续存活且父进程为 `explorer.exe` |
+| Windows 系统托盘、关闭默认最小化到托盘与设置持久化（D-37） | `crates/delta-desktop/src/tray.rs`（纯 Win32 `Shell_NotifyIconW` 专用线程、嵌入图标 1 区分 `icon.ico` / `icon-dev.ico`、原生菜单“打开 / 退出”、`TaskbarCreated` 重注册、`WM_ENDSESSION` 放行、识别 `GpuiFast::Window` / `Zed::Window` 并忽略隐藏平台窗口）、`workbench.rs`（`on_window_should_close`、`tick_lifecycle` 退出期防弹窗、`--background` 二次启动静默无操作）、`ui_forms.rs`（设置页 `settings-close-to-tray` / `settings-close-quit`） | 单元测试 `close_button_defaults_to_tray_and_respects_quit_and_fallback`、`background_startup_parks_in_tray_when_available_and_falls_back_to_minimized`、`tray_tooltip_and_menu_labels_format_and_bound_utf16_length`、`window_class_classifier_matches_gpui_fast_and_ignores_sinks` 与无头 GPUI 回归 `settings_close_action_defaults_to_tray_and_persists_choice`（覆盖无 `close_action` 旧版 `layout.json` 兼容默认与切换持久化） |
+| 正式版应用内自更新按更新前窗口状态恢复；取消/失败后手动启动照常开窗（D-37） | `crates/delta-desktop/src/tray.rs`（`relaunch_args_for_update`）、`lifecycle.rs`（`backup_and_launch_installer`）、`workbench.rs`（`ExitReason::ApplyUpdate` 在退出前采集 `!tray::is_hidden_in_tray()` 并经安装器 `--restore-args` 传回；验证驻留模式保留原始参数） | 单元测试 `update_relaunch_args_match_previous_window_state`；手启不带 `--restore-args` 恒走 `NormalWindow` |
+
+**2026-11-22 实测结果（源码指纹 `2c21972c0c51118c5bee45b38612a69f438aee8c5a66376ad97042368213fc06`）**：
+- `python scripts/quick_gate.py --all`：**passed**（85 s；`docs` 60 份文档 / 65 项需求 passed、`git diff --check` passed、`cargo fmt --check` passed、28 项 Python 脚本测试 passed、`clippy --workspace` passed、`cargo test --workspace` **257 passed / 0 failed / 2 ignored**）。
+- 本机开发版安装（`package-build` + `install-dev`）：先后验证未运行安装（`0.1.2-dev.20261121180004`）与托盘运行中优雅升级（`0.1.2-dev.20261121180402`，安装包 `dist/delta-dev-setup-0.1.2-dev.20261121180402-x64.exe`，`sha256 = d1840180…25e75f`，`source_fingerprint = 2c21972c…`），回执均为 `restarted: true`、`background: true`、`via_shell: true`、`in_job: false`；命令退出后独立检查确认新进程持续存活、父进程为 `explorer.exe`、无可见窗口（`MainWindowHandle = 0`）、`delta-dev-control` 管道就绪且二次 `--background` 启动返回 `already-running-background` 不弹窗；正式版 `delta` 未触碰。
+
+限制：按[两级门禁](../dev-rules/quality-gates.md#gate-tiers)，整套 `verify-stage` 未重跑（仍对应 `c97131fc…`）；托盘图标视觉呈现、右键菜单交互与实机点击恢复留待 H-06 一并确认。
+
 ## 工作包与实现
 
 | 工作包 | 实现 | 用例 |
@@ -114,7 +132,7 @@ A 对照计划 v1.0、阶段 diff（父提交 `a44f86f` → B 交付提交 `708e
 
 ## 限制与集中待处理项
 
-- **H-06**（人工，`M5-M-01`）：训练工作台实机体验，步骤见 [USER-ACTIONS](../../USER-ACTIONS.md)；可顺延，不阻塞审核与远端动作。本机开发版已重装为包含 A-F01 修正的 `0.1.2-dev.20261115093401`（`9d51a55f…`）。
+- **H-06**（人工，`M5-M-01`）：训练工作台实机体验，步骤见 [USER-ACTIONS](../../USER-ACTIONS.md)；可顺延，不阻塞审核与远端动作。本机开发版已重装为包含 A-F01 修正及 D-36/D-37 系统托盘与外壳常驻启动的 `0.1.2-dev.20261121180402`（`2c21972c…`）。
 - [LOOP-07](../decisions/open-questions.md)：画线撤销用 `Delete`、不进入 `Ctrl+Z` 栈；画线不能拖动编辑；聚合视图不画画线；停机缺口不跨源补齐。
 - [PERF-01](../decisions/open-questions.md)：首次准备 857～893 s，贴近 15 分钟上限（触发条件与做法已登记）。
 - [DEPS-01](../decisions/open-questions.md)：未满 7 天的新版本与工具链 1.100.0。

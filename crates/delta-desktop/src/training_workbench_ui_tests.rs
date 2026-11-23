@@ -2,7 +2,6 @@
 //! Synthetic fixture data only; no public network.
 
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,45 +16,12 @@ use gpui_kit::{px, Focusable as _, TestAppContext};
 use rust_decimal::prelude::*;
 
 use crate::controller::WorkbenchUpdated;
+use crate::test_support::{click_id, has_rendered_id, temp_test_dir};
 use crate::training_ui::TrainingViewMode;
 use crate::workbench::DeltaWorkbench;
 
-fn temp_dir(tag: &str) -> PathBuf {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let base = std::env::var_os("DELTA_TEST_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join(format!(
-        "delta_m5_desktop_{tag}_{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn click_id(cx: &mut gpui_kit::VisualTestContext, id: &str) {
-    let id_str = gpui_kit::SharedString::from(id.to_string());
-    let position = cx.update(move |window, cx| {
-        window.render_frame(cx);
-        let bounds = window.find(id_str.clone()).bounds();
-        assert!(
-            bounds.size.width > px(0.) && bounds.size.height > px(0.),
-            "control '{id_str}' has no rendered bounds"
-        );
-        bounds.center()
-    });
-    cx.simulate_click(position, gpui_kit::Modifiers::default());
-    cx.run_until_parked();
-}
-
-fn has_rendered_id(cx: &mut gpui_kit::VisualTestContext, id: &str) -> bool {
-    let id_str = gpui_kit::SharedString::from(id.to_string());
-    cx.update(move |window, cx| {
-        window.render_frame(cx);
-        window.find(id_str.clone()).bounds().size.width > px(0.)
-    })
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    temp_test_dir("delta_m5_desktop", tag)
 }
 
 /// Wall-clock audit stamps of the run itself (not market data) are allowed.
@@ -169,7 +135,7 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
         assert!(ws.run.is_identity_masked);
         assert!(ws.run.practice_account_id.is_some());
         assert_eq!(ws.run.timeframe, "1d");
-        no_real_identity_json(ws);
+        no_real_identity_json(&**ws);
         assert!(g.training.practice_account.is_some());
         ws.run.run_id.clone()
     };
@@ -228,10 +194,26 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
         assert!(draft.price < close);
         assert_eq!(g.training.workspace.as_ref().unwrap().open_orders.len(), 0);
     }
-    // Ctrl+Enter without a chosen option does nothing.
+    // Ctrl+Enter without a chosen option does nothing — even when focus is inside the order ticket (`UI-B03`).
     cx.simulate_keystrokes("ctrl-enter");
     idle!();
     assert!(snapshot(&state).open_orders.is_empty());
+    cx.update(|window, cx| {
+        center.update(cx, |panel, cx| {
+            let fh = panel
+                .fields
+                .get("form.trn_order_qty")
+                .read(cx)
+                .focus_handle(cx);
+            fh.focus(window, cx);
+        })
+    });
+    cx.simulate_keystrokes("ctrl-enter");
+    idle!();
+    assert!(
+        snapshot(&state).open_orders.is_empty(),
+        "UI-B03: open draft with no option must block order-ticket Ctrl+Enter submit"
+    );
     click_id(cx, "trn-wb-draft-BuyLimit");
     cx.simulate_keystrokes("ctrl-enter");
     idle!();
@@ -405,6 +387,29 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
     }
     let ws5 = snapshot(&state);
     assert!(ws5.run.current_step_index > start_step);
+    assert_eq!(
+        ws5.chart_slice.visible_end_index, ws5.run.visible_bar_count,
+        "UI-B01: PlayStep must advance chart viewport to reveal newly played bars"
+    );
+    // Leaving Workspace pauses playback cleanly (`UI-B02`).
+    if ws5.run.status == SimRunStatus::Active {
+        let step_before_nav = ws5.run.current_step_index;
+        click_id(cx, "trn-wb-play");
+        assert!(state.lock().unwrap().training.wb.playback.playing);
+        click_id(cx, "nav-btn-nav-overview");
+        idle!();
+        for _ in 0..10 {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+        }
+        assert!(
+            !state.lock().unwrap().training.wb.playback.playing,
+            "UI-B02: navigating away from training workspace must pause playback"
+        );
+        click_id(cx, "nav-btn-nav-training");
+        idle!();
+        assert_eq!(snapshot(&state).run.current_step_index, step_before_nav);
+    }
     // Undo never crosses an advance.
     cx.simulate_keystrokes("ctrl-z");
     idle!();

@@ -35,14 +35,19 @@ fn main() {
     };
     let version = std::env::var("DELTA_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").unwrap());
-    let core: Vec<u64> = version
-        .split('-')
+    let core: Vec<u16> = version
+        .split(['-', '+'])
         .next()
-        .unwrap()
+        .unwrap_or("")
         .split('.')
-        .map(|part| part.parse().expect("numeric version"))
+        .map(|part| part.parse::<u16>().expect("numeric u16 version component"))
         .collect();
-    let packed = (core[0] << 48) | (core[1] << 32) | (core[2] << 16);
+    assert!(
+        core.len() >= 3,
+        "DELTA_VERSION '{version}' must have at least major.minor.patch"
+    );
+    let packed =
+        (u64::from(core[0]) << 48) | (u64::from(core[1]) << 32) | (u64::from(core[2]) << 16);
     let mut resource = winresource::WindowsResource::new();
     resource
         .set_icon(icon)

@@ -8,8 +8,10 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::sim_report::{
-    ClosedTradeGroup, ExpectancySummary, RatioMetric, WinRateStatus, WinRateSummary,
+    compute_closed_group_stats, round_metric, ClosedTradeGroup, ExpectancySummary, RatioMetric,
+    WinRateSummary,
 };
+use std::collections::BTreeMap;
 
 pub const ACCOUNT_REPORT_VERSION: &str = "m5-account-report-1";
 /// Fewer closed trade groups than this are flagged "样本不足" (sample insufficient).
@@ -98,84 +100,23 @@ pub struct AccountReport {
 }
 
 fn ratio(num: Decimal, den: Decimal) -> Decimal {
-    (num / den).round_dp(RATIO_DP)
+    round_metric(num / den, RATIO_DP)
 }
 
 pub fn compute_group_metrics(groups: &[&ClosedTradeGroup]) -> AccountGroupMetrics {
-    let n = groups.len();
-    let wins: Vec<Decimal> = groups
-        .iter()
-        .map(|g| g.realized_pnl)
-        .filter(|p| *p > Decimal::ZERO)
-        .collect();
-    let losses: Vec<Decimal> = groups
-        .iter()
-        .map(|g| g.realized_pnl)
-        .filter(|p| *p < Decimal::ZERO)
-        .collect();
-    let zero = n - wins.len() - losses.len();
-    let gross_profit: Decimal = wins.iter().copied().sum();
-    let gross_loss_abs: Decimal = -losses.iter().copied().sum::<Decimal>();
-    let status = if n == 0 {
-        WinRateStatus::NoClosedTrades
-    } else {
-        WinRateStatus::Computed
-    };
-    let win_rate = (n > 0).then(|| ratio(Decimal::from(wins.len()), Decimal::from(n)));
-    let special = |w: bool, l: bool| {
-        if n == 0 {
-            Some(RatioMetric::NoClosedTrades)
-        } else if !w {
-            Some(RatioMetric::NoWins)
-        } else if !l {
-            Some(RatioMetric::NoLosses)
-        } else {
-            None
-        }
-    };
-    let (has_w, has_l) = (!wins.is_empty(), !losses.is_empty());
-    let payoff_ratio = special(has_w, has_l).unwrap_or_else(|| {
-        let avg_w = gross_profit / Decimal::from(wins.len());
-        let avg_l = gross_loss_abs / Decimal::from(losses.len());
-        RatioMetric::Computed(ratio(avg_w, avg_l))
-    });
-    let profit_factor = special(has_w, has_l)
-        .unwrap_or_else(|| RatioMetric::Computed(ratio(gross_profit, gross_loss_abs)));
-    let largest_win = wins.iter().copied().max();
-    let largest_loss = losses.iter().copied().min();
-    let extreme_payoff_ratio = special(has_w, has_l).unwrap_or_else(|| {
-        RatioMetric::Computed(ratio(largest_win.unwrap(), -largest_loss.unwrap()))
-    });
-    let total: Decimal = groups.iter().map(|g| g.realized_pnl).sum();
-    let expectancy = ExpectancySummary {
-        status,
-        sample_count: n,
-        value: (n > 0).then(|| ratio(total, Decimal::from(n))),
-    };
-    let holding: usize = groups
-        .iter()
-        .map(|g| g.exit_bar_index.saturating_sub(g.entry_bar_index))
-        .sum();
+    let stats = compute_closed_group_stats(groups.iter().copied());
     AccountGroupMetrics {
-        win_rate: WinRateSummary {
-            status,
-            closed_trade_count: n,
-            winning_count: wins.len(),
-            losing_count: losses.len(),
-            zero_pnl_count: zero,
-            win_rate,
-            win_rate_pct: win_rate.map(|w| (w * Decimal::from(100)).round_dp(4)),
-        },
-        gross_profit,
-        gross_loss_abs,
-        payoff_ratio,
-        profit_factor,
-        largest_win,
-        largest_loss,
-        extreme_payoff_ratio,
-        expectancy,
-        average_holding_bars: (n > 0).then(|| ratio(Decimal::from(holding), Decimal::from(n))),
-        sample_insufficient: n < ACCOUNT_REPORT_MIN_GROUPS,
+        sample_insufficient: stats.win_rate.closed_trade_count < ACCOUNT_REPORT_MIN_GROUPS,
+        win_rate: stats.win_rate,
+        gross_profit: stats.gross_profit,
+        gross_loss_abs: stats.gross_loss_abs,
+        payoff_ratio: stats.payoff_ratio,
+        profit_factor: stats.profit_factor,
+        largest_win: stats.largest_win,
+        largest_loss: stats.largest_loss,
+        extreme_payoff_ratio: stats.extreme_payoff_ratio,
+        expectancy: stats.expectancy,
+        average_holding_bars: stats.average_holding_bars,
     }
 }
 
@@ -183,22 +124,23 @@ fn run_pnl(r: &AccountRunInput) -> Decimal {
     r.settlement.unwrap_or(r.mark_equity) - r.allocation
 }
 
-fn breakdown(
-    runs: &[AccountRunInput],
-    key: impl Fn(&AccountRunInput) -> String,
+fn breakdown<'a>(
+    runs: &'a [AccountRunInput],
+    key: impl Fn(&'a AccountRunInput) -> &'a str,
 ) -> Vec<AccountBreakdown> {
-    let mut keys: Vec<String> = runs.iter().map(&key).collect();
-    keys.sort();
-    keys.dedup();
-    keys.into_iter()
-        .map(|k| {
-            let members: Vec<&AccountRunInput> = runs.iter().filter(|r| key(r) == k).collect();
+    let mut grouped: BTreeMap<&'a str, Vec<&'a AccountRunInput>> = BTreeMap::new();
+    for r in runs {
+        grouped.entry(key(r)).or_default().push(r);
+    }
+    grouped
+        .into_iter()
+        .map(|(k, members)| {
             let groups: Vec<&ClosedTradeGroup> = members
                 .iter()
                 .flat_map(|r| r.closed_groups.iter())
                 .collect();
             AccountBreakdown {
-                key: k,
+                key: k.to_string(),
                 run_count: members.len(),
                 pnl: members.iter().map(|r| run_pnl(r)).sum(),
                 metrics: compute_group_metrics(&groups),
@@ -214,7 +156,8 @@ pub fn compute_account_report(
 ) -> AccountReport {
     // Equity = balance + allocations held by runs that have not settled yet.
     let mut balance = Decimal::ZERO;
-    let mut outstanding: std::collections::BTreeMap<String, Decimal> = Default::default();
+    let mut outstanding: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut outstanding_total = Decimal::ZERO;
     let mut curve = Vec::with_capacity(entries.len() + 1);
     let mut net_deposits = Decimal::ZERO;
     for e in entries {
@@ -223,28 +166,31 @@ pub fn compute_account_report(
             ("deposit" | "withdrawal", _) => net_deposits += e.amount,
             ("run_allocation", Some(id)) => {
                 *outstanding.entry(id.clone()).or_default() -= e.amount;
+                outstanding_total -= e.amount;
             }
-            ("run_settlement", Some(id)) => {
-                outstanding.remove(id);
-            }
-            ("delete_reversal", Some(id)) => {
-                outstanding.remove(id);
+            ("run_settlement" | "delete_reversal", Some(id)) => {
+                if let Some(removed) = outstanding.remove(id) {
+                    outstanding_total -= removed;
+                }
             }
             _ => {}
         }
         curve.push(AccountEquityPoint {
             seq: Some(e.seq),
             kind: e.kind.clone(),
-            equity: balance + outstanding.values().copied().sum::<Decimal>(),
+            equity: balance + outstanding_total,
         });
     }
-    let open_mark: Decimal = runs
-        .iter()
-        .filter(|r| r.settlement.is_none() && outstanding.contains_key(&r.run_id))
-        .map(|r| r.mark_equity)
-        .sum();
+    let mut open_mark = Decimal::ZERO;
+    let mut has_outstanding_open_run = false;
+    for r in runs {
+        if r.settlement.is_none() && outstanding.contains_key(&r.run_id) {
+            open_mark += r.mark_equity;
+            has_outstanding_open_run = true;
+        }
+    }
     let equity = balance + open_mark;
-    if runs.iter().any(|r| r.settlement.is_none()) {
+    if has_outstanding_open_run {
         curve.push(AccountEquityPoint {
             seq: None,
             kind: "mark_to_market".to_string(),
@@ -274,8 +220,8 @@ pub fn compute_account_report(
         plan_execution_rate: (planned > 0)
             .then(|| ratio(Decimal::from(compliant), Decimal::from(planned))),
         undo_count: runs.iter().map(|r| r.undo_count).sum(),
-        by_market_category: breakdown(runs, |r| r.market_category.clone()),
-        by_timeframe: breakdown(runs, |r| r.timeframe.clone()),
+        by_market_category: breakdown(runs, |r| r.market_category.as_str()),
+        by_timeframe: breakdown(runs, |r| r.timeframe.as_str()),
     }
 }
 
@@ -425,5 +371,17 @@ mod tests {
         assert_eq!(empty.run_win_rate, None);
         let no_loss = compute_group_metrics(&[&g(10, 0, 1)]);
         assert_eq!(no_loss.profit_factor, RatioMetric::NoLosses);
+
+        // Zero wins with losses: profit_factor is Computed(0) (aligned with sim_report),
+        // while payoff_ratio and extreme_payoff_ratio are NoWins.
+        let no_win = compute_group_metrics(&[&g(-10, 0, 1)]);
+        assert_eq!(no_win.profit_factor, RatioMetric::Computed(Decimal::ZERO));
+        assert_eq!(no_win.payoff_ratio, RatioMetric::NoWins);
+        assert_eq!(no_win.extreme_payoff_ratio, RatioMetric::NoWins);
+
+        // All break-even groups: NoLosses takes precedence consistently with sim_report.
+        let all_zero = compute_group_metrics(&[&g(0, 0, 1)]);
+        assert_eq!(all_zero.profit_factor, RatioMetric::NoLosses);
+        assert_eq!(all_zero.payoff_ratio, RatioMetric::NoLosses);
     }
 }

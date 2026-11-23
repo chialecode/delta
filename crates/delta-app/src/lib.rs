@@ -64,6 +64,11 @@ pub use training::*;
 pub use training_m5::*;
 pub use version::*;
 
+/// Shared frame-latency budgets referenced by desktop benchmarks and CLI stage gates (`XCR-01`).
+pub const M4_K03_P95_BUDGET_MS: f64 = 100.0;
+pub const M5_K02_STEP_P95_BUDGET_MS: f64 = 100.0;
+pub const M5_K02_INTERVAL_P95_BUDGET_MS: f64 = 200.0;
+
 #[cfg(test)]
 mod regression;
 

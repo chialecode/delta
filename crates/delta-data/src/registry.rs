@@ -124,20 +124,26 @@ impl InstrumentRegistry {
                 },
             );
             let prov_lower = venue.to_ascii_lowercase();
+            let slash = format!("{base}/{quote}");
+            let dash = format!("{base}-{quote}");
+            let compact = format!("{base}{quote}");
+            let mut seen_ext = std::collections::HashSet::new();
             for (prov, ext) in [
                 ("canonical", canonical_id.as_str()),
                 (prov_lower.as_str(), native_sym),
-                (prov_lower.as_str(), &format!("{base}/{quote}")),
-                (prov_lower.as_str(), &format!("{base}-{quote}")),
-                (prov_lower.as_str(), &format!("{base}{quote}")),
+                (prov_lower.as_str(), slash.as_str()),
+                (prov_lower.as_str(), dash.as_str()),
+                (prov_lower.as_str(), compact.as_str()),
             ] {
-                self.aliases.push(InstrumentAlias {
-                    provider: prov.to_string(),
-                    external_symbol: ext.to_string(),
-                    instrument_id: canonical_id.clone(),
-                    valid_from: None,
-                    valid_to: None,
-                });
+                if seen_ext.insert((prov, ext)) {
+                    self.aliases.push(InstrumentAlias {
+                        provider: prov.to_string(),
+                        external_symbol: ext.to_string(),
+                        instrument_id: canonical_id.clone(),
+                        valid_from: None,
+                        valid_to: None,
+                    });
+                }
             }
         }
     }
@@ -151,18 +157,37 @@ impl InstrumentRegistry {
         }
         if let Some(prov) = provider_hint {
             let p = prov.to_ascii_lowercase();
-            for alias in &self.aliases {
-                if alias.provider == p && alias.external_symbol.eq_ignore_ascii_case(&sym) {
-                    return Some(alias.instrument_id.clone());
-                }
-            }
-        }
-        for alias in &self.aliases {
-            if alias.external_symbol.eq_ignore_ascii_case(&sym) {
+            let mut matches: Vec<&InstrumentAlias> = self
+                .aliases
+                .iter()
+                .filter(|a| a.provider == p && a.external_symbol.eq_ignore_ascii_case(&sym))
+                .collect();
+            matches.sort_by(|a, b| a.instrument_id.cmp(&b.instrument_id));
+            if let Some(alias) = matches.first() {
                 return Some(alias.instrument_id.clone());
             }
         }
-        None
+        // Deterministic fallback independent of Vec / SQLite row order: prefer provider wire format
+        // (e.g. `BTCUSDT` -> binance, `BTC-USDT` -> okx) before alphabetical tie-breaking.
+        let mut matches: Vec<&InstrumentAlias> = self
+            .aliases
+            .iter()
+            .filter(|a| a.external_symbol.eq_ignore_ascii_case(&sym))
+            .collect();
+        matches.sort_by_key(|alias| {
+            let wire_match = match alias.provider.as_str() {
+                "binance" => !sym.contains(['-', '/', ':']),
+                "okx" => sym.contains('-') && !sym.contains(['/', ':']),
+                "canonical" => true,
+                _ => false,
+            };
+            (
+                !wire_match,
+                alias.instrument_id.as_str(),
+                alias.provider.as_str(),
+            )
+        });
+        matches.first().map(|alias| alias.instrument_id.clone())
     }
 
     /// Return the provider-specific symbol for a canonical instrument (e.g., `NASDAQ:AAPL` -> `105.AAPL` for `eastmoney`).

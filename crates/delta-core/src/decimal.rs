@@ -17,6 +17,42 @@ pub enum DecimalError {
     FloatForbidden,
 }
 
+/// Normalize a `Decimal` so `-0` and trailing fractional zeros never cause canonical divergence.
+#[inline]
+pub fn canon_decimal(value: Decimal) -> Decimal {
+    if value.is_zero() {
+        Decimal::ZERO
+    } else {
+        value.normalize()
+    }
+}
+
+fn map_rust_decimal_error(raw: &str, err: rust_decimal::Error) -> DecimalError {
+    match err {
+        rust_decimal::Error::ExceedsMaximumPossibleValue
+        | rust_decimal::Error::LessThanMinimumPossibleValue
+        | rust_decimal::Error::Underflow => DecimalError::OutOfRange(raw.to_string()),
+        rust_decimal::Error::ScaleExceedsMaximumPrecision(actual) => {
+            let is_positive_sci_exp = raw
+                .split_once(['e', 'E'])
+                .is_some_and(|(_, exp)| !exp.starts_with('-'));
+            if is_positive_sci_exp {
+                DecimalError::OutOfRange(raw.to_string())
+            } else {
+                DecimalError::PrecisionExceeded {
+                    raw: raw.to_string(),
+                    actual,
+                    max: 28,
+                }
+            }
+        }
+        rust_decimal::Error::ErrorString(msg) if msg.contains("overflow") => {
+            DecimalError::OutOfRange(raw.to_string())
+        }
+        _ => DecimalError::InvalidLiteral(raw.to_string()),
+    }
+}
+
 /// Parse a decimal string losslessly, supporting standard and scientific notation without f64.
 pub fn parse_decimal_lossless(raw: &str) -> Result<Decimal, DecimalError> {
     let trimmed = raw.trim();
@@ -24,13 +60,11 @@ pub fn parse_decimal_lossless(raw: &str) -> Result<Decimal, DecimalError> {
         return Err(DecimalError::InvalidLiteral(raw.to_string()));
     }
     let parsed = if trimmed.contains(['e', 'E']) {
-        Decimal::from_scientific(trimmed)
-            .map_err(|_| DecimalError::InvalidLiteral(trimmed.to_string()))?
+        Decimal::from_scientific(trimmed).map_err(|e| map_rust_decimal_error(trimmed, e))?
     } else {
-        Decimal::from_str_exact(trimmed)
-            .map_err(|_| DecimalError::InvalidLiteral(trimmed.to_string()))?
+        Decimal::from_str_exact(trimmed).map_err(|e| map_rust_decimal_error(trimmed, e))?
     };
-    Ok(parsed.normalize())
+    Ok(canon_decimal(parsed))
 }
 
 /// Parse a decimal and enforce a maximum fractional scale without silent truncation.
@@ -59,19 +93,18 @@ pub fn parse_json_raw_decimal(raw_json_token: &str) -> Result<Decimal, DecimalEr
 
 /// Normalize a Decimal to its canonical SQLite TEXT representation.
 pub fn to_canonical_text(value: Decimal) -> String {
-    value.normalize().to_string()
+    canon_decimal(value).to_string()
 }
 
 /// Restore a Yahoo Finance Chart v8 split-adjusted price to raw unadjusted price (S-08):
 /// multiply by cumulative split factor after the bar's session date, then round to 4 decimal
-/// places (US equity tick/noise normalization) using MidpointNearestEven (or HalfUp).
+/// places (US equity tick/noise normalization) using `MidpointAwayFromZero` (HalfUp).
 pub fn restore_yahoo_raw_price(
     adjusted_price: Decimal,
     cumulative_split_factor: Decimal,
 ) -> Decimal {
     let raw = adjusted_price * cumulative_split_factor;
-    raw.round_dp_with_strategy(4, RoundingStrategy::MidpointAwayFromZero)
-        .normalize()
+    canon_decimal(raw.round_dp_with_strategy(4, RoundingStrategy::MidpointAwayFromZero))
 }
 
 /// Restore a Yahoo Finance Chart v8 split-adjusted dividend amount to raw unadjusted dividend.
@@ -80,8 +113,7 @@ pub fn restore_yahoo_raw_dividend(
     cumulative_split_factor: Decimal,
 ) -> Decimal {
     let raw = adjusted_dividend * cumulative_split_factor;
-    raw.round_dp_with_strategy(6, RoundingStrategy::MidpointAwayFromZero)
-        .normalize()
+    canon_decimal(raw.round_dp_with_strategy(6, RoundingStrategy::MidpointAwayFromZero))
 }
 
 /// Restore a Yahoo Finance Chart v8 split-adjusted volume to raw unadjusted volume.
@@ -89,12 +121,13 @@ pub fn restore_yahoo_raw_volume(
     adjusted_volume: Decimal,
     cumulative_split_factor: Decimal,
 ) -> Decimal {
-    if cumulative_split_factor.is_zero() {
-        return adjusted_volume;
+    if cumulative_split_factor <= Decimal::ZERO {
+        return canon_decimal(adjusted_volume);
     }
-    (adjusted_volume / cumulative_split_factor)
-        .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
-        .normalize()
+    canon_decimal(
+        (adjusted_volume / cumulative_split_factor)
+            .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero),
+    )
 }
 
 /// Wrapper for deserializing JSON numbers or strings directly from raw source text into `Decimal`
@@ -148,5 +181,48 @@ impl<'de> Visitor<'de> for DirectDecimalVisitor {
         E: de::Error,
     {
         parse_decimal_lossless(v).map_err(E::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonicalizes_negative_zero_and_maps_out_of_range() {
+        let neg_zero = parse_decimal_lossless("-0.00").unwrap();
+        assert_eq!(to_canonical_text(neg_zero), "0");
+        assert!(!neg_zero.is_sign_negative());
+        assert_eq!(
+            to_canonical_text(Decimal::new(0, 2) * Decimal::NEGATIVE_ONE),
+            "0"
+        );
+
+        let err = parse_decimal_lossless("999999999999999999999999999999999").unwrap_err();
+        assert!(matches!(err, DecimalError::OutOfRange(_)));
+        assert!(matches!(
+            parse_decimal_lossless("1e50").unwrap_err(),
+            DecimalError::OutOfRange(_)
+        ));
+        assert!(matches!(
+            parse_decimal_lossless("9e28").unwrap_err(),
+            DecimalError::OutOfRange(_)
+        ));
+        assert!(matches!(
+            parse_decimal_lossless("1e-29").unwrap_err(),
+            DecimalError::PrecisionExceeded { actual: 29, .. }
+        ));
+        assert!(matches!(
+            parse_decimal_lossless("0.00000000000000000000000000001").unwrap_err(),
+            DecimalError::OutOfRange(_)
+        ));
+        assert!(matches!(
+            parse_decimal_lossless("not-a-number").unwrap_err(),
+            DecimalError::InvalidLiteral(_)
+        ));
+        assert_eq!(
+            restore_yahoo_raw_volume(Decimal::from(100), Decimal::ZERO),
+            Decimal::from(100)
+        );
     }
 }

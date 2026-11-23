@@ -1,68 +1,34 @@
+// Test-only module mounted under #[cfg(test)] in training_m5.rs.
 //! M5 behaviour tests on loopback fixtures (synthetic/recorded data; no public network).
 
 use super::*;
 use crate::market_fixture::{FixtureFault, MarketFixtureServer};
-use crate::process::apply_process_quiet_guards;
 use crate::service::{
     PrepareTrainingDataRequest, PrepareTrainingDataSummaryDto, CROSSCHECK_TRAINING_INSTRUMENT,
     DEFAULT_TRAINING_INSTRUMENT,
 };
+use crate::training::test_support::TestSandbox;
 use crate::training::{TrainingOrderRequestDto, TrainingReplayMode};
-use crate::{BuildChannel, ResolvedAppPaths};
+use crate::ResolvedAppPaths;
 use chrono::{DateTime, Duration, NaiveDate, TimeZone};
 use delta_core::{OrderSide, OrderStatus, SimOrderType, TimeInForce, Timeframe};
 use rust_decimal::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 
-static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-pub(crate) struct M5Sandbox(pub PathBuf);
+pub(crate) struct M5Sandbox(TestSandbox);
 
 impl M5Sandbox {
     pub(crate) fn new(label: &str) -> Self {
-        apply_process_quiet_guards();
-        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let base = std::env::var_os("DELTA_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let path = base.join(format!(
-            "delta-m5-{label}-{}-{id}-{}",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+        Self(TestSandbox::new(&format!("m5-{label}")))
     }
 
     pub(crate) fn paths(&self) -> ResolvedAppPaths {
-        let docs = self.0.join("docs");
-        ResolvedAppPaths {
-            channel: BuildChannel::Source,
-            data_dir: self.0.join("data"),
-            documents_dir: docs.clone(),
-            default_export_dir: docs.join("exports"),
-            default_backup_dir: docs.join("backups"),
-            credential_prefix: format!(
-                "delta-test-m5-{}",
-                self.0.file_name().unwrap().to_string_lossy()
-            ),
-        }
+        self.0.app_paths()
     }
 
     pub(crate) fn app(&self) -> AppService {
-        AppService::open(self.paths(), "USD", "USD", "UTC", true).unwrap()
-    }
-}
-
-impl Drop for M5Sandbox {
-    fn drop(&mut self) {
-        for _ in 0..40 {
-            if fs::remove_dir_all(&self.0).is_ok() || !self.0.exists() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
+        self.0.open_service()
     }
 }
 
@@ -355,9 +321,17 @@ fn m5_quick_fill_modify_undo_and_settlement_are_hand_checkable() {
     assert_eq!(analysis.net_deposits, Decimal::from(99_000));
     assert_eq!(analysis.ended_run_count, 1);
     assert_eq!(analysis.undo_count, 3);
+    assert_eq!(
+        analysis.groups.win_rate.closed_trade_count, 1,
+        "step-0 quick buy closed on later bar must be counted (TRN-B01/CORE-B02)"
+    );
     assert!(analysis.groups.sample_insufficient);
+    let report = svc.get_training_report(&run_id).unwrap();
+    assert_eq!(report.report.closed_trade_groups.len(), 1);
+    assert_eq!(report.report.win_rate.closed_trade_count, 1);
     let history = svc.training_history().unwrap();
     assert_eq!(history.len(), 1);
+    assert_eq!(history[0].closed_trade_count, 1);
     assert_eq!(history[0].funding_label, "练习账户 USDT");
     assert_eq!(history[0].timeframe, "1d");
     // `S-55`: the post-run AI summary carries the timeframe and operation counts.
@@ -410,8 +384,12 @@ fn m5_abandon_restart_and_delete_keep_practice_account_conserved() {
         Some("PRACTICE:USDT")
     );
     assert_eq!(restarted.status, SimRunStatus::Active);
-    // Abandoned runs can be revealed and reported like finished runs.
-    svc.reveal_training_run(&run.run_id).unwrap();
+    // Abandoned runs can be revealed and reported like finished runs (DATA-B04).
+    let revealed = svc.reveal_training_run(&run.run_id).unwrap();
+    assert!(
+        !revealed.post_finish_bars.is_empty(),
+        "abandoned run reveal must include post-finish bars"
+    );
     svc.get_training_report(&run.run_id).unwrap();
 
     // Finish the restarted run, then delete the abandoned one: only a reversal is appended.
@@ -812,5 +790,314 @@ fn m5_aggregated_view_matches_hand_calc_and_never_leaks_future_sentinel() {
             .unwrap_err()
             .code,
         "TIMEFRAME_VIEW_UNAVAILABLE"
+    );
+}
+
+#[test]
+fn m5_step0_round_trip_without_advance_counts_closed_trade() {
+    let sandbox = M5Sandbox::new("step0rt");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::D1], None);
+    let run = svc
+        .create_training_run(CreateTrainingRunRequest {
+            hidden_mode: true,
+            ..btc_daily_run(71, true)
+        })
+        .unwrap();
+    let close = last_close(&svc, &run.run_id);
+    let qty = (Decimal::from(5_000) / close).round_dp_with_strategy(4, RoundingStrategy::ToZero);
+    svc.submit_training_order(&run.run_id, quick(OrderSide::Buy, qty))
+        .unwrap();
+    let pos_qty = svc
+        .show_training_run(&run.run_id)
+        .unwrap()
+        .position
+        .unwrap()
+        .quantity;
+    svc.submit_training_order(&run.run_id, quick(OrderSide::Sell, pos_qty))
+        .unwrap();
+    svc.finish_training_run(&run.run_id).unwrap();
+
+    let report = svc.get_training_report(&run.run_id).unwrap();
+    assert_eq!(report.report.closed_trade_groups.len(), 1);
+    assert_eq!(report.report.win_rate.closed_trade_count, 1);
+    assert_eq!(
+        report.report.closed_trade_groups[0].instrument_id,
+        crate::training::HIDDEN_INSTRUMENT_ID
+    );
+}
+
+#[test]
+fn m5_retry_preserves_engine_and_timeframe_and_rejects_damaged() {
+    let sandbox = M5Sandbox::new("retry-m5");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::H4], None);
+    let orig = svc
+        .create_training_run(CreateTrainingRunRequest {
+            timeframe: Timeframe::H4,
+            warmup_bars: 50,
+            history_bars: 100,
+            training_bars: 100,
+            reveal_bars: 10,
+            ..btc_daily_run(72, false)
+        })
+        .unwrap();
+    svc.advance_training_bar(&orig.run_id).unwrap();
+    svc.finish_training_run(&orig.run_id).unwrap();
+
+    // TRN-B02: retry on M5 4h run must initialize an m5-sim-2 / 4h checkpoint so quick-fill
+    // and scratch replay succeed.
+    let child = svc.retry_training_run(&orig.run_id, None).unwrap();
+    assert_eq!(child.engine_version, SIM_ENGINE_VERSION_M5);
+    assert_eq!(child.timeframe, "4h");
+    let close = last_close(&svc, &child.run_id);
+    let qty = (Decimal::from(1_000) / close).round_dp_with_strategy(4, RoundingStrategy::ToZero);
+    svc.submit_training_order(&child.run_id, quick(OrderSide::Buy, qty))
+        .unwrap();
+    let replay = svc
+        .replay_training_run(&child.run_id, TrainingReplayMode::Scratch)
+        .unwrap();
+    assert!(replay.matches_persisted_hashes);
+
+    // Damaged run must be refused on retry.
+    svc.store_mut()
+        .mark_simulation_run_damaged(&orig.run_id, "synthetic test damage")
+        .unwrap();
+    assert_eq!(
+        svc.retry_training_run(&orig.run_id, None).unwrap_err().code,
+        "RUN_DAMAGED"
+    );
+}
+
+#[test]
+fn m5_from_checkpoint_replay_skips_midbar_pause_checkpoint_for_undo() {
+    let sandbox = M5Sandbox::new("cp-pause-undo");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::D1], None);
+    let run = svc.create_training_run(btc_daily_run(73, false)).unwrap();
+    let close = last_close(&svc, &run.run_id);
+    let qty = (Decimal::from(2_000) / close).round_dp_with_strategy(4, RoundingStrategy::ToZero);
+
+    // Submit mid-bar quick buy, pause (writes a mid-bar Pause checkpoint), resume, then undo.
+    svc.submit_training_order(&run.run_id, quick(OrderSide::Buy, qty))
+        .unwrap();
+    svc.pause_training_run(&run.run_id).unwrap();
+    svc.resume_training_run(&run.run_id).unwrap();
+    svc.undo_training_last(&run.run_id).unwrap();
+
+    // TRN-B03: FromCheckpoint replay must skip the mid-bar Pause checkpoint and fall back to a
+    // valid bar-boundary checkpoint (seq=0) so UndoLast replays cleanly.
+    let replay = svc
+        .replay_training_run(&run.run_id, TrainingReplayMode::FromCheckpoint)
+        .unwrap();
+    assert!(replay.matches_persisted_hashes);
+    assert_eq!(replay.started_from_seq, 0);
+}
+
+#[test]
+fn m5_initial_clock_fallback_includes_last_crypto_history_bar() {
+    let sandbox = M5Sandbox::new("clock-fb");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::D1], None);
+    let run = svc.create_training_run(btc_daily_run(74, false)).unwrap();
+    svc.advance_training_bar(&run.run_id).unwrap();
+
+    // Delete seq=0 checkpoint so scratch replay must rely on `find_initial_visible_until_for_session`
+    // fallback (`TRN-B04`), where last history bar has `close_at == train_start_at`.
+    svc.store()
+        .conn()
+        .execute(
+            "DELETE FROM sim_checkpoint WHERE run_id = ?1 AND seq = 0",
+            rusqlite::params![run.run_id],
+        )
+        .unwrap();
+
+    let replay = svc
+        .replay_training_run(&run.run_id, TrainingReplayMode::Scratch)
+        .unwrap();
+    assert!(replay.matches_persisted_hashes);
+}
+
+#[test]
+fn m5_hidden_modify_rejection_scrubs_instrument_and_restart_is_atomic() {
+    let sandbox = M5Sandbox::new("scrub-restart");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::D1], None);
+    let run = svc
+        .create_training_run(CreateTrainingRunRequest {
+            hidden_mode: true,
+            ..btc_daily_run(75, true)
+        })
+        .unwrap();
+    let close = last_close(&svc, &run.run_id);
+    let qty = (Decimal::from(1_000) / close).round_dp_with_strategy(4, RoundingStrategy::ToZero);
+    let limit = (close * d("0.5")).round_dp(2);
+    svc.submit_training_order(
+        &run.run_id,
+        TrainingOrderRequestDto::single(
+            OrderSide::Buy,
+            SimOrderType::Limit { limit_price: limit },
+            qty,
+            TimeInForce::Gtc,
+            None,
+        ),
+    )
+    .unwrap();
+    let order_id = svc.show_training_run(&run.run_id).unwrap().open_orders[0]
+        .order_id
+        .clone();
+
+    // TRN-B12: rejected modify in hidden mode must never leak `BINANCE:BTC/USDT`.
+    let rej_err = svc
+        .modify_training_order(
+            &run.run_id,
+            ModifyTrainingOrderRequest {
+                order_id,
+                quantity: Some(d("999999")),
+                limit_price: None,
+                stop_price: None,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        !rej_err.message.contains("BINANCE") && !rej_err.message.contains("BTC"),
+        "hidden rejection leaked instrument: {}",
+        rej_err.message
+    );
+
+    // TRN-B12: if restart fails during new-run creation (e.g., empty candidate pool), the
+    // original run must NOT be left abandoned.
+    let bad_pool = delta_data::CandidatePoolQuery {
+        dataset_version: run.dataset_version,
+        market_category: "crypto_spot".into(),
+        instrument_id: Some("BINANCE:DOESNOTEXIST".into()),
+        start_date: None,
+        end_date: None,
+        warmup_bars: 50,
+        history_len: 120,
+        train_len: 250,
+        reveal_len: 60,
+        timeframe: "1d".into(),
+        quality_filter: delta_data::CandidateQualityFilter::PriceAffectingOnly,
+    };
+    svc.store()
+        .conn()
+        .execute(
+            "UPDATE analysis_report SET payload_json = ?1 WHERE id = ?2",
+            rusqlite::params![
+                serde_json::to_string(&bad_pool).unwrap(),
+                format!("REP:TRN-POOL:{}", run.run_id),
+            ],
+        )
+        .unwrap();
+    assert!(svc.restart_training_run(&run.run_id).is_err());
+    let still_active = svc.get_training_run_summary(&run.run_id).unwrap();
+    assert_eq!(still_active.status, SimRunStatus::Active);
+}
+
+#[test]
+fn m5_intraday_reveal_returns_post_finish_bars() {
+    let sandbox = M5Sandbox::new("reveal-4h");
+    let fixture = MarketFixtureServer::start(fixture_end()).unwrap();
+    let mut svc = sandbox.app();
+    prepare(&mut svc, &fixture, vec![Timeframe::H4], None);
+    let run = svc
+        .create_training_run(CreateTrainingRunRequest {
+            timeframe: Timeframe::H4,
+            warmup_bars: 50,
+            history_bars: 100,
+            training_bars: 100,
+            reveal_bars: 12,
+            hidden_mode: true,
+            ..btc_daily_run(76, false)
+        })
+        .unwrap();
+    svc.advance_training_bar(&run.run_id).unwrap();
+    svc.finish_training_run(&run.run_id).unwrap();
+    let revealed = svc.reveal_training_run(&run.run_id).unwrap();
+    assert!(
+        !revealed.post_finish_bars.is_empty(),
+        "4h reveal must return post-finish bars (DATA-B04)"
+    );
+}
+
+#[test]
+fn m5_prepare_rejects_bad_url_propagates_timeout_and_backfills_earlier_from() {
+    let sandbox = M5Sandbox::new("prep-guards");
+    let now = Utc::now();
+    let fixture = MarketFixtureServer::start(now).unwrap();
+    let mut svc = sandbox.app();
+
+    // TRN-B06: non-HTTPS non-loopback URL is rejected as non-retryable.
+    let mut bad_urls = std::collections::BTreeMap::new();
+    bad_urls.insert("binance".into(), "http://example.com".into());
+    let err = svc
+        .prepare_training_data(&PrepareTrainingDataRequest {
+            timeframes: vec![Timeframe::D1],
+            base_urls: bad_urls,
+            ..Default::default()
+        })
+        .unwrap_err();
+    assert!(!err.retryable);
+
+    // TRN-B07: zero-timeout prepare job must end in TimedOut, never Succeeded.
+    let job = svc.start_prepare_training_data(
+        PrepareTrainingDataRequest {
+            timeframes: vec![Timeframe::D1, Timeframe::H4],
+            base_urls: fixture.base_urls(),
+            ..Default::default()
+        },
+        std::time::Duration::ZERO,
+    );
+    let snap = svc
+        .jobs()
+        .wait_job(job, std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(
+        matches!(snap.state, crate::service::JobState::TimedOut(_)),
+        "expected TimedOut, got {:?}",
+        snap.state
+    );
+    svc.jobs()
+        .wait_finished(job, std::time::Duration::from_secs(5))
+        .unwrap();
+
+    // TRN-B13: preparing a narrow recent range first (bringing watermark to newest_final_open),
+    // confirming repeat is `up_to_date`, then requesting an earlier `from` must backfill earlier history.
+    let narrow_from = Some((now - Duration::days(30)).date_naive());
+    let first = prepare(&mut svc, &fixture, vec![Timeframe::D1], narrow_from);
+    assert_eq!(first.failed, 0);
+    let count_narrow = svc
+        .training_data_status(DEFAULT_TRAINING_INSTRUMENT, false)
+        .unwrap()
+        .timeframes[0]
+        .bar_count;
+
+    let repeat = prepare(&mut svc, &fixture, vec![Timeframe::D1], narrow_from);
+    assert!(
+        repeat.batches.iter().all(|b| b.status == "up_to_date"),
+        "{repeat:#?}"
+    );
+
+    let wider_from = Some((now - Duration::days(120)).date_naive());
+    let backfill = prepare(&mut svc, &fixture, vec![Timeframe::D1], wider_from);
+    assert_eq!(backfill.failed, 0);
+    assert!(
+        !backfill.published_versions.is_empty(),
+        "earlier `from` must backfill instead of skipping behind watermark"
+    );
+    let count_wide = svc
+        .training_data_status(DEFAULT_TRAINING_INSTRUMENT, false)
+        .unwrap()
+        .timeframes[0]
+        .bar_count;
+    assert!(
+        count_wide > count_narrow,
+        "backfill should increase bar_count: {count_narrow} -> {count_wide}"
     );
 }

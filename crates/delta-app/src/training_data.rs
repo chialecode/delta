@@ -7,7 +7,7 @@
 use super::*;
 use chrono::{Datelike, TimeZone};
 use delta_core::{quality_kind_impact, QualityImpact, Timeframe};
-use delta_data::{CandidatePoolQuery, CandidateQualityFilter};
+use delta_data::{CandidatePoolQuery, CandidateQualityFilter, TrainingBarPortQuery};
 use std::collections::BTreeSet;
 
 pub const DEFAULT_TRAINING_INSTRUMENT: &str = "BINANCE:BTC/USDT";
@@ -175,7 +175,7 @@ impl AppService {
                             summary.published_versions.len(),
                             first.message
                         ),
-                        true,
+                        first.retryable,
                     ));
                 }
                 Ok(())
@@ -200,7 +200,18 @@ impl AppService {
     ) -> Result<PrepareTrainingDataSummaryDto, ErrorEnvelope> {
         let started = Instant::now();
         for base in request.base_urls.values() {
-            delta_data::validate_provider_base_url(base).map_err(sync_error_local)?;
+            delta_data::validate_provider_base_url(base)
+                .map_err(|e| ErrorEnvelope::new("sync_failed", e.to_string(), false))?;
+        }
+        for name in ["binance", "binance_archive", "okx"] {
+            if !request.base_urls.contains_key(name) {
+                if let Ok(env_base) =
+                    std::env::var(format!("DELTA_{}_BASE_URL", name.to_ascii_uppercase()))
+                {
+                    delta_data::validate_provider_base_url(&env_base)
+                        .map_err(|e| ErrorEnvelope::new("sync_failed", e.to_string(), false))?;
+                }
+            }
         }
         let registry = self
             .store
@@ -239,8 +250,13 @@ impl AppService {
         };
         let total = order.len();
         for (index, (id, tf)) in order.into_iter().enumerate() {
-            if self.check_sync_control().is_err() {
-                break;
+            if let Err(error) = self.check_sync_control() {
+                self.prepare_progress(
+                    "训练数据准备已中止".into(),
+                    summary.batches.iter().map(|b| b.bars_committed).sum(),
+                    summary.published_versions.len(),
+                );
+                return Err(error);
             }
             let at = Instant::now();
             self.prepare_progress(
@@ -273,11 +289,15 @@ impl AppService {
                     }
                 }
                 Err(error) => {
-                    batch.status = if error.code == "sync_cancelled" {
-                        "cancelled".into()
-                    } else {
-                        "failed".into()
-                    };
+                    if matches!(error.code.as_str(), "sync_cancelled" | "sync_timed_out") {
+                        self.prepare_progress(
+                            "训练数据准备已中止".into(),
+                            summary.batches.iter().map(|b| b.bars_committed).sum(),
+                            summary.published_versions.len(),
+                        );
+                        return Err(error);
+                    }
+                    batch.status = "failed".into();
                     batch.dataset_version = None;
                     batch.bars_committed = 0;
                     batch.error = Some(error);
@@ -384,46 +404,82 @@ impl AppService {
         let now = Utc::now();
         // Newest bar that can be final now opens one period before the current bar.
         let newest_final_open = timeframe.floor(now) - timeframe.duration();
-        if let Some(mark) = watermark {
-            if mark >= newest_final_open {
-                return Ok(None);
-            }
-        }
         let floor_from = request.from.map(at_midnight).unwrap_or_else(|| {
             DateTime::<Utc>::from_timestamp_millis(BINANCE_BTC_LISTING_MS).unwrap()
         });
-        let fetch_from = match watermark {
-            Some(mark) => (mark - timeframe.duration() * OVERLAP_BARS as i32).max(floor_from),
-            None => floor_from,
+        // Check whether an earlier preparation only covered a narrower `from` range (`TRN-B13`):
+        // if so, allow backfilling from `floor_from` instead of short-circuiting on `watermark`.
+        let needs_backfill = if watermark.is_some() {
+            let earliest_requested: Option<DateTime<Utc>> = self
+                .store
+                .conn()
+                .query_row(
+                    "SELECT MIN(json_extract(dv.coverage_json, '$.from'))
+                     FROM dataset_version dv
+                     JOIN dataset_publication dp ON dp.version_num = dv.version_num
+                     WHERE json_extract(dv.coverage_json, '$.instrument') = ?1
+                       AND json_extract(dv.coverage_json, '$.timeframe') = ?2",
+                    rusqlite::params![instrument_id, timeframe.as_str()],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .ok()
+                .flatten()
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|d| d.with_timezone(&Utc));
+            match earliest_requested {
+                Some(prev_from) => floor_from < prev_from,
+                None => false,
+            }
+        } else {
+            false
+        };
+        if let Some(mark) = watermark {
+            if mark >= newest_final_open && !needs_backfill {
+                return Ok(None);
+            }
+        }
+        let fetch_from = match (watermark, needs_backfill) {
+            (Some(mark), false) => {
+                (mark - timeframe.duration() * OVERLAP_BARS as i32).max(floor_from)
+            }
+            _ => floor_from,
         };
         // The dataset version is created in the commit phase; storage stamps row ids and
         // `valid_from_version` from it, so parsed bars carry a placeholder.
         let version = 0;
         let mut raw_payloads: Vec<RawTrainingPayload> = Vec::new();
-        let base = |name: &str, default: String| {
-            request
+        let resolve_base = |name: &str, default: String| -> Result<String, ErrorEnvelope> {
+            let url = request
                 .base_urls
                 .get(name)
                 .cloned()
                 .or_else(|| {
                     std::env::var(format!("DELTA_{}_BASE_URL", name.to_ascii_uppercase())).ok()
                 })
-                .unwrap_or(default)
+                .unwrap_or(default);
+            delta_data::validate_provider_base_url(&url)
+                .map_err(|e| ErrorEnvelope::new("sync_failed", e.to_string(), false))?;
+            Ok(url)
         };
         let mut bars: Vec<BarRecord> = Vec::new();
         let endpoint;
         if provider == "binance" {
             let mut p = BinanceSpotProvider::default();
-            p.rest_base_url = base("binance", p.rest_base_url);
-            p.archive_base_url = base("binance_archive", p.archive_base_url);
+            p.rest_base_url = resolve_base("binance", p.rest_base_url)?;
+            p.archive_base_url = resolve_base("binance_archive", p.archive_base_url)?;
             endpoint = format!("{};{}", p.archive_base_url, p.rest_base_url);
             let symbol = registry
                 .external_symbol_for("binance", instrument_id)
                 .ok_or_else(|| ErrorEnvelope::new("unknown_symbol", instrument_id, false))?;
             let current_month = month_start(now.date_naive());
+            let listing_month = month_start(
+                DateTime::<Utc>::from_timestamp_millis(BINANCE_BTC_LISTING_MS)
+                    .unwrap()
+                    .date_naive(),
+            );
             let mut rest_start = fetch_from;
-            // Archives for complete months on a first preparation (immutable, checksummed).
-            if watermark.is_none() {
+            // Archives for complete months on a first preparation or backfill (immutable, checksummed).
+            if watermark.is_none() || needs_backfill {
                 let mut month = month_start(fetch_from.date_naive());
                 while month < current_month {
                     self.check_sync_control()?;
@@ -454,6 +510,13 @@ impl AppService {
                         Err(delta_data::ProviderError::Http {
                             status: Some(404), ..
                         }) => {
+                            // Pre-listing months return 404 before archives begin; advance to next month
+                            // instead of falling back to slow REST pagination across the whole history.
+                            if bars.is_empty() && month < listing_month {
+                                month = month.checked_add_months(chrono::Months::new(1)).unwrap();
+                                rest_start = at_midnight(month).max(fetch_from);
+                                continue;
+                            }
                             // Not (yet) published: the REST mirror covers the rest.
                             break;
                         }
@@ -513,33 +576,38 @@ impl AppService {
             }
         } else {
             let p = OkxSpotProvider {
-                base_url: base("okx", OkxSpotProvider::default().base_url),
+                base_url: resolve_base("okx", OkxSpotProvider::default().base_url)?,
             };
             endpoint = p.base_url.clone();
             let symbol = registry
                 .external_symbol_for("okx", instrument_id)
                 .ok_or_else(|| ErrorEnvelope::new("unknown_symbol", instrument_id, false))?;
-            let mut cursor: Option<String> = None;
+            let mut cursor_ms: Option<i64> = None;
             loop {
                 self.check_sync_control()?;
+                let cursor_str = cursor_ms.map(|ms| ms.to_string());
                 let (page, body) = self
                     .sync_await(p.fetch_candles(
                         client,
                         instrument_id,
                         &symbol,
-                        cursor.as_deref(),
+                        cursor_str.as_deref(),
                         version,
                         timeframe,
                     ))
                     .map_err(provider_error)?;
                 batch.rest_pages += 1;
-                // The oldest row (confirmed or not) drives the cursor.
+                // The oldest row (confirmed or not) drives the backward cursor.
                 let oldest_raw = serde_json::from_str::<serde_json::Value>(&body)
                     .ok()
                     .and_then(|v| {
-                        v["data"].as_array().and_then(|rows| {
+                        v.get("data").and_then(|d| d.as_array()).and_then(|rows| {
                             rows.iter()
-                                .filter_map(|r| r[0].as_str().and_then(|s| s.parse::<i64>().ok()))
+                                .filter_map(|r| {
+                                    r.get(0)
+                                        .and_then(|c| c.as_str())
+                                        .and_then(|s| s.parse::<i64>().ok())
+                                })
                                 .min()
                         })
                     });
@@ -551,10 +619,10 @@ impl AppService {
                 let Some(oldest) = oldest_raw else {
                     break;
                 };
-                if cursor.as_deref() == Some(oldest.to_string().as_str()) {
+                if cursor_ms.is_some_and(|prev| oldest >= prev) {
                     return Err(ErrorEnvelope::new(
                         "pagination_stalled",
-                        "OKX cursor did not advance",
+                        "OKX cursor did not move backwards",
                         true,
                     ));
                 }
@@ -562,7 +630,7 @@ impl AppService {
                 if oldest <= fetch_from.timestamp_millis() {
                     break;
                 }
-                cursor = Some(oldest.to_string());
+                cursor_ms = Some(oldest);
             }
         }
         bars.retain(|b| {
@@ -704,14 +772,16 @@ impl AppService {
             if registry.instruments.contains_key(&primary_id) {
                 let primary = self
                     .store
-                    .query_bars_at_version(
-                        &primary_id,
-                        timeframe.as_str(),
-                        AdjustmentKind::Raw,
-                        Some("binance"),
-                        version,
-                        None,
-                    )
+                    .query_training_visible_final_bars(&TrainingBarPortQuery {
+                        instrument_id: primary_id,
+                        timeframe: timeframe.as_str().to_string(),
+                        source: Some("binance".into()),
+                        dataset_version: version,
+                        warmup_start_at: Some(first_open),
+                        history_start_at: Some(first_open),
+                        visible_until: last_close,
+                        previous_visible_until: None,
+                    })
                     .map_err(sync_error_local)?;
                 let by_open: HashMap<DateTime<Utc>, Decimal> =
                     primary.iter().map(|b| (b.open_at, b.close)).collect();
@@ -771,6 +841,7 @@ impl AppService {
             "kind": "training_data",
             "instrument": instrument_id,
             "timeframe": timeframe,
+            "from": fetch_from,
             "first_open_at": first_open,
             "last_close_at": last_close,
             "bars": count,
@@ -860,7 +931,7 @@ impl AppService {
             };
             timeframes.push(TrainingDataTimeframeStatusDto {
                 timeframe: tf,
-                bar_count: count as usize,
+                bar_count: usize::try_from(count).unwrap_or(0),
                 first_open_at: parse(first),
                 last_close_at: last_close,
                 stale,

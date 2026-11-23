@@ -2,11 +2,11 @@
 //! abandon / restart, drawings, history and higher-timeframe views. Same service as the desktop.
 
 use super::*;
+use crate::cli_args::{ensure_no_extra_args, parse_date_arg, parse_dec_arg, FlagSpec, ParsedFlags};
 use delta_app::{
     ModifyTrainingOrderRequest, PracticeTransferKind, PrepareTrainingDataRequest, Timeframe,
     TrainingDrawingDto, DEFAULT_TRAINING_INSTRUMENT,
 };
-use std::collections::BTreeMap;
 
 pub(super) const M5_USAGE: &str = "
   delta-cli training prepare-data [--instrument <id>]... [--timeframe 1d|4h|1h]... [--from <YYYY-MM-DD>] [--status] [--base-url <provider>=<url>]... [--data-dir <dir>]
@@ -20,52 +20,6 @@ pub(super) const M5_USAGE: &str = "
   (create also accepts --timeframe 1d|4h|1h, --amount <dec> to fund from the practice account, --independent for independent capital;
    order accepts --fill-rule visible-close for a quick fill at the visible close)";
 
-/// Parse `--flag value` / `--flag=value` / bare switches; repeated value flags accumulate.
-fn parse_flags(
-    action: &str,
-    args: &[String],
-    value_flags: &[&str],
-    switches: &[&str],
-) -> Result<BTreeMap<String, Vec<String>>, ErrorEnvelope> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut i = 0;
-    while i < args.len() {
-        let (flag, inline) = split_flag(&args[i]);
-        if value_flags.contains(&flag) {
-            let v = next_flag_value(action, flag, inline, args, &mut i)?;
-            out.entry(flag.to_string()).or_default().push(v);
-        } else if switches.contains(&flag) {
-            reject_inline_bool_val(action, flag, inline)?;
-            out.entry(flag.to_string()).or_default();
-        } else {
-            return Err(unknown_flag_err(action, &args[i]));
-        }
-        i += 1;
-    }
-    Ok(out)
-}
-
-fn one(flags: &BTreeMap<String, Vec<String>>, flag: &str) -> Option<String> {
-    flags.get(flag).and_then(|v| v.last().cloned())
-}
-
-fn required(
-    action: &str,
-    flags: &BTreeMap<String, Vec<String>>,
-    flag: &str,
-) -> Result<String, ErrorEnvelope> {
-    one(flags, flag)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorEnvelope::new(
-                "missing_arg",
-                format!("'training {action}' requires {flag} <value>"),
-                false,
-            )
-        })
-}
-
 pub(super) fn parse_timeframe_arg(raw: &str) -> Result<Timeframe, ErrorEnvelope> {
     Timeframe::parse(raw.trim()).ok_or_else(|| {
         ErrorEnvelope::new(
@@ -76,67 +30,90 @@ pub(super) fn parse_timeframe_arg(raw: &str) -> Result<Timeframe, ErrorEnvelope>
     })
 }
 
-fn currency(flags: &BTreeMap<String, Vec<String>>) -> String {
-    one(flags, "--currency")
+fn currency(flags: &ParsedFlags) -> String {
+    flags
+        .one("--currency")
         .map(|c| c.trim().to_ascii_uppercase())
         .unwrap_or_else(|| "USDT".to_string())
 }
 
 pub(super) fn dispatch_m5(
     action: &str,
-    svc: &mut AppService,
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
     args: &[String],
 ) -> Option<Result<String, ErrorEnvelope>> {
     let result = match action {
-        "prepare-data" | "prepare_data" => cmd_prepare_data(svc, args),
-        "account" => cmd_account(svc, args),
-        "history" => ensure_no_extra_args("history", args)
-            .and_then(|_| svc.training_history())
+        "prepare-data" | "prepare_data" => cmd_prepare_data(open_svc, args),
+        "account" => cmd_account(open_svc, args),
+        "history" => ensure_no_extra_args("training history", args)
+            .and_then(|_| open_svc())
+            .and_then(|svc| svc.training_history())
             .and_then(|v| to_sanitized_pretty_json(&v)),
-        "modify" => cmd_modify(svc, args),
+        "modify" => cmd_modify(open_svc, args),
         "undo" => parse_only_run_id("undo", args)
-            .and_then(|id| svc.undo_training_last(&id))
+            .and_then(|id| open_svc()?.undo_training_last(&id))
             .and_then(|v| to_sanitized_pretty_json(&v)),
         "abandon" => parse_only_run_id("abandon", args)
-            .and_then(|id| svc.abandon_training_run(&id))
+            .and_then(|id| open_svc()?.abandon_training_run(&id))
             .and_then(|v| to_sanitized_pretty_json(&v)),
         "restart" => parse_only_run_id("restart", args)
-            .and_then(|id| svc.restart_training_run(&id))
+            .and_then(|id| open_svc()?.restart_training_run(&id))
             .and_then(|v| to_sanitized_pretty_json(&v)),
-        "view" => cmd_view(svc, args),
-        "drawing" => cmd_drawing(svc, args),
+        "view" => cmd_view(open_svc, args),
+        "drawing" => cmd_drawing(open_svc, args),
         _ => return None,
     };
     Some(result)
 }
 
-fn cmd_prepare_data(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvelope> {
-    let flags = parse_flags(
-        "prepare-data",
+fn cmd_prepare_data(
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
+    args: &[String],
+) -> Result<String, ErrorEnvelope> {
+    let flags = ParsedFlags::parse(
+        "training prepare-data",
         args,
-        &["--instrument", "--timeframe", "--from", "--base-url"],
-        &["--status"],
+        FlagSpec {
+            value_flags: &["--instrument", "--timeframe", "--from", "--base-url"],
+            switches: &["--status"],
+            ..Default::default()
+        },
     )?;
-    if flags.contains_key("--status") {
-        let id =
-            one(&flags, "--instrument").unwrap_or_else(|| DEFAULT_TRAINING_INSTRUMENT.to_string());
-        return to_sanitized_pretty_json(&svc.training_data_status(&id, true)?);
+    if flags.has("--status") {
+        if flags.has("--timeframe")
+            || flags.has("--from")
+            || flags.has("--base-url")
+            || flags.all("--instrument").len() > 1
+        {
+            return Err(ErrorEnvelope::new(
+                "invalid_arg",
+                "'training prepare-data --status' accepts at most one --instrument and cannot combine with --timeframe, --from or --base-url",
+                false,
+            ));
+        }
+        let id = flags
+            .one("--instrument")
+            .unwrap_or(DEFAULT_TRAINING_INSTRUMENT);
+        let svc = open_svc()?;
+        return to_sanitized_pretty_json(&svc.training_data_status(id, true)?);
     }
     let mut req = PrepareTrainingDataRequest::default();
-    if let Some(ids) = flags.get("--instrument") {
-        req.instruments = ids.iter().map(|s| s.trim().to_string()).collect();
+    let instruments = flags.all("--instrument");
+    if !instruments.is_empty() {
+        req.instruments = instruments.iter().map(|s| s.trim().to_string()).collect();
     }
-    if let Some(tfs) = flags.get("--timeframe") {
-        req.timeframes = tfs
+    let timeframes = flags.all("--timeframe");
+    if !timeframes.is_empty() {
+        req.timeframes = timeframes
             .iter()
             .map(|t| parse_timeframe_arg(t))
             .collect::<Result<_, _>>()?;
     }
-    if let Some(from) = one(&flags, "--from") {
-        req.from = Some(parse_date_arg("--from", &from)?);
+    if let Some(from) = flags.one("--from") {
+        req.from = Some(parse_date_arg("--from", from)?);
     }
     // Provider overrides (`binance=…`, `binance_archive=…`, `okx=…`) for recorded fixtures.
-    for raw in flags.get("--base-url").cloned().unwrap_or_default() {
+    for raw in flags.all("--base-url") {
         let (key, url) = raw.split_once('=').ok_or_else(|| {
             ErrorEnvelope::new(
                 "invalid_arg",
@@ -147,46 +124,80 @@ fn cmd_prepare_data(svc: &mut AppService, args: &[String]) -> Result<String, Err
         req.base_urls
             .insert(key.trim().to_string(), url.trim().to_string());
     }
+    let mut svc = open_svc()?;
     to_sanitized_pretty_json(&svc.prepare_training_data(&req)?)
 }
 
-fn cmd_account(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvelope> {
+fn cmd_account(
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
+    args: &[String],
+) -> Result<String, ErrorEnvelope> {
     let (sub, rest) = match args.split_first() {
         Some((s, rest)) if !s.starts_with("--") => (s.as_str(), rest),
         _ => ("show", args),
     };
     match sub {
         "show" => {
-            let flags = parse_flags("account show", rest, &["--currency"], &[])?;
-            to_sanitized_pretty_json(&svc.show_practice_account(&currency(&flags))?)
-        }
-        "history" => {
-            let flags = parse_flags("account history", rest, &["--currency"], &[])?;
-            to_sanitized_pretty_json(&svc.practice_account_history(&currency(&flags))?)
-        }
-        "analysis" => {
-            let flags = parse_flags("account analysis", rest, &["--currency"], &[])?;
-            to_sanitized_pretty_json(&svc.practice_account_analysis(&currency(&flags))?)
-        }
-        "transfer" => {
-            let flags = parse_flags(
-                "account transfer",
+            let flags = ParsedFlags::parse(
+                "training account show",
                 rest,
-                &["--currency", "--deposit", "--withdraw"],
-                &[],
+                FlagSpec {
+                    value_flags: &["--currency"],
+                    ..Default::default()
+                },
             )?;
             let ccy = currency(&flags);
-            let (kind, raw) =
-                match (one(&flags, "--deposit"), one(&flags, "--withdraw")) {
-                    (Some(d), None) => (PracticeTransferKind::Deposit, d),
-                    (None, Some(w)) => (PracticeTransferKind::Withdrawal, w),
+            let mut svc = open_svc()?;
+            to_sanitized_pretty_json(&svc.show_practice_account(&ccy)?)
+        }
+        "history" => {
+            let flags = ParsedFlags::parse(
+                "training account history",
+                rest,
+                FlagSpec {
+                    value_flags: &["--currency"],
+                    ..Default::default()
+                },
+            )?;
+            let ccy = currency(&flags);
+            let mut svc = open_svc()?;
+            to_sanitized_pretty_json(&svc.practice_account_history(&ccy)?)
+        }
+        "analysis" => {
+            let flags = ParsedFlags::parse(
+                "training account analysis",
+                rest,
+                FlagSpec {
+                    value_flags: &["--currency"],
+                    ..Default::default()
+                },
+            )?;
+            let ccy = currency(&flags);
+            let mut svc = open_svc()?;
+            to_sanitized_pretty_json(&svc.practice_account_analysis(&ccy)?)
+        }
+        "transfer" => {
+            let flags = ParsedFlags::parse(
+                "training account transfer",
+                rest,
+                FlagSpec {
+                    value_flags: &["--currency", "--deposit", "--withdraw"],
+                    ..Default::default()
+                },
+            )?;
+            let ccy = currency(&flags);
+            let (kind, flag_name, raw) =
+                match (flags.one("--deposit"), flags.one("--withdraw")) {
+                    (Some(d), None) => (PracticeTransferKind::Deposit, "--deposit", d),
+                    (None, Some(w)) => (PracticeTransferKind::Withdrawal, "--withdraw", w),
                     _ => return Err(ErrorEnvelope::new(
                         "invalid_arg",
                         "'training account transfer' needs exactly one of --deposit or --withdraw",
                         false,
                     )),
                 };
-            let amount = parse_dec_arg("--amount", &raw)?;
+            let amount = parse_dec_arg(flag_name, raw)?;
+            let mut svc = open_svc()?;
             to_sanitized_pretty_json(&svc.transfer_practice_funds(&ccy, kind, amount)?)
         }
         other => Err(ErrorEnvelope::new(
@@ -197,69 +208,94 @@ fn cmd_account(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnv
     }
 }
 
-fn cmd_modify(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvelope> {
-    let flags = parse_flags(
-        "modify",
+fn cmd_modify(
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
+    args: &[String],
+) -> Result<String, ErrorEnvelope> {
+    let flags = ParsedFlags::parse(
+        "training modify",
         args,
-        &[
-            "--run-id",
-            "--order-id",
-            "--qty",
-            "--limit-price",
-            "--stop-price",
-        ],
-        &[],
+        FlagSpec {
+            value_flags: &[
+                "--run-id",
+                "--order-id",
+                "--qty",
+                "--limit-price",
+                "--stop-price",
+            ],
+            ..Default::default()
+        },
     )?;
-    let run_id = required("modify", &flags, "--run-id")?;
-    let dec_opt = |f: &str| -> Result<Option<Decimal>, ErrorEnvelope> {
-        one(&flags, f).map(|v| parse_dec_arg(f, &v)).transpose()
-    };
+    let run_id = flags.required("training modify", "--run-id")?;
     let req = ModifyTrainingOrderRequest {
-        order_id: required("modify", &flags, "--order-id")?,
-        quantity: dec_opt("--qty")?,
-        limit_price: dec_opt("--limit-price")?,
-        stop_price: dec_opt("--stop-price")?,
+        order_id: flags.required("training modify", "--order-id")?,
+        quantity: flags.opt_decimal("--qty")?,
+        limit_price: flags.opt_decimal("--limit-price")?,
+        stop_price: flags.opt_decimal("--stop-price")?,
     };
+    let mut svc = open_svc()?;
     to_sanitized_pretty_json(&svc.modify_training_order(&run_id, req)?)
 }
 
-fn cmd_view(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvelope> {
-    let flags = parse_flags("view", args, &["--run-id", "--timeframe"], &[])?;
-    let run_id = required("view", &flags, "--run-id")?;
-    let tf = parse_timeframe_arg(&required("view", &flags, "--timeframe")?)?;
+fn cmd_view(
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
+    args: &[String],
+) -> Result<String, ErrorEnvelope> {
+    let flags = ParsedFlags::parse(
+        "training view",
+        args,
+        FlagSpec {
+            value_flags: &["--run-id", "--timeframe"],
+            ..Default::default()
+        },
+    )?;
+    let run_id = flags.required("training view", "--run-id")?;
+    let tf = parse_timeframe_arg(&flags.required("training view", "--timeframe")?)?;
+    let svc = open_svc()?;
     to_sanitized_pretty_json(&svc.get_training_aggregated_view(&run_id, tf)?)
 }
 
-fn cmd_drawing(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnvelope> {
+fn cmd_drawing(
+    open_svc: &dyn Fn() -> Result<AppService, ErrorEnvelope>,
+    args: &[String],
+) -> Result<String, ErrorEnvelope> {
     let (sub, rest) = match args.split_first() {
         Some((s, rest)) if !s.starts_with("--") => (s.as_str(), rest),
         _ => ("list", args),
     };
     match sub {
         "list" => {
-            let flags = parse_flags("drawing list", rest, &["--run-id"], &[])?;
-            let run_id = required("drawing list", &flags, "--run-id")?;
+            let flags = ParsedFlags::parse(
+                "training drawing list",
+                rest,
+                FlagSpec {
+                    value_flags: &["--run-id"],
+                    ..Default::default()
+                },
+            )?;
+            let run_id = flags.required("training drawing list", "--run-id")?;
+            let svc = open_svc()?;
             to_sanitized_pretty_json(&svc.list_training_drawings(&run_id)?)
         }
         "add" => {
-            let flags = parse_flags(
-                "drawing add",
+            let flags = ParsedFlags::parse(
+                "training drawing add",
                 rest,
-                &[
-                    "--run-id",
-                    "--kind",
-                    "--anchor",
-                    "--color",
-                    "--style",
-                    "--drawing-id",
-                ],
-                &[],
+                FlagSpec {
+                    value_flags: &[
+                        "--run-id",
+                        "--kind",
+                        "--anchor",
+                        "--color",
+                        "--style",
+                        "--drawing-id",
+                    ],
+                    ..Default::default()
+                },
             )?;
-            let run_id = required("drawing add", &flags, "--run-id")?;
+            let run_id = flags.required("training drawing add", "--run-id")?;
             let anchors = flags
-                .get("--anchor")
-                .cloned()
-                .unwrap_or_default()
+                .all("--anchor")
                 .iter()
                 .map(|a| {
                     let (bar, price) = a.split_once(':').ok_or_else(|| {
@@ -276,18 +312,27 @@ fn cmd_drawing(svc: &mut AppService, args: &[String]) -> Result<String, ErrorEnv
                 })
                 .collect::<Result<Vec<_>, ErrorEnvelope>>()?;
             let dto = TrainingDrawingDto {
-                drawing_id: one(&flags, "--drawing-id").unwrap_or_default(),
-                kind: required("drawing add", &flags, "--kind")?,
+                drawing_id: flags.one("--drawing-id").unwrap_or_default().to_string(),
+                kind: flags.required("training drawing add", "--kind")?,
                 anchors,
-                color: one(&flags, "--color").unwrap_or_else(|| "#f0b90b".to_string()),
-                line_style: one(&flags, "--style").unwrap_or_else(|| "solid".to_string()),
+                color: flags.one("--color").unwrap_or("#f0b90b").to_string(),
+                line_style: flags.one("--style").unwrap_or("solid").to_string(),
             };
+            let mut svc = open_svc()?;
             to_sanitized_pretty_json(&svc.save_training_drawing(&run_id, dto)?)
         }
         "delete" => {
-            let flags = parse_flags("drawing delete", rest, &["--run-id", "--drawing-id"], &[])?;
-            let run_id = required("drawing delete", &flags, "--run-id")?;
-            let id = required("drawing delete", &flags, "--drawing-id")?;
+            let flags = ParsedFlags::parse(
+                "training drawing delete",
+                rest,
+                FlagSpec {
+                    value_flags: &["--run-id", "--drawing-id"],
+                    ..Default::default()
+                },
+            )?;
+            let run_id = flags.required("training drawing delete", "--run-id")?;
+            let id = flags.required("training drawing delete", "--drawing-id")?;
+            let mut svc = open_svc()?;
             svc.delete_training_drawing(&run_id, &id)?;
             to_sanitized_pretty_json(&serde_json::json!({ "deleted": id }))
         }

@@ -66,15 +66,18 @@ fn rewrite_table_check(
     }
     let version: i64 = tx.query_row("PRAGMA schema_version", [], |r| r.get(0))?;
     tx.execute_batch("PRAGMA writable_schema = ON;")?;
-    let result = tx.execute(
+    let update_res = tx.execute(
         "UPDATE sqlite_master SET sql = ?1 WHERE type = 'table' AND name = ?2",
         params![sql.replace(from, to), table],
     );
-    tx.execute_batch(&format!(
-        "PRAGMA schema_version = {}; PRAGMA writable_schema = OFF;",
-        version + 1
-    ))?;
-    result?;
+    let bump_res = match &update_res {
+        Ok(_) => tx.execute_batch(&format!("PRAGMA schema_version = {};", version + 1)),
+        Err(_) => Ok(()),
+    };
+    let reset_res = tx.execute_batch("PRAGMA writable_schema = RESET;");
+    update_res?;
+    bump_res?;
+    reset_res?;
     Ok(())
 }
 
@@ -312,6 +315,11 @@ impl SqliteStore {
         opening_deposit: Decimal,
         at: DateTime<Utc>,
     ) -> Result<PracticeAccountRecord, StorageError> {
+        if opening_deposit < Decimal::ZERO {
+            return Err(StorageError::IntegrityFailed(
+                "practice account opening deposit cannot be negative".into(),
+            ));
+        }
         let ccy = quote_currency.to_ascii_uppercase();
         let rec = PracticeAccountRecord {
             id: format!("PRACTICE:{ccy}"),
@@ -371,11 +379,7 @@ impl SqliteStore {
 
     /// Balance = sum of all entries (`S-52` conservation).
     pub fn practice_account_balance(&self, account_id: &str) -> Result<Decimal, StorageError> {
-        Ok(self
-            .list_practice_entries(account_id)?
-            .iter()
-            .map(|e| e.amount)
-            .sum())
+        sum_practice_balance(self.conn(), account_id)
     }
 
     /// Append entries atomically with the next sequence numbers. The caller has validated the
@@ -403,16 +407,13 @@ impl SqliteStore {
             params![account_id],
             |r| r.get(0),
         )?;
-        let mut balance = Decimal::ZERO;
-        {
-            let mut stmt =
-                tx.prepare("SELECT amount FROM practice_account_entry WHERE account_id = ?1")?;
-            for amount in stmt.query_map(params![account_id], |r| r.get::<_, String>(0))? {
-                balance += parse_decimal_lossless(&amount?)
-                    .map_err(|e| StorageError::IntegrityFailed(e.to_string()))?;
-            }
-        }
-        let mut out = Vec::new();
+        let mut balance = sum_practice_balance(tx, account_id)?;
+        let created_at = at.to_rfc3339();
+        let mut out = Vec::with_capacity(entries.len());
+        let mut insert_stmt = tx.prepare_cached(
+            "INSERT INTO practice_account_entry (account_id, seq, kind, amount, run_id, note, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
         for (kind, amount, run_id, note) in entries {
             seq += 1;
             balance += *amount;
@@ -421,19 +422,15 @@ impl SqliteStore {
                     "practice account {account_id} would go negative"
                 )));
             }
-            tx.execute(
-                "INSERT INTO practice_account_entry (account_id, seq, kind, amount, run_id, note, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    account_id,
-                    seq,
-                    kind.as_str(),
-                    to_canonical_text(*amount),
-                    run_id,
-                    note,
-                    at.to_rfc3339()
-                ],
-            )?;
+            insert_stmt.execute(params![
+                account_id,
+                seq,
+                kind.as_str(),
+                to_canonical_text(*amount),
+                run_id,
+                note,
+                created_at,
+            ])?;
             out.push(PracticeAccountEntryRecord {
                 account_id: account_id.to_string(),
                 seq,
@@ -441,7 +438,7 @@ impl SqliteStore {
                 amount: *amount,
                 run_id: run_id.clone(),
                 note: note.clone(),
-                created_at: at.to_rfc3339(),
+                created_at: created_at.clone(),
             });
         }
         Ok(out)
@@ -456,7 +453,32 @@ impl SqliteStore {
         amount: Decimal,
         at: DateTime<Utc>,
     ) -> Result<(), StorageError> {
+        if amount <= Decimal::ZERO {
+            return Err(StorageError::IntegrityFailed(
+                "practice run allocation amount must be positive".into(),
+            ));
+        }
         let tx = self.conn_mut().savepoint()?;
+        let existing_account: Option<Option<String>> = tx
+            .query_row(
+                "SELECT practice_account_id FROM training_session WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match existing_account {
+            None => {
+                return Err(StorageError::IntegrityFailed(format!(
+                    "training_session '{run_id}' not found for practice allocation"
+                )));
+            }
+            Some(Some(prev)) => {
+                return Err(StorageError::IntegrityFailed(format!(
+                    "training_session '{run_id}' is already allocated to practice account '{prev}'"
+                )));
+            }
+            Some(None) => {}
+        }
         let busy: Option<String> = tx
             .query_row(
                 "SELECT s.run_id FROM training_session s JOIN simulation_run r ON r.run_id = s.run_id
@@ -471,10 +493,15 @@ impl SqliteStore {
                 "PRACTICE_ACCOUNT_BUSY: run {other} is still open on {account_id}"
             )));
         }
-        tx.execute(
-            "UPDATE training_session SET practice_account_id = ?1 WHERE run_id = ?2",
+        let updated = tx.execute(
+            "UPDATE training_session SET practice_account_id = ?1 WHERE run_id = ?2 AND practice_account_id IS NULL",
             params![account_id, run_id],
         )?;
+        if updated != 1 {
+            return Err(StorageError::IntegrityFailed(format!(
+                "failed to bind training_session '{run_id}' to practice account '{account_id}'"
+            )));
+        }
         Self::append_practice_entries_in(
             &tx,
             account_id,
@@ -552,14 +579,16 @@ impl SqliteStore {
         let tx = self.conn_mut().savepoint()?;
         tx.execute("DELETE FROM sim_fill WHERE run_id = ?1", params![run_id])?;
         tx.execute("DELETE FROM sim_order WHERE run_id = ?1", params![run_id])?;
-        for ord in orders {
-            tx.execute(
+        {
+            let mut order_stmt = tx.prepare_cached(
                 "INSERT INTO sim_order (
                     order_id, run_id, instrument_id, order_seq, order_type, side, tif,
                     qty, limit_price, stop_price, parent_group_id, group_role,
                     status, reject_code, cancel_reason, submitted_at, eligible_at, updated_at, payload_json
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-                params![
+            )?;
+            for ord in orders {
+                order_stmt.execute(params![
                     ord.order_id,
                     run_id,
                     ord.instrument_id,
@@ -579,16 +608,16 @@ impl SqliteStore {
                     ord.eligible_at.map(|dt| dt.to_rfc3339()),
                     ord.updated_at.to_rfc3339(),
                     ord.payload_json,
-                ],
-            )?;
-        }
-        for fill in fills {
-            tx.execute(
+                ])?;
+            }
+            let mut fill_stmt = tx.prepare_cached(
                 "INSERT INTO sim_fill (
                     fill_id, run_id, order_id, instrument_id, bar_close_at,
                     side, qty, raw_price, fill_price, fee_amount, fee_currency, ambiguous, payload_json
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
+            )?;
+            for fill in fills {
+                fill_stmt.execute(params![
                     fill.fill_id,
                     run_id,
                     fill.order_id,
@@ -602,8 +631,8 @@ impl SqliteStore {
                     fill.fee_currency,
                     if fill.ambiguous { 1 } else { 0 },
                     fill.payload_json,
-                ],
-            )?;
+                ])?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -665,6 +694,17 @@ impl SqliteStore {
         let mut store = Self::open_or_init(root_dir, book_currency, report_currency, timezone)?;
         store.downgrade_to_schema_5_for_test()
     }
+}
+
+fn sum_practice_balance(conn: &Connection, account_id: &str) -> Result<Decimal, StorageError> {
+    let mut stmt =
+        conn.prepare_cached("SELECT amount FROM practice_account_entry WHERE account_id = ?1")?;
+    let mut balance = Decimal::ZERO;
+    for amount in stmt.query_map(params![account_id], |r| r.get::<_, String>(0))? {
+        balance += parse_decimal_lossless(&amount?)
+            .map_err(|e| StorageError::IntegrityFailed(e.to_string()))?;
+    }
+    Ok(balance)
 }
 
 /// Entries of one run as (account_id, amount); empty when the run has no practice funding.

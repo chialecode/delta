@@ -94,9 +94,10 @@ M1 的 AccountProvider 是离线录制实现：输入为 OKX/Binance 原生 data
 
 - **身份**：构建期 `DELTA_IDENTITY` 决定 AppId、显示名、可执行文件名、互斥量、控制管道与 AppUserModelID（`delta-app/src/identity.rs`）；版本由 Git 标签推算并经 `DELTA_VERSION` 注入，build-info、`VERSIONINFO` 与设置页“关于”读取同一值（`version.rs`）。源码构建没有安装身份，不注册单实例与控制管道。
 - **单实例与控制管道**（`instance.rs`）：已安装身份启动时创建命名互斥量 `<身份>-instance`（同时是安装器的 `AppMutex`）；第二个进程只经管道发送 `focus` 后退出。`\\.\pipe\<身份>-control` 只有一个实例、拒绝远程客户端，并逐连接核对客户端会话与用户 SID；管道线程把命令交给 UI 线程（`delta-desktop/src/lifecycle.rs`），60 s 内无应答回执 `busy`。
-- **保存后退出**：`quit-for-update` 与“应用更新”走同一序列：检查忙碌（进行中的同步作业或 AI 复盘）→ 自动保存未保存的笔记（保存失败回执 `save-failed`）→ 保存布局 → 回执 `ok` 并附带重启参数 → 退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消同步与 AI 再继续。
-- **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 原参数重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
-- **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，之前在运行则以脱离作业的方式按原参数重启。
+- **系统托盘与关闭行为**（`delta-desktop/src/tray.rs`，D-37）：交互桌面模式通过专用轻量线程调用 Win32 `Shell_NotifyIconW` 常驻通知区域图标（直接加载可执行文件内嵌资源 `1`，自动区分正式版与带 `DEV` 徽标的开发版图标），监听 `TaskbarCreated` 应对外壳重启，退出或 `WM_ENDSESSION` 时立即 `NIM_DELETE`；自动化验证模式永不建托盘。左键/双击恢复显示并激活主窗口，右键在托盘线程弹出原生菜单（“打开 / 退出”，不阻塞 GPUI）。窗口关闭按钮经 `on_window_should_close` 拦截：默认在托盘活跃时 `SW_HIDE` 隐藏到托盘，可在设置页切换为“直接退出”（保存于 `settings/layout.json` 的 `close_action`）；显式退出与更新退出从不拦截进托盘。
+- **保存后退出**：`quit-for-update`、“应用更新”与用户显式退出走同一生命周期序列：检查忙碌（进行中的同步作业、训练准备或 AI 复盘）→ 自动保存未保存的笔记 → 保存布局 → 移除托盘图标并退出。控制请求遇忙碌直接回执 `busy`；用户发起的更新遇忙碌显示确认，确认后先取消任务再继续；用户显式退出（托盘“退出”或关闭设为退出）会先取消进行中的后台任务（有界等待）并保存后退出。
+- **更新**（`update.rs`）：后台线程按 `UpdatePolicy` 检查 → 下载到 `<数据根>\updates\*.partial`（Range 续传一次）→ 校验大小、SHA-256 与 Ed25519 签名 → 工具栏“更新就绪”。应用时再次验签，经 `AppHost::create_backup` 做一致性备份，记录更新前主窗口是打开还是收在托盘（D-37：打开则重启不带 `--background`，收在托盘则重启附带 `--background`；验证常驻模式保持原始参数），以 `CREATE_BREAKAWAY_FROM_JOB` 启动静默安装器（脱离失败即报错，不让安装器随应用的 kill-on-close 作业结束），然后退出；安装器按互斥量等待退出、完成后用 `--restore-args` 重启。只有 `delta` 使用 GitHub 源与内置公钥；`delta-test` 只在门禁中读取回环源与测试公钥；开发版不联网检查。
+- **开发版本机更新**：`delta-cli install-dev` 只接受 `delta-dev` 产物（门禁用 `--test-identity` 指向 `delta-dev-test`），按控制管道请求退出、静默安装、核对 HKCU 版本与已安装二进制 build-info，安装成功后总启动（之前在运行的保留原参数）并加 `--background`：托盘可用时只显示托盘图标、不打开主窗口（不可用时回退最小化到任务栏、不抢焦点）；对真实 `delta-dev` 在作业对象里时先经桌面外壳启动（`process::spawn_via_desktop_shell`，成为 explorer 的子进程，并用 `process_in_active_job` 核对而非全局 `IsProcessInJob(NULL)`），测试身份或外壳不可用时走 `spawn_detached_app`，都不行时照常启动并在回执记 `in_job`（D-36）。
 
 ## 8. K 线训练与模拟架构（M4）
 

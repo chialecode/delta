@@ -7,18 +7,32 @@ pub mod components;
 pub mod controller;
 pub mod i18n;
 pub mod lifecycle;
+#[cfg(test)]
+mod test_support;
 pub mod theme;
+mod training_fixtures;
 pub mod training_ui;
 pub mod training_workbench;
 pub mod training_workbench_ui;
+pub mod tray;
 mod ui_forms;
 pub mod ui_verification;
 pub mod ui_verification_m5;
 pub mod workbench;
 
+pub(crate) fn lock_or_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 pub use components::*;
 pub use i18n::*;
 pub use training_ui::*;
+pub use tray::{
+    decide_startup_mode, decide_window_close, relaunch_args_for_update, BackgroundStartupMode,
+    CloseAction, CloseDecision,
+};
 pub use ui_verification::{
     run_m4_k03_next_bar_bench, run_m4_ui_smoke, M4NextBarBenchReport, M4UiSmokeReport,
     M4_K03_P95_BUDGET_MS,

@@ -238,8 +238,8 @@ pub struct WorkbenchState {
     /// Higher-timeframe view selected (`None` = the run's own timeframe).
     pub view_timeframe: Option<delta_app::Timeframe>,
     pub manual_price_scale: bool,
-    /// An order line grabbed on mouse-down: (order id, price at grab).
-    pub dragging_order: Option<(String, Decimal)>,
+    /// An order line grabbed on mouse-down: (order id, original price at grab, live preview price).
+    pub dragging_order: Option<(String, Decimal, Decimal)>,
 }
 
 impl Default for WorkbenchState {
@@ -276,7 +276,6 @@ pub enum ConfirmKind {
     NewRun,
     Restart,
     ClearDrawings,
-    FinishRun,
 }
 
 /// What a key press asks the workbench to do. There is deliberately no variant that submits an
@@ -319,7 +318,7 @@ pub fn command_for_key(
     if k == "escape" && mods.none() {
         return Some(WorkbenchCommand::Cancel);
     }
-    if mods.control && !mods.alt && !mods.shift {
+    if mods.control && !mods.alt && !mods.shift && !mods.platform {
         return match k.as_str() {
             "z" if !input_focused => Some(WorkbenchCommand::Undo),
             "enter" if state.draft.as_ref().is_some_and(|d| d.selected.is_some()) => {
@@ -400,6 +399,9 @@ impl WorkbenchState {
                 ChartClickOutcome::MeasureUpdated
             }
             WorkbenchTool::DrawOrder => {
+                if price <= Decimal::ZERO {
+                    return ChartClickOutcome::Nothing;
+                }
                 let options = legal_draft_options(price, last_close);
                 if options.is_empty() {
                     return ChartClickOutcome::Nothing;
@@ -464,7 +466,7 @@ pub fn round_to_tick(price: Decimal, tick: Decimal) -> Decimal {
 
 /// Default buy quantity: `equity / fraction / price`, floored to `lot_size`.
 pub fn buy_quantity(equity: Decimal, fraction: u32, price: Decimal, lot: Decimal) -> Decimal {
-    if price <= Decimal::ZERO || fraction == 0 {
+    if equity <= Decimal::ZERO || price <= Decimal::ZERO || fraction == 0 {
         return Decimal::ZERO;
     }
     floor_to_lot(equity / Decimal::from(fraction) / price, lot)
@@ -472,13 +474,16 @@ pub fn buy_quantity(equity: Decimal, fraction: u32, price: Decimal, lot: Decimal
 
 /// Default sell quantity: `position / fraction`, floored to `lot_size`.
 pub fn sell_quantity(position: Decimal, fraction: u32, lot: Decimal) -> Decimal {
-    if fraction == 0 {
+    if position <= Decimal::ZERO || fraction == 0 {
         return Decimal::ZERO;
     }
     floor_to_lot(position / Decimal::from(fraction), lot)
 }
 
 pub fn floor_to_lot(qty: Decimal, lot: Decimal) -> Decimal {
+    if qty <= Decimal::ZERO {
+        return Decimal::ZERO;
+    }
     if lot <= Decimal::ZERO {
         return qty;
     }
@@ -620,5 +625,26 @@ mod tests {
         // Tool toggles off on second selection.
         st.select_tool(WorkbenchTool::Measure);
         assert_eq!(st.tool, WorkbenchTool::None);
+    }
+
+    #[test]
+    fn non_positive_quantity_and_order_price_inputs_are_guarded() {
+        assert_eq!(buy_quantity(d("-100"), 1, d("10"), d("1")), Decimal::ZERO);
+        assert_eq!(buy_quantity(d("100"), 1, d("-10"), d("1")), Decimal::ZERO);
+        assert_eq!(sell_quantity(d("-5"), 1, d("1")), Decimal::ZERO);
+        assert_eq!(floor_to_lot(d("-5"), d("1")), Decimal::ZERO);
+        let mut st = WorkbenchState {
+            draw_order_enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            st.chart_click(1, d("0"), d("100"), d("1")),
+            ChartClickOutcome::Nothing
+        );
+        assert_eq!(
+            st.chart_click(1, d("-5"), d("100"), d("1")),
+            ChartClickOutcome::Nothing
+        );
+        assert!(st.draft.is_none());
     }
 }

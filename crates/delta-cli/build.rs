@@ -16,6 +16,13 @@ fn main() {
             _ => "delta-dev".into(),
         }
     });
+    let display = match identity.as_str() {
+        "delta" => "DELTA",
+        "delta-dev" => "DELTA Dev",
+        "delta-test" => "DELTA Test",
+        "delta-dev-test" => "DELTA Dev Test",
+        other => panic!("unknown DELTA_IDENTITY '{other}'"),
+    };
     let icon = if identity.starts_with("delta-dev") {
         "../delta-desktop/assets/icon-dev.ico"
     } else {
@@ -23,25 +30,30 @@ fn main() {
     };
     let version = std::env::var("DELTA_VERSION")
         .unwrap_or_else(|_| std::env::var("CARGO_PKG_VERSION").unwrap());
-    let core: Vec<u64> = version
-        .split('-')
-        .next()
-        .unwrap()
+    let core_text = version.split(['-', '+']).next().unwrap_or("");
+    let core: Vec<u16> = core_text
         .split('.')
-        .map(|part| part.parse().expect("numeric version"))
+        .map(|part| part.parse::<u16>().expect("numeric u16 version component"))
         .collect();
-    let packed = (core[0] << 48) | (core[1] << 32) | (core[2] << 16);
+    assert_eq!(
+        core.len(),
+        3,
+        "expected major.minor.patch version, got '{version}'"
+    );
+    let packed =
+        (u64::from(core[0]) << 48) | (u64::from(core[1]) << 32) | (u64::from(core[2]) << 16);
     let mut resource = winresource::WindowsResource::new();
     resource
         .set_icon(icon)
-        .set("ProductName", "DELTA")
-        .set("FileDescription", &format!("{identity} command line"))
+        .set("ProductName", display)
+        .set("FileDescription", &format!("{display} command line"))
         .set("CompanyName", "DELTA Contributors")
         .set(
             "LegalCopyright",
             "Copyright (C) DELTA Contributors. Apache-2.0.",
         )
         .set("OriginalFilename", &format!("{identity}-cli.exe"))
+        .set("InternalName", &format!("{identity}-cli"))
         .set("ProductVersion", &version)
         .set("FileVersion", &version)
         .set_version_info(winresource::VersionInfo::FILEVERSION, packed)

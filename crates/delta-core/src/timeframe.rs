@@ -144,8 +144,17 @@ pub fn aggregate_bars(
         return Vec::new();
     };
     let mut out: Vec<AggregatedBar> = Vec::new();
-    for b in bars {
+    let mut max_close_at: Option<DateTime<Utc>> = None;
+    let mut fold_bar = |b: &crate::BarRecord| {
+        if !b.is_final {
+            return;
+        }
+        max_close_at = Some(match max_close_at {
+            Some(prev) => prev.max(b.close_at),
+            None => b.close_at,
+        });
         let bucket = higher.floor(b.open_at);
+        let bucket_close = bucket + higher.duration();
         match out.last_mut() {
             Some(last) if last.open_at == bucket => {
                 last.high = last.high.max(b.high);
@@ -153,24 +162,38 @@ pub fn aggregate_bars(
                 last.close = b.close;
                 last.volume += b.volume;
                 last.base_bar_count += 1;
-                last.complete = b.close_at >= last.close_at;
+                last.complete |= b.close_at >= last.close_at;
             }
             _ => out.push(AggregatedBar {
                 open_at: bucket,
-                close_at: bucket + higher.duration(),
+                close_at: bucket_close,
                 open: b.open,
                 high: b.high,
                 low: b.low,
                 close: b.close,
                 volume: b.volume,
                 base_bar_count: 1,
-                complete: b.close_at >= bucket + higher.duration(),
+                complete: b.close_at >= bucket_close,
             }),
+        }
+    };
+
+    if bars.windows(2).all(|w| w[0].open_at <= w[1].open_at) {
+        for b in bars {
+            fold_bar(b);
+        }
+    } else {
+        let mut sorted: Vec<&crate::BarRecord> = bars.iter().filter(|b| b.is_final).collect();
+        sorted.sort_by_key(|b| b.open_at);
+        for b in sorted {
+            fold_bar(b);
         }
     }
     for a in &mut out {
-        // A bucket with a missing base bar is still complete once its period has closed.
-        a.complete = a.complete || a.base_bar_count as i64 == per;
+        // A bucket with a missing base bar (including a missing trailing base bar) is complete
+        // once a later visible bar has passed its closing boundary.
+        let closed_by_later_bar = max_close_at.is_some_and(|mc| mc >= a.close_at);
+        a.complete = a.complete || a.base_bar_count as i64 == per || closed_by_later_bar;
     }
     out
 }
@@ -247,5 +270,58 @@ mod tests {
         assert_eq!(agg[0].volume, Decimal::from(4));
         assert!(!agg[1].complete, "only 2 of 4 hours are visible");
         assert_eq!(agg[1].close, Decimal::from(105));
+    }
+
+    #[test]
+    fn aggregate_marks_closed_bucket_with_missing_trailing_bar_complete_and_handles_unsorted() {
+        use crate::{AdjustmentKind, BarRecord};
+        use rust_decimal::Decimal;
+        let start = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mk = |h: i64, is_final: bool| {
+            let open_at = start + Duration::hours(h);
+            let px = Decimal::from(100 + h);
+            BarRecord {
+                id: format!("b{h}"),
+                instrument_id: "X".into(),
+                timeframe: "1h".into(),
+                session: "24x7".into(),
+                session_date: open_at.date_naive(),
+                open_at,
+                close_at: open_at + Duration::hours(1),
+                open: px,
+                high: px + Decimal::ONE,
+                low: px - Decimal::ONE,
+                close: px,
+                volume: Decimal::ONE,
+                source: "t".into(),
+                adjustment: AdjustmentKind::Raw,
+                is_final,
+                valid_from_version: 1,
+                valid_to_version: None,
+                raw_payload_hash: None,
+            }
+        };
+        // Bucket 00:00..04:00 is missing its trailing 03:00 bar; bucket 04:00..08:00 has 04:00 bar;
+        // input is unsorted and includes a non-final bar that must be ignored.
+        let bars = vec![
+            mk(4, true),
+            mk(1, true),
+            mk(0, true),
+            mk(2, true),
+            mk(5, false),
+        ];
+        let agg = aggregate_bars(&bars, Timeframe::H1, Timeframe::H4);
+        assert_eq!(agg.len(), 2);
+        assert!(
+            agg[0].complete,
+            "earlier bucket closed once 04:00 bar arrived despite missing 03:00 bar"
+        );
+        assert_eq!(agg[0].base_bar_count, 3);
+        assert_eq!(agg[0].open, Decimal::from(100));
+        assert_eq!(agg[0].close, Decimal::from(102));
+        assert!(!agg[1].complete);
+        assert_eq!(agg[1].base_bar_count, 1);
     }
 }

@@ -18,6 +18,14 @@ pub use sim_report::*;
 pub use timeframe::*;
 pub use valuation::*;
 
+/// Compute lowercase hex-encoded SHA-256 digest of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +409,21 @@ mod tests {
         );
         // FX gain on disposing 501 USDT (carrying cost 501 * 1.002 = 502.002 vs 501/1000 * 1002 = 502.002 -> 0 when rate=1.002!)
         assert!(proj.realized_pnl_by_account.get("ACC-1").unwrap() > &Decimal::ZERO);
+    }
+
+    #[test]
+    fn sha256_hex_matches_known_vectors() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b"delta"),
+            "4f4a9410ffcdf895c4adb880659e9b5c0dd1f23a30790684340b3eaacb045398"
+        );
     }
 }

@@ -61,6 +61,7 @@ pub struct MarketFixtureServer {
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<FixtureState>>,
     requests: Arc<AtomicU64>,
+    accept_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl MarketFixtureServer {
@@ -77,22 +78,19 @@ impl MarketFixtureServer {
             unavailable_archive_months: Vec::new(),
             log: Vec::new(),
         }));
-        let server = Self {
-            base_url,
-            end_ms: Arc::new(AtomicI64::new(end_ms)),
-            delay_ms: Arc::new(AtomicU64::new(0)),
-            stop: Arc::new(AtomicBool::new(false)),
-            state,
-            requests: Arc::new(AtomicU64::new(0)),
-        };
+        let end_arc = Arc::new(AtomicI64::new(end_ms));
+        let delay_arc = Arc::new(AtomicU64::new(0));
+        let stop_arc = Arc::new(AtomicBool::new(false));
+        let requests_arc = Arc::new(AtomicU64::new(0));
         let (end_c, delay_c, stop_c, state_c, req_c) = (
-            Arc::clone(&server.end_ms),
-            Arc::clone(&server.delay_ms),
-            Arc::clone(&server.stop),
-            Arc::clone(&server.state),
-            Arc::clone(&server.requests),
+            Arc::clone(&end_arc),
+            Arc::clone(&delay_arc),
+            Arc::clone(&stop_arc),
+            Arc::clone(&state),
+            Arc::clone(&requests_arc),
         );
-        std::thread::spawn(move || {
+        let accept_thread = std::thread::spawn(move || {
+            let mut workers = Vec::new();
             while !stop_c.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((socket, _)) => {
@@ -102,9 +100,9 @@ impl MarketFixtureServer {
                             Arc::clone(&state_c),
                             Arc::clone(&req_c),
                         );
-                        std::thread::spawn(move || {
+                        workers.push(std::thread::spawn(move || {
                             let _ = handle(socket, &end_c, &delay_c, &state_c, &req_c);
-                        });
+                        }));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -112,8 +110,19 @@ impl MarketFixtureServer {
                     Err(_) => break,
                 }
             }
+            for worker in workers {
+                let _ = worker.join();
+            }
         });
-        Ok(server)
+        Ok(Self {
+            base_url,
+            end_ms: end_arc,
+            delay_ms: delay_arc,
+            stop: stop_arc,
+            state,
+            requests: requests_arc,
+            accept_thread: Some(accept_thread),
+        })
     }
 
     pub fn base_url(&self) -> &str {
@@ -184,6 +193,9 @@ impl MarketFixtureServer {
 impl Drop for MarketFixtureServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.accept_thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -348,6 +360,14 @@ fn handle(
         buf.extend_from_slice(&chunk[..n]);
         if buf.windows(4).any(|w| w == b"\r\n\r\n") {
             break;
+        }
+        if buf.len() > 64 * 1024 {
+            return respond(
+                &mut socket,
+                "431 Request Header Fields Too Large",
+                "text/plain",
+                b"",
+            );
         }
     }
     let text = String::from_utf8_lossy(&buf);

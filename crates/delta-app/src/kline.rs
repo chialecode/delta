@@ -191,22 +191,85 @@ impl KlineWindowSliceDto {
 #[derive(Clone, PartialEq, Eq)]
 struct CachedHistoryKey {
     bars_len: usize,
-    first_id: String,
-    last_id: String,
-    last_close_str: String,
+    content_fingerprint: u64,
     visible_until: Option<DateTime<Utc>>,
     config: IndicatorConfig,
 }
 
 struct CachedHistoryData {
     key: CachedHistoryKey,
-    source_bars: Vec<BarRecord>,
     vis_bars: Vec<BarRecord>,
     has_incomplete_tail: bool,
     sma_full: Vec<(usize, Vec<IndicatorPoint>)>,
     ema_full: Vec<(usize, Vec<IndicatorPoint>)>,
     macd_full: Vec<MacdPoint>,
     rsi_full: Vec<IndicatorPoint>,
+}
+
+fn fingerprint_bars(bars: &[BarRecord]) -> u64 {
+    // Fast, allocation-free FNV-1a mix over numeric bar fields & ID lengths so cache
+    // validation detects mid-series mutations without O(N) heap String comparisons or
+    // pinning a second 100k-bar clone in thread-local storage (`APP-Q01`).
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325 ^ (bars.len() as u64);
+    let mix = |h: &mut u64, v: u64| {
+        *h ^= v;
+        *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for bar in bars {
+        mix(
+            &mut hash,
+            bar.open_at.timestamp_nanos_opt().unwrap_or(0) as u64,
+        );
+        mix(
+            &mut hash,
+            bar.close_at.timestamp_nanos_opt().unwrap_or(0) as u64,
+        );
+        mix(
+            &mut hash,
+            bar.open.mantissa() as u64 ^ (bar.open.scale() as u64),
+        );
+        mix(
+            &mut hash,
+            bar.high.mantissa() as u64 ^ (bar.high.scale() as u64),
+        );
+        mix(
+            &mut hash,
+            bar.low.mantissa() as u64 ^ (bar.low.scale() as u64),
+        );
+        mix(
+            &mut hash,
+            bar.close.mantissa() as u64 ^ (bar.close.scale() as u64),
+        );
+        mix(
+            &mut hash,
+            bar.volume.mantissa() as u64 ^ (bar.volume.scale() as u64),
+        );
+        mix(
+            &mut hash,
+            ((bar.is_final as u64) << 32)
+                ^ (bar.id.len() as u64)
+                ^ ((bar.valid_from_version as u64) << 16),
+        );
+    }
+    hash
+}
+
+fn is_crypto_instrument(venue: &str, instrument_id: &str) -> bool {
+    if matches!(
+        venue.trim().to_ascii_uppercase().as_str(),
+        "CRYPTO" | "BINANCE" | "OKX" | "COINBASE" | "KRAKEN" | "BITSTAMP" | "CRYPTO_24_7"
+    ) {
+        return true;
+    }
+    // Only treat slash-delimited spot pairs (e.g. `BTC/USDT`, `ETH/USDC`) as crypto when
+    // venue is generic/unknown; never misclassify US Bitcoin ETFs like `NYSE:GBTC` or `NYSE:FBTC`.
+    let upper = instrument_id.trim().to_ascii_uppercase();
+    upper.contains('/')
+        && (upper.ends_with("/USDT")
+            || upper.ends_with("/USDC")
+            || upper.ends_with("/USD")
+            || upper.ends_with("/BTC")
+            || upper.ends_with("/ETH"))
 }
 
 thread_local! {
@@ -384,12 +447,7 @@ impl KlineViewport {
     ) -> KlineWindowSliceDto {
         let key = CachedHistoryKey {
             bars_len: all_bars.len(),
-            first_id: all_bars.first().map(|b| b.id.clone()).unwrap_or_default(),
-            last_id: all_bars.last().map(|b| b.id.clone()).unwrap_or_default(),
-            last_close_str: all_bars
-                .last()
-                .map(|b| b.close.to_string())
-                .unwrap_or_default(),
+            content_fingerprint: fingerprint_bars(all_bars),
             visible_until,
             config: self.indicator_config.clone(),
         };
@@ -397,7 +455,7 @@ impl KlineViewport {
         HISTORY_CACHE.with(|cell| {
             let mut cache_opt = cell.borrow_mut();
             let needs_recompute = match cache_opt.as_ref() {
-                Some(cached) => cached.key != key || cached.source_bars.as_slice() != all_bars,
+                Some(cached) => cached.key != key,
                 None => true,
             };
 
@@ -441,7 +499,6 @@ impl KlineViewport {
 
                 *cache_opt = Some(CachedHistoryData {
                     key,
-                    source_bars: all_bars.to_vec(),
                     vis_bars,
                     has_incomplete_tail,
                     sma_full,
@@ -460,13 +517,27 @@ impl KlineViewport {
             let sma_series = cached
                 .sma_full
                 .iter()
-                .map(|(p, series)| (*p, series[start..end].to_vec()))
+                .map(|(p, series)| {
+                    let sliced = if series.len() >= end {
+                        series[start..end].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    (*p, sliced)
+                })
                 .collect();
 
             let ema_series = cached
                 .ema_full
                 .iter()
-                .map(|(p, series)| (*p, series[start..end].to_vec()))
+                .map(|(p, series)| {
+                    let sliced = if series.len() >= end {
+                        series[start..end].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    (*p, sliced)
+                })
                 .collect();
 
             let macd_series = if cached.macd_full.len() >= end {
@@ -481,11 +552,12 @@ impl KlineViewport {
                 Vec::new()
             };
 
-            let is_crypto = venue.eq_ignore_ascii_case("CRYPTO")
-                || venue.eq_ignore_ascii_case("BINANCE")
-                || instrument_id.contains("USDT")
-                || instrument_id.contains("BTC");
+            let is_crypto = is_crypto_instrument(venue, instrument_id);
             let max_normal_day_diff = if is_crypto { 1 } else { 4 };
+
+            let mut sorted_gaps: Vec<NaiveDate> = expected_gap_dates.to_vec();
+            sorted_gaps.sort_unstable();
+            sorted_gaps.dedup();
 
             let mut gap_indices = Vec::new();
             let mut gap_set = HashSet::new();
@@ -493,9 +565,12 @@ impl KlineViewport {
                 let prev_date = bars[i - 1].session_date;
                 let curr_date = bars[i].session_date;
                 let day_diff = (curr_date - prev_date).num_days();
-                let has_expected_gap = expected_gap_dates
-                    .iter()
-                    .any(|&gd| gd > prev_date && gd < curr_date);
+                let has_expected_gap = if sorted_gaps.is_empty() {
+                    false
+                } else {
+                    let idx = sorted_gaps.partition_point(|&gd| gd <= prev_date);
+                    sorted_gaps.get(idx).is_some_and(|&gd| gd < curr_date)
+                };
                 if day_diff > max_normal_day_diff || has_expected_gap {
                     let global_idx = start + i;
                     gap_indices.push(global_idx);
@@ -1044,5 +1119,86 @@ mod tests {
         assert_eq!(total_bench_bars, 100_000);
         assert!(p50_us <= p95_us);
         assert!(p95_us < 50_000);
+    }
+
+    #[test]
+    fn crypto_classification_recognizes_okx_and_excludes_us_bitcoin_etfs() {
+        assert!(is_crypto_instrument("OKX", "OKX:ETH/USDC"));
+        assert!(is_crypto_instrument("BINANCE", "BINANCE:BTC/USDT"));
+        assert!(is_crypto_instrument("UNKNOWN", "SPOT:SOL/USDC"));
+        assert!(!is_crypto_instrument("NYSE", "NYSE:GBTC"));
+        assert!(!is_crypto_instrument("NYSE", "NYSE:FBTC"));
+        assert!(!is_crypto_instrument("NASDAQ", "NASDAQ:IBIT"));
+
+        let mut bars = synthetic_benchmark_bars(3);
+        let d0 = NaiveDate::from_ymd_opt(2025, 1, 1).unwrap();
+        for (idx, offset) in [0u64, 3, 6].into_iter().enumerate() {
+            let d = d0 + chrono::Days::new(offset);
+            bars[idx].session_date = d;
+            bars[idx].open_at = Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap());
+            bars[idx].close_at = Utc.from_utc_datetime(&d.and_hms_opt(23, 59, 59).unwrap());
+        }
+        let vp = KlineViewport::new(3, 3);
+        let okx_slice = vp.build_window_slice(
+            "OKX:ETH/USDC",
+            "OKX",
+            "1d",
+            AdjustmentKind::Raw,
+            &bars,
+            None,
+            &[],
+            &[],
+            100,
+        );
+        assert_eq!(okx_slice.timezone_label, "UTC");
+        assert_eq!(okx_slice.gap_indices, vec![1, 2]);
+
+        let etf_slice = vp.build_window_slice(
+            "NYSE:GBTC",
+            "NYSE",
+            "1d",
+            AdjustmentKind::Raw,
+            &bars,
+            None,
+            &[],
+            &[],
+            100,
+        );
+        assert_eq!(etf_slice.timezone_label, "America/New_York (ET) / UTC");
+        assert!(etf_slice.gap_indices.is_empty());
+    }
+
+    #[test]
+    fn history_cache_invalidates_on_mid_series_bar_mutation() {
+        let mut bars = synthetic_benchmark_bars(30);
+        let vp = KlineViewport::new(30, 30);
+        let before = vp.build_window_slice(
+            "NASDAQ:AAPL",
+            "NASDAQ",
+            "1d",
+            AdjustmentKind::Raw,
+            &bars,
+            None,
+            &[],
+            &[],
+            100,
+        );
+        bars[15].close += Decimal::from(500);
+        let after = vp.build_window_slice(
+            "NASDAQ:AAPL",
+            "NASDAQ",
+            "1d",
+            AdjustmentKind::Raw,
+            &bars,
+            None,
+            &[],
+            &[],
+            100,
+        );
+        assert_ne!(before.bars[15].close, after.bars[15].close);
+        assert_ne!(
+            before.sma_series[0].1[15].value,
+            after.sma_series[0].1[15].value
+        );
     }
 }

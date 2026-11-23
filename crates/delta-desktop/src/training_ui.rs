@@ -9,11 +9,9 @@
 //!     even when the order ticket or its inputs hold focus.
 //! - Post-finish disclosure sequence: `结束训练` -> `训练报告` + 用户自主评分 + 归档笔记 -> 显式 `揭示` -> `AI 复盘`.
 
-use std::fs;
-use std::path::Path;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
-use chrono::{Datelike as _, Days, NaiveDate, TimeZone as _, Utc, Weekday};
+use chrono::NaiveDate;
 use delta_app::{
     parse_decimal_lossless, to_canonical_text, AiReportVerificationStatus, AiReviewReport,
     AnalysisScope, AttachedBracket, BenchmarkStatus, CreateTrainingRunRequest,
@@ -44,15 +42,17 @@ use gpui_kit::{
     TestSupportExt as _, Window,
 };
 use rust_decimal::Decimal;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     components::{KlineChartView, MetricCard},
-    controller::UiAction,
+    controller::{AiRunTarget, UiAction},
     i18n::I18nCatalog,
     theme::Chrome,
     workbench::{CenterWorkspacePanel, WorkbenchSharedState},
 };
+
+pub use crate::training_fixtures::write_synthetic_training_fixtures;
 
 pub const TRAINING_TEXT_INPUT_KEYS: &[&str] = &[
     "form.trn_instrument",
@@ -167,7 +167,7 @@ pub struct TrainingUiState {
     pub self_eval_draft: TrainingSelfEvalDraft,
     pub pending_prestart_run: Option<TrainingRunSummaryDto>,
     pub active_run_id: Option<String>,
-    pub workspace: Option<TrainingWorkspaceSnapshotDto>,
+    pub workspace: Option<Arc<TrainingWorkspaceSnapshotDto>>,
     pub chart_viewport: Option<KlineViewport>,
     pub report: Option<TrainingReportDto>,
     pub reveal: Option<TrainingRevealDto>,
@@ -179,6 +179,9 @@ pub struct TrainingUiState {
     pub training_ai_report: Option<AiReviewReport>,
     pub training_ai_error: Option<ErrorEnvelope>,
     pub opened_training_evidence: Option<Value>,
+    /// Set to `true` only when `SaveNote` succeeds so `sync_inputs` clears the rationale box
+    /// without losing user text on failure (`UI-B13`).
+    pub clear_note_rationale_pending: bool,
     /// M5 chart-trading workbench state (`S-54`).
     pub wb: crate::training_workbench::WorkbenchState,
     pub practice_account: Option<delta_app::PracticeAccountDto>,
@@ -334,22 +337,48 @@ pub(crate) fn preserve_training_draft_edits(
     if original.self_eval_draft != current.self_eval_draft {
         completed.self_eval_draft = current.self_eval_draft.clone();
     }
-    // Workbench UI edits made while an action ran (tool, toggles, proportions, locks) win;
-    // the action's own results (drawings, playback bookkeeping, draft consumption) stay.
-    if original.wb != current.wb {
-        let done = completed.wb.clone();
-        completed.wb = current.wb.clone();
-        completed.wb.drawings = done.drawings;
-        completed.wb.playback.in_flight = done.playback.in_flight;
-        if original.wb.playback.playing == current.wb.playback.playing {
-            completed.wb.playback.playing = done.playback.playing;
-            completed.wb.playback.last_pause_reason = done.playback.last_pause_reason;
+    // Workbench UI edits made while an action ran (tool, toggles, proportions, locks) win
+    // ONLY when the completed action stayed on the same active run, and are merged field-by-field
+    // so run switches never inherit stale state and action outputs stay intact (`UI-B04`).
+    let same_run =
+        completed.active_run_id.is_some() && completed.active_run_id == current.active_run_id;
+    if same_run && original.wb != current.wb {
+        macro_rules! preserve_wb {
+            ($($field:ident),+) => {
+                $(if original.wb.$field != current.wb.$field {
+                    completed.wb.$field = current.wb.$field.clone();
+                })+
+            };
         }
-        if original.wb.draft == current.wb.draft {
-            completed.wb.draft = done.draft;
+        preserve_wb!(
+            tool,
+            pending_anchors,
+            selected_drawing,
+            measure,
+            draft,
+            draw_order_enabled,
+            locked_orders,
+            buy_fraction,
+            sell_fraction,
+            ma_enabled,
+            show_volume,
+            show_drawings,
+            crosshair_enabled,
+            pending_confirm,
+            drawing_color,
+            drawing_style,
+            view_timeframe,
+            manual_price_scale,
+            dragging_order
+        );
+        if original.wb.playback.playing != current.wb.playback.playing {
+            completed.wb.playback.playing = current.wb.playback.playing;
+        }
+        if original.wb.playback.speed_index != current.wb.playback.speed_index {
+            completed.wb.playback.speed_index = current.wb.playback.speed_index;
         }
     }
-    if completed.active_run_id.is_some() && completed.active_run_id == current.active_run_id {
+    if same_run {
         if let (Some(orig_vp), Some(cur_vp), Some(comp_vp)) = (
             original.chart_viewport.as_ref(),
             current.chart_viewport.as_ref(),
@@ -394,17 +423,56 @@ pub(crate) fn refresh_training_lists(
     Ok(())
 }
 
+fn stop_playback(training: &mut TrainingUiState) {
+    training.wb.playback.playing = false;
+    training.wb.playback.in_flight = false;
+}
+
+fn advance_training_viewport(vp: &mut Option<KlineViewport>, visible_bar_count: usize) {
+    if let Some(vp) = vp.as_mut() {
+        // Keep viewport anchored to the newest bar when stepping forward while preserving user
+        // zoom (`UI-B01`).
+        let next_total = visible_bar_count.max(vp.total_bars.saturating_add(1));
+        let min_win = vp.min_visible_bars.min(next_total).max(1);
+        let win = vp.visible_len().max(min_win).min(next_total);
+        vp.total_bars = next_total;
+        vp.visible_end = next_total;
+        vp.visible_start = next_total.saturating_sub(win);
+    }
+}
+
+fn reset_run_session_ui_state(training: &mut TrainingUiState) {
+    stop_playback(training);
+    training.pending_prestart_run = None;
+    training.order_preview = None;
+    training.last_order_rejection = None;
+    training.last_step_receipt = None;
+    training.report = None;
+    training.reveal = None;
+    training.training_ai_report = None;
+    training.training_ai_error = None;
+    training.opened_training_evidence = None;
+    training.last_archived_notes.clear();
+    training.note_draft = TrainingNoteDraftMeta::default();
+    training.chart_viewport = None;
+    training.side_panel = TrainingSidePanel::None;
+    training.aggregated = None;
+    training.clear_note_rationale_pending = false;
+}
+
 fn load_workspace_into_state(
     state: &mut WorkbenchSharedState,
     run_id: &str,
     viewport_override: Option<KlineViewport>,
+    reload_extras: bool,
 ) -> Result<(), ErrorEnvelope> {
+    let run_changed = state.training.active_run_id.as_deref() != Some(run_id);
     let vp = viewport_override.or_else(|| {
         state
             .training
             .chart_viewport
             .clone()
-            .filter(|_| state.training.active_run_id.as_deref() == Some(run_id))
+            .filter(|_| !run_changed)
     });
     let mut effective_vp = vp.unwrap_or_else(|| {
         let mut init = KlineViewport::new(0, 120);
@@ -418,21 +486,30 @@ fn load_workspace_into_state(
     effective_vp.total_bars = snap.chart_slice.total_visible_bars;
     effective_vp.visible_start = snap.chart_slice.visible_start_index;
     effective_vp.visible_end = snap.chart_slice.visible_end_index;
-    if state.training.active_run_id.as_deref() != Some(run_id) {
+    if run_changed {
         state.training.wb = crate::training_workbench::WorkbenchState::default();
     }
-    state.training.wb.drawings = state.host.list_training_drawings(run_id)?;
-    state.training.practice_account = match snap.run.practice_account_id.as_deref() {
-        Some(_) => Some(state.host.show_practice_account(&snap.run.quote_currency)?),
-        None => None,
-    };
+    if reload_extras || run_changed {
+        state.training.wb.drawings = state.host.list_training_drawings(run_id)?;
+        state.training.practice_account = match snap.run.practice_account_id.as_deref() {
+            Some(_) => Some(state.host.show_practice_account(&snap.run.quote_currency)?),
+            None => None,
+        };
+    }
     state.training.aggregated = match state.training.wb.view_timeframe {
-        Some(view) => state.host.get_training_aggregated_view(run_id, view).ok(),
+        Some(view) => match state.host.get_training_aggregated_view(run_id, view) {
+            Ok(agg) => Some(agg),
+            Err(err) => {
+                state.training.wb.view_timeframe = None;
+                state.training.aggregated = None;
+                return Err(err);
+            }
+        },
         None => None,
     };
     state.training.active_run_id = Some(run_id.to_string());
     state.training.chart_viewport = Some(effective_vp);
-    state.training.workspace = Some(snap);
+    state.training.workspace = Some(Arc::new(snap));
     state.training.mode = TrainingViewMode::Workspace;
     Ok(())
 }
@@ -454,15 +531,28 @@ pub fn default_btc_run_request(
     }
 }
 
-fn finish_into_report(state: &mut WorkbenchSharedState, run_id: &str) -> Result<(), ErrorEnvelope> {
+fn open_report_into_state(
+    state: &mut WorkbenchSharedState,
+    run_id: &str,
+    allow_reveal: bool,
+) -> Result<(), ErrorEnvelope> {
     let rep = state.host.get_training_report(run_id)?;
     if let Some(se) = &rep.self_evaluation {
         state.training.self_eval_draft.decision_score = se.decision_score;
         state.training.self_eval_draft.plan_discipline_score = se.plan_discipline_score;
     }
+    state.training.reveal = if allow_reveal && (rep.run.revealed || !rep.run.hidden_mode) {
+        Some(state.host.reveal_training_run(run_id)?)
+    } else {
+        None
+    };
+    stop_playback(&mut state.training);
+    state.training.active_run_id = Some(run_id.to_string());
     state.training.report = Some(rep);
-    state.training.reveal = None;
-    state.training.wb.playback.playing = false;
+    state.training.training_ai_report = None;
+    state.training.training_ai_error = None;
+    state.training.opened_training_evidence = None;
+    state.training.last_archived_notes.clear();
     state.training.mode = TrainingViewMode::Report;
     Ok(())
 }
@@ -478,7 +568,7 @@ fn apply_trade_receipt(
             state.training.last_step_receipt = Some(receipt);
             state.training.order_preview = None;
             state.training.last_order_rejection = None;
-            load_workspace_into_state(state, run_id, None)?;
+            load_workspace_into_state(state, run_id, None, true)?;
             refresh_training_lists(state)?;
             state.ui_notice = ok_notice.to_string();
             Ok(())
@@ -532,12 +622,8 @@ fn apply_m5_training_action(
                 .host
                 .create_training_run(default_btc_run_request(timeframe, hidden_mode))?;
             refresh_training_lists(state)?;
-            state.training.report = None;
-            state.training.reveal = None;
-            state.training.last_step_receipt = None;
-            state.training.chart_viewport = None;
-            state.training.side_panel = TrainingSidePanel::None;
-            load_workspace_into_state(state, &summary.run_id, None)?;
+            reset_run_session_ui_state(&mut state.training);
+            load_workspace_into_state(state, &summary.run_id, None, true)?;
             state.ui_notice = "新一局已开始（练习账户资金，与真实资产隔离）".into();
         }
         TrainingUiAction::PrepareDefaultData => {
@@ -624,13 +710,16 @@ fn apply_m5_training_action(
                     .playback
                     .on_step_done(Some(&receipt), false);
                 let finished = receipt.run.status != SimRunStatus::Active;
+                let visible_bar_count = receipt.run.visible_bar_count;
                 state.training.last_step_receipt = Some(receipt);
+                state.training.order_preview = None;
+                advance_training_viewport(&mut state.training.chart_viewport, visible_bar_count);
                 if finished {
                     refresh_training_lists(state)?;
-                    finish_into_report(state, &run_id)?;
+                    open_report_into_state(state, &run_id, false)?;
                     state.ui_notice = "已完成全部训练步数，请查看报告".into();
                 } else {
-                    load_workspace_into_state(state, &run_id, None)?;
+                    load_workspace_into_state(state, &run_id, None, false)?;
                     if !state.training.wb.playback.playing {
                         if let Some(reason) = state.training.wb.playback.last_pause_reason.clone() {
                             state.ui_notice = reason;
@@ -646,16 +735,14 @@ fn apply_m5_training_action(
         TrainingUiAction::AbandonRun(run_id) => {
             state.host.abandon_training_run(&run_id)?;
             refresh_training_lists(state)?;
-            finish_into_report(state, &run_id)?;
+            open_report_into_state(state, &run_id, false)?;
             state.ui_notice = "本局已放弃并结算到练习账户（照常计入分析）".into();
         }
         TrainingUiAction::RestartRun(run_id) => {
             let summary = state.host.restart_training_run(&run_id)?;
             refresh_training_lists(state)?;
-            state.training.report = None;
-            state.training.reveal = None;
-            state.training.chart_viewport = None;
-            load_workspace_into_state(state, &summary.run_id, None)?;
+            reset_run_session_ui_state(&mut state.training);
+            load_workspace_into_state(state, &summary.run_id, None, true)?;
             state.ui_notice = "已放弃上一局并以相同设置开始新一局".into();
         }
         TrainingUiAction::SaveDrawing { run_id, drawing } => {
@@ -770,6 +857,7 @@ pub(crate) fn apply_training_action(
         }
         TrainingUiAction::OpenNewDialog => {
             refresh_training_lists(state)?;
+            stop_playback(&mut state.training);
             state.training.pending_prestart_run = None;
             state.training.delete_preview = None;
             state.training.mode = TrainingViewMode::NewDialog;
@@ -777,6 +865,7 @@ pub(crate) fn apply_training_action(
         }
         TrainingUiAction::OpenList => {
             refresh_training_lists(state)?;
+            stop_playback(&mut state.training);
             state.training.mode = TrainingViewMode::List;
             state.ui_notice = "已返回模拟训练列表".into();
         }
@@ -792,17 +881,8 @@ pub(crate) fn apply_training_action(
             req.create_and_start = true;
             let summary = state.host.create_training_run(req)?;
             refresh_training_lists(state)?;
-            state.training.pending_prestart_run = None;
-            state.training.order_preview = None;
-            state.training.last_order_rejection = None;
-            state.training.last_step_receipt = None;
-            state.training.report = None;
-            state.training.reveal = None;
-            state.training.training_ai_report = None;
-            state.training.training_ai_error = None;
-            state.training.opened_training_evidence = None;
-            state.training.chart_viewport = None;
-            load_workspace_into_state(state, &summary.run_id, None)?;
+            reset_run_session_ui_state(&mut state.training);
+            load_workspace_into_state(state, &summary.run_id, None, true)?;
             state.ui_notice = "模拟训练已启动（独立模拟账户，不计入真实资产）".into();
         }
         TrainingUiAction::RedrawPendingRun(run_id) => {
@@ -814,17 +894,8 @@ pub(crate) fn apply_training_action(
         TrainingUiAction::StartRun(run_id) => {
             let summary = state.host.start_training_run(&run_id)?;
             refresh_training_lists(state)?;
-            state.training.pending_prestart_run = None;
-            state.training.order_preview = None;
-            state.training.last_order_rejection = None;
-            state.training.last_step_receipt = None;
-            state.training.report = None;
-            state.training.reveal = None;
-            state.training.training_ai_report = None;
-            state.training.training_ai_error = None;
-            state.training.opened_training_evidence = None;
-            state.training.chart_viewport = None;
-            load_workspace_into_state(state, &summary.run_id, None)?;
+            reset_run_session_ui_state(&mut state.training);
+            load_workspace_into_state(state, &summary.run_id, None, true)?;
             state.ui_notice = "模拟训练已启动".into();
         }
         TrainingUiAction::ResumeOrOpenRun(run_id) => {
@@ -837,15 +908,7 @@ pub(crate) fn apply_training_action(
                     let _ = state.host.start_training_run(&run_id)?;
                 }
                 SimRunStatus::Finished | SimRunStatus::Abandoned => {
-                    let rep = state.host.get_training_report(&run_id)?;
-                    state.training.reveal = if rep.run.revealed {
-                        Some(state.host.reveal_training_run(&run_id)?)
-                    } else {
-                        None
-                    };
-                    state.training.active_run_id = Some(run_id);
-                    state.training.report = Some(rep);
-                    state.training.mode = TrainingViewMode::Report;
+                    open_report_into_state(state, &run_id, true)?;
                     refresh_training_lists(state)?;
                     state.ui_notice = "已打开模拟训练报告".into();
                     return Ok(());
@@ -853,13 +916,16 @@ pub(crate) fn apply_training_action(
                 _ => {}
             }
             refresh_training_lists(state)?;
+            stop_playback(&mut state.training);
             state.training.order_preview = None;
             state.training.last_order_rejection = None;
-            load_workspace_into_state(state, &run_id, None)?;
+            load_workspace_into_state(state, &run_id, None, true)?;
             state.ui_notice = "已恢复模拟训练工作台".into();
         }
         TrainingUiAction::PauseRun(run_id) => {
             let _ = state.host.pause_training_run(&run_id)?;
+            stop_playback(&mut state.training);
+            state.training.workspace = None;
             refresh_training_lists(state)?;
             state.training.mode = TrainingViewMode::List;
             state.ui_notice = "模拟训练已暂停并保存状态，可随时继续".into();
@@ -867,35 +933,21 @@ pub(crate) fn apply_training_action(
         TrainingUiAction::AdvanceBar(run_id) => {
             let receipt = state.host.advance_training_bar(&run_id)?;
             let auto_finished = receipt.run.status == SimRunStatus::Finished;
+            let visible_bar_count = receipt.run.visible_bar_count;
             state.training.last_step_receipt = Some(receipt);
             state.training.order_preview = None;
-            if let Some(vp) = state.training.chart_viewport.as_mut() {
-                // Keep viewport anchored to the newest bar when stepping forward while preserving user zoom
-                let next_total = vp.total_bars.saturating_add(1);
-                let min_win = vp.min_visible_bars.min(next_total).max(1);
-                let win = vp.visible_len().max(min_win).min(next_total);
-                vp.total_bars = next_total;
-                vp.visible_end = next_total;
-                vp.visible_start = next_total.saturating_sub(win);
-            }
-            refresh_training_lists(state)?;
+            advance_training_viewport(&mut state.training.chart_viewport, visible_bar_count);
             if auto_finished {
-                let rep = state.host.get_training_report(&run_id)?;
-                if let Some(se) = &rep.self_evaluation {
-                    state.training.self_eval_draft.decision_score = se.decision_score;
-                    state.training.self_eval_draft.plan_discipline_score = se.plan_discipline_score;
-                }
-                state.training.report = Some(rep);
-                state.training.reveal = None;
-                state.training.mode = TrainingViewMode::Report;
+                refresh_training_lists(state)?;
+                open_report_into_state(state, &run_id, false)?;
                 state.ui_notice = "已完成全部训练步数，请先查看训练报告与自主复盘".into();
             } else {
-                load_workspace_into_state(state, &run_id, None)?;
+                load_workspace_into_state(state, &run_id, None, false)?;
                 state.ui_notice = "已推进至下一根 K 线".into();
             }
         }
         TrainingUiAction::UpdateChartViewport { run_id, viewport } => {
-            load_workspace_into_state(state, &run_id, Some(viewport))?;
+            load_workspace_into_state(state, &run_id, Some(viewport), false)?;
         }
         TrainingUiAction::PreviewOrder { run_id, request } => {
             let preview = state.host.preview_training_order(&run_id, request)?;
@@ -920,7 +972,7 @@ pub(crate) fn apply_training_action(
                     state.training.last_step_receipt = Some(receipt);
                     state.training.order_preview = None;
                     state.training.last_order_rejection = None;
-                    load_workspace_into_state(state, &run_id, None)?;
+                    load_workspace_into_state(state, &run_id, None, true)?;
                     refresh_training_lists(state)?;
                     state.ui_notice = "模拟委托已提交（将在下一根或触发条件满足时撮合）".into();
                 }
@@ -938,52 +990,27 @@ pub(crate) fn apply_training_action(
         TrainingUiAction::CancelOrder { run_id, order_id } => {
             let receipt = state.host.cancel_training_order(&run_id, &order_id)?;
             state.training.last_step_receipt = Some(receipt);
-            load_workspace_into_state(state, &run_id, None)?;
+            load_workspace_into_state(state, &run_id, None, true)?;
             state.ui_notice = "模拟挂单已撤销并释放冻结额度".into();
         }
         TrainingUiAction::SaveNote { run_id, request } => {
             let _ = state.host.upsert_training_note(&run_id, request)?;
             state.training.note_draft = TrainingNoteDraftMeta::default();
-            load_workspace_into_state(state, &run_id, None)?;
+            state.training.clear_note_rationale_pending = true;
+            load_workspace_into_state(state, &run_id, None, false)?;
             state.ui_notice = "模拟训练笔记已保存".into();
         }
         TrainingUiAction::FinishRun(run_id) => {
             let receipt = state.host.finish_training_run(&run_id)?;
             state.training.last_step_receipt = Some(receipt);
-            let rep = state.host.get_training_report(&run_id)?;
-            if let Some(se) = &rep.self_evaluation {
-                state.training.self_eval_draft.decision_score = se.decision_score;
-                state.training.self_eval_draft.plan_discipline_score = se.plan_discipline_score;
-            }
             refresh_training_lists(state)?;
-            state.training.active_run_id = Some(run_id);
-            state.training.report = Some(rep);
-            // Strictly keep hidden identity unrevealed right after finish until explicit Reveal action!
-            state.training.reveal = None;
-            state.training.training_ai_report = None;
-            state.training.training_ai_error = None;
-            state.training.opened_training_evidence = None;
-            state.training.mode = TrainingViewMode::Report;
+            // Strictly keep hidden identity unrevealed right after finish until explicit Reveal!
+            open_report_into_state(state, &run_id, false)?;
             state.ui_notice =
                 "模拟训练已结束，请先审阅训练报告与自主评分，再选择是否揭示真实标的".into();
         }
         TrainingUiAction::OpenReport(run_id) => {
-            let rep = state.host.get_training_report(&run_id)?;
-            if let Some(se) = &rep.self_evaluation {
-                state.training.self_eval_draft.decision_score = se.decision_score;
-                state.training.self_eval_draft.plan_discipline_score = se.plan_discipline_score;
-            }
-            state.training.reveal = if rep.run.revealed || !rep.run.hidden_mode {
-                state.host.reveal_training_run(&run_id).ok()
-            } else {
-                None
-            };
-            state.training.active_run_id = Some(run_id);
-            state.training.report = Some(rep);
-            state.training.training_ai_report = None;
-            state.training.training_ai_error = None;
-            state.training.opened_training_evidence = None;
-            state.training.mode = TrainingViewMode::Report;
+            open_report_into_state(state, &run_id, true)?;
             state.ui_notice = "已打开模拟训练报告".into();
         }
         TrainingUiAction::SaveSelfEvaluation {
@@ -1009,7 +1036,7 @@ pub(crate) fn apply_training_action(
                 .archive_training_notes_to_journal(&run_id, note_ids)?;
             let count = res.archived_notes.len();
             state.training.last_archived_notes = res.archived_notes;
-            let _ = state.refresh_notes();
+            state.refresh_notes()?;
             state.ui_notice = format!(
                 "已归档 {count} 条模拟训练笔记至复盘日志（均带「来自模拟训练」标记，不影响真实账本）"
             );
@@ -1026,17 +1053,8 @@ pub(crate) fn apply_training_action(
             let child = state.host.retry_training_run(&original_run_id, None)?;
             let started = state.host.start_training_run(&child.run_id)?;
             refresh_training_lists(state)?;
-            state.training.pending_prestart_run = None;
-            state.training.order_preview = None;
-            state.training.last_order_rejection = None;
-            state.training.last_step_receipt = None;
-            state.training.report = None;
-            state.training.reveal = None;
-            state.training.training_ai_report = None;
-            state.training.training_ai_error = None;
-            state.training.opened_training_evidence = None;
-            state.training.chart_viewport = None;
-            load_workspace_into_state(state, &started.run_id, None)?;
+            reset_run_session_ui_state(&mut state.training);
+            load_workspace_into_state(state, &started.run_id, None, true)?;
             state.ui_notice = "已基于相同候选段与种子创建独立重试会话".into();
         }
         TrainingUiAction::PreviewDeleteRun(run_id) => {
@@ -1052,10 +1070,9 @@ pub(crate) fn apply_training_action(
             let deleted = state.host.delete_training_run(&run_id)?;
             state.training.delete_preview = None;
             if state.training.active_run_id.as_deref() == Some(run_id.as_str()) {
+                reset_run_session_ui_state(&mut state.training);
                 state.training.active_run_id = None;
                 state.training.workspace = None;
-                state.training.report = None;
-                state.training.reveal = None;
                 state.training.mode = TrainingViewMode::List;
             }
             refresh_training_lists(state)?;
@@ -1087,7 +1104,7 @@ pub(crate) fn apply_training_action(
                 cancel,
                 move |event| {
                     if let ModelEventKind::TextDelta { delta } = event.kind {
-                        let mut text = stream.lock().unwrap();
+                        let mut text = crate::lock_or_recover(&stream);
                         if text.len() + delta.len() <= 256 * 1024 {
                             text.push_str(&delta);
                         }
@@ -1475,33 +1492,17 @@ impl CenterWorkspacePanel {
         click: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(bounds) = *self.training_plot_bounds.lock().unwrap() else {
+        let Some(bounds) = *crate::lock_or_recover(&self.training_plot_bounds) else {
             return;
         };
-        let Some((x, y)) = crate::chart_canvas::pointer_ratio(position, bounds) else {
-            return;
-        };
-        let mut g = self.state.lock().unwrap();
+        let mut g = crate::lock_or_recover(&self.state);
         let Some(slice) = g.training.workspace.as_ref().map(|ws| &ws.chart_slice) else {
             return;
         };
-        let index = (!slice.bars.is_empty()).then(|| {
-            slice.visible_start_index
-                + ((x * slice.bars.len() as f32).floor() as usize).min(slice.bars.len() - 1)
-        });
-        let price = (|| {
-            let min = slice
-                .lod_candles
-                .iter()
-                .map(|candle| candle.low)
-                .reduce(f64::min)?;
-            let max = slice
-                .lod_candles
-                .iter()
-                .map(|candle| candle.high)
-                .reduce(f64::max)?;
-            Some(min + (max - min) * f64::from(1. - y))
-        })();
+        let (index, price) = match crate::chart_canvas::pointer_bar_price(position, bounds, slice) {
+            Some((idx, p)) => (Some(idx), Some(p)),
+            None => return,
+        };
         let total_bars = slice.total_visible_bars;
         let vis_start = slice.visible_start_index;
         let vis_end = slice.visible_end_index;
@@ -1518,6 +1519,44 @@ impl CenterWorkspacePanel {
         if click {
             self.training_chart_drag = Some((position, vp.clone()));
         }
+    }
+
+    pub(crate) fn change_training_viewport(
+        &self,
+        run_id: String,
+        pan: isize,
+        zoom: f64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let viewport = {
+            let mut g = crate::lock_or_recover(&self.state);
+            if g.training.wb.view_timeframe.is_some() {
+                return;
+            }
+            let fallback_total = g
+                .training
+                .workspace
+                .as_ref()
+                .map(|w| w.chart_slice.total_visible_bars)
+                .unwrap_or(100);
+            let mut v = g.training.chart_viewport.clone().unwrap_or_else(|| {
+                KlineViewport::new(fallback_total, fallback_total.clamp(1, 120))
+            });
+            if pan != 0 {
+                v.pan(pan);
+            }
+            if zoom != 1.0 {
+                v.zoom(zoom, 1.0);
+            }
+            g.training.chart_viewport = Some(v.clone());
+            v
+        };
+        self.dispatch_training(
+            Ok(TrainingUiAction::UpdateChartViewport { run_id, viewport }),
+            window,
+            cx,
+        );
     }
 
     /// Handles keyboard shortcuts in the Active Training Workspace (`S-46`, `NFR-09`, `M4-A-16`):
@@ -1672,7 +1711,7 @@ impl CenterWorkspacePanel {
     }
 
     pub(crate) fn render_training_page(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1693,7 +1732,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_list_view(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1926,26 +1965,34 @@ impl CenterWorkspacePanel {
                                             )
                                         },
                                     )
-                                    .when(run.status == SimRunStatus::Finished, |row| {
-                                        row.child(
-                                            Button::new(SharedString::from(format!(
-                                                "training-report-{}",
-                                                run.run_id
-                                            )))
-                                            .xsmall()
-                                            .primary()
-                                            .label("查看报告")
-                                            .on_click(cx.listener(move |panel, _, window, cx| {
-                                                panel.dispatch_training(
-                                                    Ok(TrainingUiAction::OpenReport(
-                                                        rid_report.clone(),
-                                                    )),
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                        )
-                                    })
+                                    .when(
+                                        matches!(
+                                            run.status,
+                                            SimRunStatus::Finished | SimRunStatus::Abandoned
+                                        ),
+                                        |row| {
+                                            row.child(
+                                                Button::new(SharedString::from(format!(
+                                                    "training-report-{}",
+                                                    run.run_id
+                                                )))
+                                                .xsmall()
+                                                .primary()
+                                                .label("查看报告")
+                                                .on_click(cx.listener(
+                                                    move |panel, _, window, cx| {
+                                                        panel.dispatch_training(
+                                                            Ok(TrainingUiAction::OpenReport(
+                                                                rid_report.clone(),
+                                                            )),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                            )
+                                        },
+                                    )
                                     .child(
                                         Button::new(SharedString::from(format!(
                                             "training-retry-{}",
@@ -1988,7 +2035,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_new_dialog(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2312,11 +2359,11 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_workspace_view(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(ws) = state.training.workspace.clone() else {
+        let Some(ws) = state.training.workspace.as_deref() else {
             return div()
                 .text_sm()
                 .child("尚未打开模拟训练会话")
@@ -2352,30 +2399,40 @@ impl CenterWorkspacePanel {
             .aggregated
             .as_ref()
             .filter(|_| state.training.wb.view_timeframe.is_some())
-            .and_then(|agg| crate::training_workbench_ui::aggregated_slice(&ws, agg));
+            .and_then(|agg| crate::training_workbench_ui::aggregated_slice(ws, agg));
         let aggregated_view = aggregated.is_some();
+        let display_tf = state
+            .training
+            .wb
+            .view_timeframe
+            .map(|tf| tf.as_str())
+            .unwrap_or(ws.run.timeframe.as_str());
+        let display_slice = Arc::new(aggregated.unwrap_or_else(|| ws.chart_slice.clone()));
+        let info_row = crate::training_workbench_ui::render_info_row(
+            ws,
+            &display_slice,
+            display_tf,
+            active_vp.filter(|_| !aggregated_view),
+            cx,
+        );
         let crosshair_on = state.training.wb.crosshair_enabled && !aggregated_view;
-        let mut chart = KlineChartView::new(
-            "training-kline-chart",
-            aggregated.unwrap_or_else(|| ws.chart_slice.clone()),
-            convention,
-        )
-        .with_dataset_versions(Some(ws.run.dataset_version), Some(ws.run.dataset_version))
-        .with_crosshair(
-            active_vp
-                .and_then(|vp| vp.crosshair_index)
-                .filter(|_| crosshair_on),
-        )
-        .with_crosshair_price(
-            active_vp
-                .and_then(|vp| vp.crosshair_price)
-                .filter(|_| crosshair_on),
-        )
-        .with_overlay(crate::training_workbench_ui::workbench_overlay(
-            &ws,
-            &state.training.wb,
-            aggregated_view,
-        ));
+        let mut chart = KlineChartView::new("training-kline-chart", display_slice, convention)
+            .with_dataset_versions(Some(ws.run.dataset_version), Some(ws.run.dataset_version))
+            .with_crosshair(
+                active_vp
+                    .and_then(|vp| vp.crosshair_index)
+                    .filter(|_| crosshair_on),
+            )
+            .with_crosshair_price(
+                active_vp
+                    .and_then(|vp| vp.crosshair_price)
+                    .filter(|_| crosshair_on),
+            )
+            .with_overlay(crate::training_workbench_ui::workbench_overlay(
+                ws,
+                &state.training.wb,
+                aggregated_view,
+            ));
         if ws.run.is_identity_masked {
             chart = chart
                 .with_masked_training_labels(ws.run.display_symbol.clone(), ws.bar_labels.clone());
@@ -2385,28 +2442,44 @@ impl CenterWorkspacePanel {
             .on_mouse_move(cx.listener(
                 move |panel, event: &gpui_kit::MouseMoveEvent, window, cx| {
                     if event.dragging() {
+                        if crate::lock_or_recover(&panel.state)
+                            .training
+                            .wb
+                            .dragging_order
+                            .is_some()
+                        {
+                            panel.workbench_chart_drag_move(event.position, cx);
+                            return;
+                        }
                         if let (Some((start, mut viewport)), Some(bounds)) = (
                             panel.training_chart_drag.clone(),
-                            *panel.training_plot_bounds.lock().unwrap(),
+                            *crate::lock_or_recover(&panel.training_plot_bounds),
                         ) {
                             if bounds.size.width > px(0.) {
                                 let bars = -((event.position.x - start.x) / bounds.size.width
                                     * viewport.visible_len() as f32)
                                     .round() as isize;
-                                viewport.pan(bars);
-                                panel.state.lock().unwrap().training.chart_viewport =
-                                    Some(viewport.clone());
-                                panel.dispatch_training(
-                                    Ok(TrainingUiAction::UpdateChartViewport {
-                                        run_id: rid_chart_drag.clone(),
-                                        viewport,
-                                    }),
-                                    window,
-                                    cx,
-                                );
+                                if bars != 0 {
+                                    viewport.pan(bars);
+                                    crate::lock_or_recover(&panel.state).training.chart_viewport =
+                                        Some(viewport.clone());
+                                    panel.dispatch_training(
+                                        Ok(TrainingUiAction::UpdateChartViewport {
+                                            run_id: rid_chart_drag.clone(),
+                                            viewport,
+                                        }),
+                                        window,
+                                        cx,
+                                    );
+                                }
                             }
                         }
-                    } else {
+                    } else if crate::lock_or_recover(&panel.state)
+                        .training
+                        .wb
+                        .view_timeframe
+                        .is_none()
+                    {
                         panel.training_chart_pointer(event.position, false, cx);
                     }
                 },
@@ -2415,7 +2488,13 @@ impl CenterWorkspacePanel {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|panel, event: &gpui_kit::MouseDownEvent, window, cx| {
                     panel.training_workspace_focus.focus(window, cx);
-                    if !panel.workbench_chart_down(event.position, cx) {
+                    if !panel.workbench_chart_down(event.position, window, cx)
+                        && crate::lock_or_recover(&panel.state)
+                            .training
+                            .wb
+                            .view_timeframe
+                            .is_none()
+                    {
                         panel.training_chart_pointer(event.position, true, cx);
                     }
                 }),
@@ -2427,9 +2506,16 @@ impl CenterWorkspacePanel {
                     panel.workbench_chart_up(event.position, window, cx);
                 }),
             )
+            .on_mouse_up_out(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|panel, _, _, cx| {
+                    panel.training_chart_drag = None;
+                    panel.workbench_chart_cancel_drag(cx);
+                }),
+            )
             .on_scroll(
                 cx.listener(move |panel, event: &gpui_kit::ScrollEvent, window, cx| {
-                    let Some(bounds) = *panel.training_plot_bounds.lock().unwrap() else {
+                    let Some(bounds) = *crate::lock_or_recover(&panel.training_plot_bounds) else {
                         return;
                     };
                     let Some((x, _)) = crate::chart_canvas::pointer_ratio(event.position, bounds)
@@ -2438,7 +2524,10 @@ impl CenterWorkspacePanel {
                     };
                     let delta = event.delta.pixel_delta(px(16.));
                     let viewport = {
-                        let mut g = panel.state.lock().unwrap();
+                        let mut g = crate::lock_or_recover(&panel.state);
+                        if g.training.wb.view_timeframe.is_some() {
+                            return;
+                        }
                         let fallback_total = g
                             .training
                             .workspace
@@ -2470,17 +2559,16 @@ impl CenterWorkspacePanel {
 
         let order_draft = state.training.order_draft.clone();
         let note_draft = state.training.note_draft.clone();
-        let order_preview = state.training.order_preview.clone();
-        let last_rejection = state.training.last_order_rejection.clone();
+        let order_preview = state.training.order_preview.as_ref();
+        let last_rejection = state.training.last_order_rejection.as_ref();
         let step_notices = state
             .training
             .last_step_receipt
             .as_ref()
             .map(|r| r.corporate_action_notices.clone())
             .unwrap_or_default();
-        let workbench_toolbar = self.render_workbench_toolbar(state, &ws, cx);
-        let info_row = crate::training_workbench_ui::render_info_row(&ws, active_vp, cx);
-        let ledger = self.render_practice_ledger(state, &ws, cx);
+        let workbench_toolbar = self.render_workbench_toolbar(state, ws, cx);
+        let ledger = self.render_practice_ledger(state, ws, cx);
         let side_panel = self.render_training_side_panel(state, cx);
 
         v_flex()
@@ -2713,24 +2801,13 @@ impl CenterWorkspacePanel {
                                         Button::new("trn-chart-pan-left")
                                             .xsmall()
                                             .ghost()
+                                            .disabled(aggregated_view)
                                             .label(I18nCatalog::tr("action.pan_left"))
                                             .on_click(cx.listener(move |panel, _, window, cx| {
-                                                let vp = {
-                                                    let mut g = panel.state.lock().unwrap();
-                                                    let mut v = g
-                                                        .training
-                                                        .chart_viewport
-                                                        .clone()
-                                                        .unwrap_or_else(|| KlineViewport::new(100, 100));
-                                                    v.pan(-20);
-                                                    g.training.chart_viewport = Some(v.clone());
-                                                    v
-                                                };
-                                                panel.dispatch_training(
-                                                    Ok(TrainingUiAction::UpdateChartViewport {
-                                                        run_id: rid_pan_left.clone(),
-                                                        viewport: vp,
-                                                    }),
+                                                panel.change_training_viewport(
+                                                    rid_pan_left.clone(),
+                                                    -20,
+                                                    1.0,
                                                     window,
                                                     cx,
                                                 );
@@ -2740,24 +2817,13 @@ impl CenterWorkspacePanel {
                                         Button::new("trn-chart-pan-right")
                                             .xsmall()
                                             .ghost()
+                                            .disabled(aggregated_view)
                                             .label(I18nCatalog::tr("action.pan_right"))
                                             .on_click(cx.listener(move |panel, _, window, cx| {
-                                                let vp = {
-                                                    let mut g = panel.state.lock().unwrap();
-                                                    let mut v = g
-                                                        .training
-                                                        .chart_viewport
-                                                        .clone()
-                                                        .unwrap_or_else(|| KlineViewport::new(100, 100));
-                                                    v.pan(20);
-                                                    g.training.chart_viewport = Some(v.clone());
-                                                    v
-                                                };
-                                                panel.dispatch_training(
-                                                    Ok(TrainingUiAction::UpdateChartViewport {
-                                                        run_id: rid_pan_right.clone(),
-                                                        viewport: vp,
-                                                    }),
+                                                panel.change_training_viewport(
+                                                    rid_pan_right.clone(),
+                                                    20,
+                                                    1.0,
                                                     window,
                                                     cx,
                                                 );
@@ -2767,24 +2833,13 @@ impl CenterWorkspacePanel {
                                         Button::new("trn-chart-zoom-in")
                                             .xsmall()
                                             .ghost()
+                                            .disabled(aggregated_view)
                                             .label(I18nCatalog::tr("action.zoom_in"))
                                             .on_click(cx.listener(move |panel, _, window, cx| {
-                                                let vp = {
-                                                    let mut g = panel.state.lock().unwrap();
-                                                    let mut v = g
-                                                        .training
-                                                        .chart_viewport
-                                                        .clone()
-                                                        .unwrap_or_else(|| KlineViewport::new(100, 100));
-                                                    v.zoom(0.7, 1.0);
-                                                    g.training.chart_viewport = Some(v.clone());
-                                                    v
-                                                };
-                                                panel.dispatch_training(
-                                                    Ok(TrainingUiAction::UpdateChartViewport {
-                                                        run_id: rid_zoom_in.clone(),
-                                                        viewport: vp,
-                                                    }),
+                                                panel.change_training_viewport(
+                                                    rid_zoom_in.clone(),
+                                                    0,
+                                                    0.7,
                                                     window,
                                                     cx,
                                                 );
@@ -2794,24 +2849,13 @@ impl CenterWorkspacePanel {
                                         Button::new("trn-chart-zoom-out")
                                             .xsmall()
                                             .ghost()
+                                            .disabled(aggregated_view)
                                             .label(I18nCatalog::tr("action.zoom_out"))
                                             .on_click(cx.listener(move |panel, _, window, cx| {
-                                                let vp = {
-                                                    let mut g = panel.state.lock().unwrap();
-                                                    let mut v = g
-                                                        .training
-                                                        .chart_viewport
-                                                        .clone()
-                                                        .unwrap_or_else(|| KlineViewport::new(100, 100));
-                                                    v.zoom(1.4, 1.0);
-                                                    g.training.chart_viewport = Some(v.clone());
-                                                    v
-                                                };
-                                                panel.dispatch_training(
-                                                    Ok(TrainingUiAction::UpdateChartViewport {
-                                                        run_id: rid_zoom_out.clone(),
-                                                        viewport: vp,
-                                                    }),
+                                                panel.change_training_viewport(
+                                                    rid_zoom_out.clone(),
+                                                    0,
+                                                    1.4,
                                                     window,
                                                     cx,
                                                 );
@@ -2819,7 +2863,7 @@ impl CenterWorkspacePanel {
                                     ),
                             )
                             .child(chart_element)
-                            .child(self.render_training_positions_and_orders(&ws, cx)),
+                            .child(self.render_training_positions_and_orders(ws, cx)),
                     )
                     .child(
                         v_flex()
@@ -2831,13 +2875,13 @@ impl CenterWorkspacePanel {
                             .child(self.render_training_order_ticket(
                                 &run_id,
                                 &order_draft,
-                                order_preview.as_ref(),
-                                last_rejection.as_ref(),
+                                order_preview,
+                                last_rejection,
                                 cx,
                             ))
                             .child(self.render_training_notes_panel(
                                 &run_id,
-                                &ws,
+                                ws,
                                 &note_draft,
                                 cx,
                             )),
@@ -2847,7 +2891,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_positions_and_orders(
-        &mut self,
+        &self,
         ws: &TrainingWorkspaceSnapshotDto,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2984,7 +3028,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_order_ticket(
-        &mut self,
+        &self,
         run_id: &str,
         draft: &TrainingOrderFormDraft,
         preview: Option<&TrainingOrderPreviewDto>,
@@ -3007,8 +3051,27 @@ impl CenterWorkspacePanel {
                         && !mods.alt
                         && !mods.shift
                     {
-                        let parsed = panel.parse_training_order_request(cx);
                         let r_id = rid_ctrl_enter.clone();
+                        // An open draw-to-order draft owns Ctrl+Enter even when focus sits inside
+                        // the order ticket (`UI-B03`).
+                        let draft_state = crate::lock_or_recover(&panel.state)
+                            .training
+                            .wb
+                            .draft
+                            .as_ref()
+                            .map(|d| d.selected.is_some());
+                        if let Some(has_selection) = draft_state {
+                            if has_selection {
+                                panel.confirm_workbench_draft(&r_id, window, cx);
+                            } else {
+                                crate::lock_or_recover(&panel.state).ui_notice =
+                                    "请先在下单草稿中选择方向，再确认".into();
+                                cx.notify();
+                            }
+                            cx.stop_propagation();
+                            return;
+                        }
+                        let parsed = panel.parse_training_order_request(cx);
                         panel.training_workspace_focus.focus(window, cx);
                         panel.dispatch_training(
                             parsed.map(|request| TrainingUiAction::SubmitOrder {
@@ -3308,7 +3371,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_notes_panel(
-        &mut self,
+        &self,
         run_id: &str,
         ws: &TrainingWorkspaceSnapshotDto,
         note_draft: &TrainingNoteDraftMeta,
@@ -3419,8 +3482,10 @@ impl CenterWorkspacePanel {
                                 let t = emotion_raw.trim();
                                 (!t.is_empty()).then(|| t.to_string())
                             };
-                            let meta = panel.state.lock().unwrap().training.note_draft.clone();
-                            panel.fields.set("form.trn_note_rationale", "", window, cx);
+                            let meta = crate::lock_or_recover(&panel.state)
+                                .training
+                                .note_draft
+                                .clone();
                             panel.training_workspace_focus.focus(window, cx);
                             panel.dispatch_training(
                                 Ok(TrainingUiAction::SaveNote {
@@ -3482,7 +3547,7 @@ impl CenterWorkspacePanel {
     }
 
     fn render_training_report_view(
-        &mut self,
+        &self,
         state: &WorkbenchSharedState,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -3579,6 +3644,16 @@ impl CenterWorkspacePanel {
         let ai_rep_opt = state.training.training_ai_report.clone();
         let ai_err_opt = state.training.training_ai_error.clone();
         let opened_ev_opt = state.training.opened_training_evidence.clone();
+        let (trn_ai_running, trn_ai_stream) = {
+            let ctl = self.controller.read(cx);
+            let running = ctl.ai_target == Some(AiRunTarget::Training);
+            let stream = if running {
+                crate::lock_or_recover(&ctl.stream_text).clone()
+            } else {
+                String::new()
+            };
+            (running, stream)
+        };
 
         v_flex()
             .id("training-report-view")
@@ -4068,25 +4143,62 @@ impl CenterWorkspacePanel {
                     )
                     .child(self.fields.row(&["form.trn_ai_question"]))
                     .child(
-                        h_flex().child(
-                            Button::new("training-ai-review-btn")
-                                .small()
-                                .primary()
-                                .disabled(run.status != SimRunStatus::Finished)
-                                .label("生成训练 AI 复盘")
-                                .on_click(cx.listener(move |panel, _, window, cx| {
-                                    let q = panel.fields.value("form.trn_ai_question", cx);
-                                    panel.dispatch_training(
-                                        Ok(TrainingUiAction::RequestAiReview {
-                                            run_id: rid_ai.clone(),
-                                            question: q,
-                                        }),
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        ),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("training-ai-review-btn")
+                                    .small()
+                                    .primary()
+                                    .disabled(run.status != SimRunStatus::Finished || trn_ai_running)
+                                    .label("生成训练 AI 复盘")
+                                    .on_click(cx.listener(move |panel, _, window, cx| {
+                                        let q = panel.fields.value("form.trn_ai_question", cx);
+                                        panel.dispatch_training(
+                                            Ok(TrainingUiAction::RequestAiReview {
+                                                run_id: rid_ai.clone(),
+                                                question: q,
+                                            }),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .when(trn_ai_running, |row| {
+                                row.child(
+                                    Button::new("training-ai-cancel-btn")
+                                        .small()
+                                        .outline()
+                                        .label(I18nCatalog::tr("action.cancel_ai"))
+                                        .on_click(cx.listener(|panel, _, _, cx| {
+                                            panel.controller.update(cx, |ctl, cx| ctl.cancel_ai(cx));
+                                        })),
+                                )
+                            }),
                     )
+                    .when(trn_ai_running, |col| {
+                        let stream_preview = SharedString::from(if trn_ai_stream.is_empty() {
+                            I18nCatalog::tr("form.ai_stream_unverified").to_string()
+                        } else {
+                            format!(
+                                "{}\n{}",
+                                I18nCatalog::tr("form.ai_stream_unverified"),
+                                trn_ai_stream
+                            )
+                        });
+                        col.child(
+                            div()
+                                .id("training-ai-stream-box")
+                                .test_support()
+                                .p_2()
+                                .border_1()
+                                .border_color(cx.theme().warning)
+                                .rounded(cx.theme().radius)
+                                .bg(cx.theme().secondary)
+                                .text_xs()
+                                .child(stream_preview.clone())
+                                .test_text(stream_preview),
+                        )
+                    })
                     .when_some(ai_err_opt, |col, err| {
                         let msg = SharedString::from(format!(
                             "AI 复盘未完成：{}（本地训练报告与自主评分不受影响，配置模型后可重试）",
@@ -4213,181 +4325,11 @@ impl CenterWorkspacePanel {
     }
 }
 
-// ============================================================================
-// Self-Contained Synthetic Market Fixture Generator (for M4-A-16 & M4-K03)
-// ============================================================================
-
-/// Writes a self-contained `market_data/` fixture directory consumable by
-/// `AppService::sync_from_fixtures` / `AppHost::sync_from_fixtures`:
-/// - `OKX:BTC/USDT`: `okx_days` continuous 24/7 UTC finalized daily candles (`"1"`),
-///   supporting 1,600+ bar replay windows (`warmup=200`, `history=1000`, `training=340`, `reveal=60`).
-/// - `NASDAQ:AAPL`: up to 62 continuous US regular trading days (`2024-09-03..2024-11-27`,
-///   zero XNAS market holidays in window) cross-validated identically across Yahoo + EastMoney.
-pub fn write_synthetic_training_fixtures(
-    fixtures_root: &Path,
-    okx_days: usize,
-) -> Result<(), ErrorEnvelope> {
-    let md_dir = fixtures_root.join("market_data");
-    fs::create_dir_all(&md_dir)
-        .map_err(|e| ErrorEnvelope::new("FIXTURE_DIR_FAILED", e.to_string(), false))?;
-
-    // 1. OKX BTC/USDT continuous 24/7 finalized daily bars starting 2020-01-01
-    let start_okx = NaiveDate::from_ymd_opt(2020, 1, 1).expect("valid date");
-    let mut okx_rows = Vec::with_capacity(okx_days);
-    let mut prev_close = 28_000.0_f64;
-    for idx in 0..okx_days {
-        let day = start_okx
-            .checked_add_days(Days::new(idx as u64))
-            .expect("valid day");
-        let ts_ms = Utc
-            .from_utc_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
-            .timestamp_millis();
-        let wave = ((idx as f64) * 0.17).sin() * 240.0 + ((idx as f64) * 0.03).cos() * 410.0;
-        let close = (28_000.0 + (idx as f64) * 12.5 + wave).max(1_000.0);
-        let open = prev_close;
-        let high = open.max(close) + 180.0 + ((idx % 7) as f64) * 15.0;
-        let low = (open.min(close) - 160.0 - ((idx % 5) as f64) * 12.0).max(500.0);
-        let vol = 1_200.0 + ((idx % 19) as f64) * 85.0;
-        let quote_vol = vol * close;
-        prev_close = close;
-        okx_rows.push(json!([
-            ts_ms.to_string(),
-            format!("{open:.2}"),
-            format!("{high:.2}"),
-            format!("{low:.2}"),
-            format!("{close:.2}"),
-            format!("{vol:.2}"),
-            format!("{quote_vol:.2}"),
-            format!("{quote_vol:.2}"),
-            "1"
-        ]));
-    }
-    // OKX returns newest-first in raw payload (parser sorts chronologically)
-    okx_rows.reverse();
-    let okx_json = serde_json::to_string(&json!({
-        "code": "0",
-        "msg": "",
-        "data": okx_rows,
-    }))
-    .unwrap();
-    fs::write(md_dir.join("okx_btc_usdt_candles.json"), okx_json)
-        .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-
-    // 2. Yahoo + EastMoney NASDAQ:AAPL continuous trading window (2024-09-03..2024-11-27 = 62 XNAS days)
-    let mut eq_dates = Vec::new();
-    let mut cur = NaiveDate::from_ymd_opt(2024, 9, 3).unwrap();
-    let end_eq = NaiveDate::from_ymd_opt(2024, 11, 27).unwrap();
-    while cur <= end_eq {
-        if !matches!(cur.weekday(), Weekday::Sat | Weekday::Sun) {
-            eq_dates.push(cur);
-        }
-        cur = cur.checked_add_days(Days::new(1)).unwrap();
-    }
-    let mut timestamps = Vec::with_capacity(eq_dates.len());
-    let mut opens = Vec::with_capacity(eq_dates.len());
-    let mut highs = Vec::with_capacity(eq_dates.len());
-    let mut lows = Vec::with_capacity(eq_dates.len());
-    let mut closes = Vec::with_capacity(eq_dates.len());
-    let mut volumes = Vec::with_capacity(eq_dates.len());
-    let mut em_klines = Vec::with_capacity(eq_dates.len());
-
-    let mut eq_prev = 218.0_f64;
-    for (i, d) in eq_dates.iter().enumerate() {
-        let ts = Utc
-            .from_utc_datetime(&d.and_hms_opt(14, 30, 0).unwrap())
-            .timestamp();
-        let o = ((eq_prev * 100.0).round()) / 100.0;
-        let c = (((218.0 + (i as f64) * 0.45 + ((i as f64) * 0.35).sin() * 3.2) * 100.0).round())
-            / 100.0;
-        let h = ((o.max(c) + 2.25) * 100.0).round() / 100.0;
-        let l = ((o.min(c) - 2.00) * 100.0).round() / 100.0;
-        let v = 45_000_000_i64 + (i as i64) * 150_000;
-        eq_prev = c;
-        timestamps.push(ts);
-        opens.push(o);
-        highs.push(h);
-        lows.push(l);
-        closes.push(c);
-        volumes.push(v);
-        em_klines.push(format!(
-            "{d},{o:.2},{c:.2},{h:.2},{l:.2},{v},9800000000.00,2.10,0.50,1.10,0.85"
-        ));
-    }
-    let yahoo_json = serde_json::to_string(&json!({
-        "chart": {
-            "result": [{
-                "meta": {
-                    "currency": "USD",
-                    "symbol": "AAPL",
-                    "exchangeName": "NMS",
-                    "instrumentType": "EQUITY"
-                },
-                "timestamp": timestamps,
-                "events": {},
-                "indicators": {
-                    "quote": [{
-                        "open": opens,
-                        "high": highs,
-                        "low": lows,
-                        "close": closes.clone(),
-                        "volume": volumes
-                    }],
-                    "adjclose": [{ "adjclose": closes }]
-                }
-            }],
-            "error": null
-        }
-    }))
-    .unwrap();
-    fs::write(md_dir.join("yahoo_aapl_2020_split.json"), yahoo_json)
-        .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-
-    let em_json = serde_json::to_string(&json!({
-        "rc": 0,
-        "rt": 17,
-        "svr": 182994511,
-        "lt": 1,
-        "full": 1,
-        "data": {
-            "code": "AAPL",
-            "market": 105,
-            "name": "苹果",
-            "decimal": 2,
-            "dktotal": em_klines.len(),
-            "preKPrice": 218.0,
-            "klines": em_klines
-        }
-    }))
-    .unwrap();
-    fs::write(md_dir.join("eastmoney_aapl_2020_raw.json"), em_json)
-        .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-
-    // 3. Minimal FX fixtures required by `sync_from_fixtures`
-    fs::write(
-        md_dir.join("coinbase_usdt_usd_candles.json"),
-        r#"[[1735689600,0.9998,1.0001,0.9999,1.0000,150000000.0]]"#,
-    )
-    .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-    fs::write(
-        md_dir.join("bitstamp_usdc_usd_ohlc.json"),
-        r#"{"data":{"pair":"USDC/USD","ohlc":[{"timestamp":"1735689600","open":"1.0000","high":"1.0001","low":"0.9999","close":"1.0000","volume":"9500000.00"}]}}"#,
-    )
-    .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-    fs::write(
-        md_dir.join("frankfurter_usd_fx.json"),
-        r#"{"amount":1.0,"base":"USD","start_date":"2025-01-02","end_date":"2025-01-02","rates":{"2025-01-02":{"CNY":7.265,"EUR":0.958,"HKD":7.7812}}}"#,
-    )
-    .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-    fs::write(md_dir.join("ledger_fx_synthetic.json"), "[]")
-        .map_err(|e| ErrorEnvelope::new("FIXTURE_WRITE_FAILED", e.to_string(), false))?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::fs;
     use std::io::{Read as _, Write as _};
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -4398,48 +4340,56 @@ mod tests {
     };
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::TestAppContext;
+    use serde_json::json;
 
     use crate::controller::WorkbenchUpdated;
+    use crate::test_support::{click_id, has_rendered_id, temp_test_dir};
     use crate::workbench::DeltaWorkbench;
 
     fn temp_training_test_dir(tag: &str) -> PathBuf {
-        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let base = std::env::var_os("DELTA_TEST_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let dir = base.join(format!(
-            "delta_m4_desktop_{tag}_{}_{}_{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            Utc::now().timestamp_nanos_opt().unwrap_or(1)
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        temp_test_dir("delta_m4_desktop", tag)
     }
 
-    fn click_id(cx: &mut gpui_kit::VisualTestContext, id: &str) {
-        let id_str = gpui_kit::SharedString::from(id.to_string());
-        let position = cx.update(move |window, cx| {
-            window.render_frame(cx);
-            let bounds = window.find(id_str.clone()).bounds();
-            assert!(
-                bounds.size.width > px(0.) && bounds.size.height > px(0.),
-                "control '{id_str}' has no rendered bounds"
-            );
-            bounds.center()
-        });
-        cx.simulate_click(position, gpui_kit::Modifiers::default());
-        cx.run_until_parked();
-    }
+    #[test]
+    fn preserve_training_draft_edits_isolates_run_switches_and_keeps_concurrent_wb_edits() {
+        let mut original = TrainingUiState {
+            active_run_id: Some("run-a".into()),
+            ..Default::default()
+        };
+        original.wb.locked_orders.insert("ORD-1".into());
+        original.wb.show_volume = true;
+        original.wb.playback.playing = true;
 
-    fn has_rendered_id(cx: &mut gpui_kit::VisualTestContext, id: &str) -> bool {
-        let id_str = gpui_kit::SharedString::from(id.to_string());
-        cx.update(move |window, cx| {
-            window.render_frame(cx);
-            let bounds = window.find(id_str.clone()).bounds();
-            bounds.size.width > px(0.) && bounds.size.height > px(0.)
-        })
+        // Case 1: Switching to a brand-new run must NOT inherit old run's workbench edits (`UI-B04`).
+        let mut current = original.clone();
+        current.wb.locked_orders.insert("ORD-2".into());
+        current.wb.show_volume = false;
+        let mut completed_new_run = TrainingUiState {
+            active_run_id: Some("run-b".into()),
+            ..Default::default()
+        };
+        preserve_training_draft_edits(&original, &current, &mut completed_new_run);
+        assert!(completed_new_run.wb.locked_orders.is_empty());
+        assert!(completed_new_run.wb.show_volume);
+
+        // Case 2: Same run — concurrent UI toggle (`show_volume`) and completed action output
+        // (`selected_drawing` + auto-pause) both survive field-by-field merge.
+        let mut completed_same_run = original.clone();
+        completed_same_run.wb.selected_drawing = Some("DRW-9".into());
+        completed_same_run.wb.playback.playing = false;
+        completed_same_run.wb.playback.last_pause_reason = Some("触发成交".into());
+        preserve_training_draft_edits(&original, &current, &mut completed_same_run);
+        assert!(!completed_same_run.wb.show_volume);
+        assert!(completed_same_run.wb.locked_orders.contains("ORD-2"));
+        assert_eq!(
+            completed_same_run.wb.selected_drawing.as_deref(),
+            Some("DRW-9")
+        );
+        assert!(!completed_same_run.wb.playback.playing);
+        assert_eq!(
+            completed_same_run.wb.playback.last_pause_reason.as_deref(),
+            Some("触发成交")
+        );
     }
 
     fn chat_tc_sse(call_id: &str, tool_name: &str, args_json: &str) -> String {
@@ -4680,7 +4630,7 @@ mod tests {
             let ws = g.training.workspace.as_ref().unwrap();
             assert!(ws.run.is_identity_masked);
             assert_eq!(ws.run.current_step_index, 0);
-            let ws_json = serde_json::to_string(ws).unwrap();
+            let ws_json = serde_json::to_string(&**ws).unwrap();
             assert!(!ws_json.contains("AAPL"));
             assert!(!ws_json.contains("NASDAQ"));
             assert!(!ws_json.contains("2024-09"));

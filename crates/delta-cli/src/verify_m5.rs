@@ -11,24 +11,27 @@
 //! same-fingerprint `M1`..`M4` regression verification (`M5-A-16`).
 
 use super::{
-    verify::{
-        directory_snapshot, failure, owned_test_directories, record_tests, source_fingerprint,
+    verify::{directory_snapshot, failure, owned_test_directories, source_fingerprint},
+    verify_common::{
+        build_gate_env, build_release_desktop_exe, check_delta_core_purity,
+        check_desktop_source_boundary, default_gate_jobs, finalize_and_write_report,
+        make_initial_report, percentile_ms, record_execution_outcome, record_mapped_case, rel_path,
+        run_logged_command, run_mechanical_gates, stamp_path, verify_prior_stage_regressions,
+        MechanicalGateConfig, QuietnessMonitor,
     },
-    verify_m4::M4QuietnessMonitor,
     CaseResultRecord, PocResultRecord, VerifyStageReport,
 };
 use chrono::{TimeZone, Utc};
 use delta_app::{
-    count_visible_windows_for_current_process, current_process_priority,
-    market_fixture::MarketFixtureServer, observed_window_details, resolve_app_paths,
-    resolve_user_documents_root, run_quiet_command, run_quiet_command_with_timeout,
-    sanitize_terminal_output, AppHost, AppService, BuildChannel, ErrorEnvelope, OrderStatus,
+    count_visible_windows_for_current_process, market_fixture::MarketFixtureServer,
+    observed_window_details, resolve_app_paths, resolve_user_documents_root,
+    run_quiet_command_with_timeout, AppHost, AppService, BuildChannel, ErrorEnvelope, OrderStatus,
     PracticeAccountDto, PrepareTrainingDataRequest, PrepareTrainingDataSummaryDto, QuietJobObject,
     ResolvedAppPaths, SimOrderType, TrainingReplayMode, TrainingReplayResultDto,
     TrainingRunSummaryDto, TrainingWorkspaceSnapshotDto, EXECUTION_SPEED_OPT_OUT,
+    M5_K02_INTERVAL_P95_BUDGET_MS, M5_K02_STEP_P95_BUDGET_MS,
 };
 use delta_data::{CandidatePoolQuery, CandidateQualityFilter, SqliteStore};
-use delta_desktop::{M5_K02_INTERVAL_P95_BUDGET_MS, M5_K02_STEP_P95_BUDGET_MS};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::{
@@ -56,19 +59,7 @@ const M5_CASE_IDS: [&str; 19] = [
 ];
 
 fn ensure(condition: bool, message: impl std::fmt::Display) -> Result<(), ErrorEnvelope> {
-    if condition {
-        Ok(())
-    } else {
-        Err(failure("M5_CHECK", message))
-    }
-}
-
-fn rel(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-        .replace('\\', "/")
+    super::verify_common::ensure("M5_CHECK", condition, message)
 }
 
 fn temp_paths(
@@ -88,15 +79,6 @@ fn temp_paths(
 // ---------------------------------------------------------------------------
 // Independent validation of the release UI smoke and the `M5-K02` raw samples
 // ---------------------------------------------------------------------------
-
-/// Nearest-rank percentile in milliseconds over microsecond samples (same rule as the bench).
-fn percentile_ms(samples_us: &[u64], percent: usize) -> f64 {
-    let mut sorted = samples_us.to_vec();
-    sorted.sort_unstable();
-    sorted
-        .get((sorted.len() * percent).div_ceil(100).saturating_sub(1))
-        .map_or(0.0, |us| *us as f64 / 1000.0)
-}
 
 pub(crate) fn validate_m5_ui_smoke(smoke: &Value) -> Result<(), String> {
     let checks: [(&str, bool); 10] = [
@@ -175,23 +157,29 @@ pub(crate) fn validate_m5_playback_bench(bench: &Value) -> Result<ValidatedM5Ben
     {
         return Err("benchmark scene is below the M5-K02 precondition (1h, 1,000 bars, 20 drawings, 5 lines, 150 ms)".into());
     }
-    let samples = |key: &str| -> Vec<u64> {
-        bench[key]
+    let parse_samples = |key: &str| -> Result<Vec<u64>, String> {
+        let arr = bench[key]
             .as_array()
-            .map(|a| a.iter().filter_map(Value::as_u64).collect())
-            .unwrap_or_default()
+            .ok_or_else(|| format!("missing {key} array"))?;
+        arr.iter()
+            .map(Value::as_u64)
+            .collect::<Option<Vec<u64>>>()
+            .ok_or_else(|| format!("{key} contains non-u64 entry"))
     };
-    let steps = samples("step_times_us");
-    let intervals = samples("interval_times_us");
+    let steps = parse_samples("step_times_us")?;
+    let intervals = parse_samples("interval_times_us")?;
     if steps.len() < 300
-        || intervals.len() < 300
+        || intervals.len() != steps.len()
         || bench["measured_steps"].as_u64() != Some(steps.len() as u64)
     {
         return Err(format!(
-            "need >= 300 raw step and interval samples, got {} / {}",
+            "need >= 300 matching raw step and interval samples, got {} / {}",
             steps.len(),
             intervals.len()
         ));
+    }
+    if steps.contains(&0) || intervals.contains(&0) {
+        return Err("raw step/interval samples must all be non-zero".into());
     }
     if bench["native_chart_paints"].as_u64().unwrap_or(0) < steps.len() as u64 {
         return Err("every measured step must paint the native chart".into());
@@ -217,12 +205,18 @@ pub(crate) fn validate_m5_playback_bench(bench: &Value) -> Result<ValidatedM5Ben
             v.interval_p95_ms
         ));
     }
-    let reported = bench["step_p95_ms"].as_f64().unwrap_or(f64::NAN);
-    if (reported - v.step_p95_ms).abs() > 0.01 {
-        return Err(format!(
-            "reported step p95 {reported} differs from recomputed {:.3}",
-            v.step_p95_ms
-        ));
+    for (field, recomputed) in [
+        ("step_p95_ms", v.step_p95_ms),
+        ("interval_p95_ms", v.interval_p95_ms),
+    ] {
+        let Some(reported) = bench[field].as_f64() else {
+            return Err(format!("missing numeric {field}"));
+        };
+        if !reported.is_finite() || (reported - recomputed).abs() > 0.01 {
+            return Err(format!(
+                "reported {field} {reported} differs from recomputed {recomputed:.3}"
+            ));
+        }
     }
     Ok(v)
 }
@@ -682,7 +676,7 @@ fn run_live_data_probe(temp: &Path) -> (String, BTreeMap<String, Value>, String)
 }
 
 // ---------------------------------------------------------------------------
-// Architecture / hygiene (`M5-G-07`) and same-fingerprint regressions (`M5-A-16`)
+// Architecture / hygiene (`M5-G-07`)
 // ---------------------------------------------------------------------------
 
 fn run_m5_architecture_check(root: &Path) -> Result<String, ErrorEnvelope> {
@@ -706,23 +700,12 @@ fn run_m5_architecture_check(root: &Path) -> Result<String, ErrorEnvelope> {
         "source_fingerprint must include m5-stage-cases.json",
     )?;
     // Truncation stays in the host: the desktop never touches storage or the core engine.
-    let mut desktop = Vec::new();
-    super::verify::source_files(&root.join("crates/delta-desktop/src"), &mut desktop)
-        .map_err(|e| failure("M5_G07", e))?;
-    for file in &desktop {
-        let text = fs::read_to_string(file).map_err(|e| failure("M5_G07", e))?;
-        for forbidden in ["delta_core::", "delta_data::", "rusqlite::", "from bar"] {
-            ensure(
-                !text
-                    .to_ascii_lowercase()
-                    .contains(&forbidden.to_ascii_lowercase()),
-                format!(
-                    "delta-desktop {:?} references '{forbidden}'",
-                    file.file_name()
-                ),
-            )?;
-        }
-    }
+    let desktop_count = check_desktop_source_boundary(
+        root,
+        "M5_G07",
+        &["delta_core::", "delta_data::", "rusqlite::", "from bar"],
+        true,
+    )?;
     // m5-sim-2 additions keep Decimal-only money in the core engine.
     let sim = fs::read_to_string(root.join("crates/delta-core/src/sim.rs"))
         .map_err(|e| failure("M5_G07", e))?;
@@ -730,153 +713,28 @@ fn run_m5_architecture_check(root: &Path) -> Result<String, ErrorEnvelope> {
         sim.contains("m4-sim-1") && sim.contains("m5-sim-2"),
         "sim.rs must keep both engine versions",
     )?;
-    let account_report = fs::read_to_string(root.join("crates/delta-core/src/account_report.rs"))
-        .map_err(|e| failure("M5_G07", e))?;
-    for (n, line) in account_report.lines().enumerate() {
-        let t = line.trim_start();
-        if t.starts_with("//") {
-            continue;
-        }
-        ensure(
-            !(t.contains("f64") || t.contains("f32") || t.contains("HashMap")),
-            format!("account_report.rs:{} uses float/HashMap", n + 1),
-        )?;
-    }
+    let strict_account_tokens = ["f64", "f32", "HashMap"];
+    check_delta_core_purity(
+        root,
+        "M5_G07",
+        "crates/delta-core/src",
+        &[],
+        &[("account_report.rs", &strict_account_tokens)],
+    )?;
     Ok(format!(
-        "{} cases in m5-stage-cases.json; fingerprint covers m5 cases, zip and sig fixtures; {} delta-desktop files free of core/storage access; account_report Decimal-only",
-        ids.len(),
-        desktop.len()
+        "{} cases in m5-stage-cases.json; fingerprint covers m5 cases, zip and sig fixtures; {desktop_count} delta-desktop files free of core/storage access; account_report Decimal-only",
+        ids.len()
     ))
 }
 
-fn verify_prior_stage_regressions(root: &Path, fingerprint: &str) -> Result<String, ErrorEnvelope> {
-    let mut summaries = Vec::new();
-    for (dir, stage, plan) in [
-        ("m1", "M1", "2.6"),
-        ("m2", "M2", "1.0"),
-        ("m3", "M3", "1.0"),
-        ("m4", "M4", "1.0"),
-    ] {
-        let path = root.join(format!(".local/reports/{dir}/verify-stage-report.json"));
-        let raw = fs::read(&path).map_err(|e| {
-            failure(
-                "REGRESSION_MISSING",
-                format!(
-                    "{stage} report missing at {} ({e}); run verify-stage --stage {stage} first",
-                    path.display()
-                ),
-            )
-        })?;
-        let rep: Value = serde_json::from_slice(&raw).map_err(|e| failure("REGRESSION_JSON", e))?;
-        ensure(
-            rep["stage"] == stage
-                && rep["plan_version"] == plan
-                && rep["overall_status"] == "passed"
-                && rep["source_fingerprint"] == fingerprint,
-            format!(
-                "{stage} regression mismatch: stage={} plan={} status={} fp={} (expected {fingerprint})",
-                rep["stage"], rep["plan_version"], rep["overall_status"], rep["source_fingerprint"]
-            ),
-        )?;
-        let case_passed = |id: &str| {
-            rep["case_results"].as_array().is_some_and(|a| {
-                a.iter()
-                    .any(|c| c["case_id"] == id && c["status"] == "passed")
-            })
-        };
-        let required: &[&str] = match stage {
-            "M2" => &["M2-A-20"],
-            "M3" => &["M3-A-03"],
-            "M4" => &["M4-A-17", "M4-A-18"],
-            _ => &[],
-        };
-        ensure(
-            required.iter().all(|id| case_passed(id)),
-            format!("{stage} regression must include passed {required:?} (UI smoke/bench/installer flags)"),
-        )?;
-        if stage == "M2" {
-            ensure(
-                rep["poc_results"].as_array().is_some_and(|a| {
-                    a.iter()
-                        .any(|p| p["id"] == "M2-K06" && p["status"] == "passed")
-                }),
-                "M2 regression must include passed --ui-smoke (M2-K06)",
-            )?;
-        }
-        if stage == "M3" {
-            ensure(
-                rep["case_results"].as_array().is_some_and(|a| {
-                    a.iter().any(|c| {
-                        c["case_id"] == "M3-A-03"
-                            && c["evidence"]
-                                .as_str()
-                                .is_some_and(|e| e.contains("installed --ui-smoke passed"))
-                    })
-                }),
-                "M3 regression must include --installer and --ui-smoke (M3-A-03)",
-            )?;
-        }
-        summaries.push(format!(
-            "{stage} v{plan} passed @ {}",
-            rep["executed_at"].as_str().unwrap_or("?")
-        ));
-    }
-    Ok(summaries.join("; "))
-}
-
-fn record_mapped_case(
+fn record_m5_case(
     report: &mut VerifyStageReport,
     id: &str,
     package: &str,
     names: &[&str],
     extra: Option<&str>,
 ) {
-    let missing: Vec<&str> = names
-        .iter()
-        .copied()
-        .filter(|n| report.test_results.get(*n).is_none_or(|s| s != "passed"))
-        .collect();
-    let mut evidence = format!("M5-G-05 captured test results: {}", names.join(", "));
-    if !missing.is_empty() {
-        evidence.push_str(&format!("; NOT PASSED: {}", missing.join(", ")));
-    }
-    if let Some(extra) = extra {
-        evidence.push_str("; ");
-        evidence.push_str(extra);
-    }
-    report.case_results.push(CaseResultRecord {
-        case_id: id.into(),
-        work_package: package.into(),
-        tier: "required".into(),
-        status: if missing.is_empty() {
-            "passed"
-        } else {
-            "failed"
-        }
-        .into(),
-        elapsed_ms: 0,
-        evidence,
-    });
-}
-
-fn run_logged(
-    root: &Path,
-    logs: &Path,
-    report: &mut VerifyStageReport,
-    key: &str,
-    program: &OsStr,
-    args: Vec<String>,
-    env: &BTreeMap<String, String>,
-) -> Result<delta_app::QuietCommandResult, ErrorEnvelope> {
-    let res = run_quiet_command(program, args, Some(root), env).map_err(|e| failure(key, e))?;
-    let path = logs.join(format!("{key}.json"));
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&res).map_err(|e| failure(key, e))?,
-    )
-    .map_err(|e| failure(key, e))?;
-    report.log_files.insert(key.into(), rel(root, &path));
-    Ok(res)
+    record_mapped_case(report, "M5-G-05", id, package, "required", names, extra);
 }
 
 // ---------------------------------------------------------------------------
@@ -909,45 +767,19 @@ pub(crate) fn run_verify_stage_m5(
     }
     let before = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     let test_dirs_before = owned_test_directories().map_err(|e| failure("temp_snapshot", e))?;
-    let stamp =
-        |p: Option<PathBuf>| p.map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
-    let release_before = stamp(appdata.as_ref().map(|p| p.join("delta")));
-    let dev_before = stamp(appdata.as_ref().map(|p| p.join("delta-dev")));
+    let release_before = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
 
-    let jobs = env::var("DELTA_GATE_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().saturating_sub(2).max(1))
-                .unwrap_or(1)
-        });
+    let jobs = default_gate_jobs();
+    let mut report = make_initial_report(
+        STAGE,
+        PLAN_VERSION,
+        live_data,
+        fingerprint,
+        jobs,
+        "directory metadata under real LOCALAPPDATA/delta, delta-dev and Documents/delta, delta-dev (files inside resident delta-dev may legitimately update per D-36); all gate, probe, live-data and test roots isolated in TEMP; EnumWindows + GetForegroundWindow quietness monitor active",
+    );
 
-    let mut report = VerifyStageReport {
-        stage: STAGE.into(),
-        plan_version: PLAN_VERSION.into(),
-        executed_at: Utc::now().to_rfc3339(),
-        live_mode: live_data,
-        source_fingerprint: fingerprint,
-        visible_window_count: 0,
-        window_details: Vec::new(),
-        temp_residual_dirs: 0,
-        outside_temp_created_dirs: 0,
-        path_observation_scope: "directory metadata under real LOCALAPPDATA/delta, delta-dev and Documents/delta, delta-dev; all gate, probe, live-data and test roots isolated in TEMP; EnumWindows + GetForegroundWindow quietness monitor active".into(),
-        release_data_dir_touched: false,
-        poc_results: Vec::new(),
-        case_results: Vec::new(),
-        live_probes: Vec::new(),
-        overall_status: "running".into(),
-        gate_jobs: jobs,
-        process_priority: current_process_priority(),
-        test_results: BTreeMap::new(),
-        log_files: BTreeMap::new(),
-        errors: Vec::new(),
-    };
-
-    let monitor = M4QuietnessMonitor::start(&root);
+    let monitor = QuietnessMonitor::for_target_prefixes(&root);
     let mut ui_smoke_summary: Option<String> = None;
     let mut probe_summary: Option<String> = None;
 
@@ -955,118 +787,86 @@ pub(crate) fn run_verify_stage_m5(
         let job = QuietJobObject::new().map_err(|e| failure("job_object", e))?;
         job.assign_current_process()
             .map_err(|e| failure("job_object", e))?;
-        let gate_env = BTreeMap::from([
-            (
-                "DELTA_DATA_DIR".into(),
-                temp.join("gate-data").display().to_string(),
-            ),
-            (
-                "DELTA_DOCUMENTS_DIR".into(),
-                temp.join("gate-documents").display().to_string(),
-            ),
-            (
-                "LOCALAPPDATA".into(),
-                temp.join("gate-localappdata").display().to_string(),
-            ),
-            (
-                "DELTA_TEST_ROOT".into(),
-                temp.join("tests").display().to_string(),
-            ),
-            ("CARGO_BUILD_JOBS".into(), jobs.to_string()),
-            ("CARGO_INCREMENTAL".into(), "0".into()),
-            ("PYTHONUTF8".into(), "1".into()),
-            ("RUST_TEST_THREADS".into(), jobs.to_string()),
-        ]);
+        let gate_env = build_gate_env(&temp, jobs);
 
-        // 1. Mechanical gates `M5-G-01`..`M5-G-06`.
-        let gates: [(&str, &str, Vec<&str>); 6] = [
-            ("M5-G-01", "python", vec!["scripts/check_docs.py"]),
-            ("M5-G-02", "git", vec!["diff", "--check"]),
-            ("M5-G-03", "cargo", vec!["fmt", "--all", "--check"]),
-            (
-                "M5-G-04",
-                "cargo",
-                vec![
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--locked",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
-            ("M5-G-05", "cargo", vec!["test", "--workspace", "--locked"]),
-            ("M5-G-06", "python", vec!["scripts/deps.py", "--audit"]),
-        ];
-        for (id, program, args) in gates {
-            let started = Instant::now();
-            let res = run_logged(
+        // 1. Mechanical gates `M5-G-01`..`M5-G-05`, followed by `M5-G-06` (`deps.py`).
+        run_mechanical_gates(
+            &root,
+            &logs,
+            &mut report,
+            &gate_env,
+            MechanicalGateConfig {
+                stage_prefix: STAGE,
+                work_package: "M5-W07",
+                clippy_locked: true,
+                test_locked: true,
+            },
+        )?;
+
+        let g06_started = Instant::now();
+        let g06_res = run_logged_command(
+            &root,
+            &logs,
+            &mut report,
+            "M5-G-06",
+            OsStr::new("python"),
+            vec!["scripts/deps.py".into(), "--audit".into()],
+            &gate_env,
+        )?;
+        let g06_passed = g06_res.status_code == Some(0) && !g06_res.timed_out;
+        // `deps.py` exits 2 when the network sources are unreachable: not-run, never passed.
+        let g06_not_run = g06_res.status_code == Some(2) && !g06_res.timed_out;
+        let last_line = |text: &str| {
+            text.lines()
+                .rfind(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .to_string()
+        };
+        let mut g06_evidence = format!(
+            "python scripts/deps.py --audit; exit={:?}; log {}; audit: {}",
+            g06_res.status_code,
+            report.log_files["M5-G-06"],
+            last_line(&g06_res.stdout)
+        );
+        if g06_passed {
+            // Inventory of newer versions (D-35): reported, never a failure by itself.
+            let inv = run_logged_command(
                 &root,
                 &logs,
                 &mut report,
-                id,
-                OsStr::new(program),
-                args.iter().map(|s| s.to_string()).collect(),
+                "deps-inventory",
+                OsStr::new("python"),
+                vec!["scripts/deps.py".into()],
                 &gate_env,
             )?;
-            if id == "M5-G-05" {
-                record_tests(&res.stdout, &mut report.test_results);
+            g06_evidence.push_str(&format!(
+                "; inventory exit={:?}: {}",
+                inv.status_code,
+                last_line(&inv.stdout)
+            ));
+        } else if g06_not_run {
+            g06_evidence.push_str("; inventory skipped (offline)");
+        }
+        report.case_results.push(CaseResultRecord {
+            case_id: "M5-G-06".into(),
+            work_package: "M5-W08".into(),
+            tier: "required".into(),
+            status: if g06_passed {
+                "passed"
+            } else if g06_not_run {
+                "not-run"
+            } else {
+                "failed"
             }
-            let passed = res.status_code == Some(0) && !res.timed_out;
-            // `deps.py` exits 2 when the network sources are unreachable: not-run, never passed.
-            let not_run = id == "M5-G-06" && res.status_code == Some(2) && !res.timed_out;
-            let mut evidence = format!(
-                "{program} {}; exit={:?}; log {}",
-                args.join(" "),
-                res.status_code,
-                report.log_files[id]
-            );
-            if id == "M5-G-06" {
-                let last_line = |text: &str| {
-                    text.lines()
-                        .rfind(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .to_string()
-                };
-                evidence.push_str(&format!("; audit: {}", last_line(&res.stdout)));
-                // Inventory of newer versions (D-35): reported, never a failure by itself.
-                let inv = run_logged(
-                    &root,
-                    &logs,
-                    &mut report,
-                    "deps-inventory",
-                    OsStr::new("python"),
-                    vec!["scripts/deps.py".into()],
-                    &gate_env,
-                )?;
-                evidence.push_str(&format!(
-                    "; inventory exit={:?}: {}",
-                    inv.status_code,
-                    last_line(&inv.stdout)
-                ));
-            }
-            report.case_results.push(CaseResultRecord {
-                case_id: id.into(),
-                work_package: if id == "M5-G-06" { "M5-W08" } else { "M5-W07" }.into(),
-                tier: "required".into(),
-                status: if passed {
-                    "passed"
-                } else if not_run {
-                    "not-run"
-                } else {
-                    "failed"
-                }
-                .into(),
-                elapsed_ms: started.elapsed().as_millis() as u64,
-                evidence,
-            });
-            if !passed && !not_run {
-                return Err(failure(
-                    "gate_failed",
-                    format!("{id}: see {}", report.log_files[id]),
-                ));
-            }
+            .into(),
+            elapsed_ms: g06_started.elapsed().as_millis() as u64,
+            evidence: g06_evidence,
+        });
+        if !g06_passed && !g06_not_run {
+            return Err(failure(
+                "gate_failed",
+                format!("M5-G-06: see {}", report.log_files["M5-G-06"]),
+            ));
         }
 
         // 2. `M5-G-07` architecture & hygiene.
@@ -1128,38 +928,19 @@ pub(crate) fn run_verify_stage_m5(
 
         // 4. Release build + hidden-window UI smoke / playback bench.
         let release_exe = if ui_smoke || ui_bench {
-            let res = run_logged(
+            Some(build_release_desktop_exe(
                 &root,
                 &logs,
                 &mut report,
-                "cargo-build-release-desktop",
-                OsStr::new("cargo"),
-                [
-                    "build",
-                    "--release",
-                    "-p",
-                    "delta-desktop",
-                    "--bin",
-                    "delta",
-                    "--locked",
-                ]
-                .map(String::from)
-                .to_vec(),
                 &gate_env,
-            )?;
-            ensure(
-                res.status_code == Some(0) && !res.timed_out,
-                format!("release desktop build failed: {}", res.stderr),
-            )?;
-            let exe = root.join("target/release/delta.exe");
-            ensure(exe.is_file(), format!("missing {}", exe.display()))?;
-            Some(exe)
+                "M5_CHECK",
+            )?)
         } else {
             None
         };
         if ui_smoke {
             let exe = release_exe.as_ref().unwrap();
-            let res = run_logged(
+            let res = run_logged_command(
                 &root,
                 &logs,
                 &mut report,
@@ -1189,7 +970,7 @@ pub(crate) fn run_verify_stage_m5(
 
         // 5. Mapped cases.
         let probe_note = probe_summary.clone().unwrap_or_default();
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-01",
             "M5-W01",
@@ -1200,7 +981,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             Some(&probe_note),
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-02",
             "M5-W01",
@@ -1210,7 +991,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-03",
             "M5-W01",
@@ -1221,7 +1002,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-04",
             "M5-W02",
@@ -1231,7 +1012,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-05",
             "M5-W02",
@@ -1241,7 +1022,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-06",
             "M5-W04",
@@ -1252,7 +1033,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-07",
             "M5-W04,M5-W05",
@@ -1264,14 +1045,14 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-08",
             "M5-W04",
             &k03_tests,
             Some(&probe_note),
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-09",
             "M5-W02,M5-W04",
@@ -1281,7 +1062,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-10",
             "M5-W03",
@@ -1291,7 +1072,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             Some("in-gate probe: abandon settled the run back into PRACTICE:USDT (equity == available, no open allocation)"),
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-11",
             "M5-W03",
@@ -1301,7 +1082,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-12",
             "M5-W03",
@@ -1312,7 +1093,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             None,
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-13",
             "M5-W05",
@@ -1325,7 +1106,7 @@ pub(crate) fn run_verify_stage_m5(
             ],
             ui_smoke_summary.as_deref(),
         );
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-14",
             "M5-W06",
@@ -1340,7 +1121,7 @@ pub(crate) fn run_verify_stage_m5(
             .iter()
             .find(|c| c.case_id == "M5-G-06")
             .map(|c| c.evidence.clone());
-        record_mapped_case(
+        record_m5_case(
             &mut report,
             "M5-A-17",
             "M5-W08",
@@ -1358,12 +1139,25 @@ pub(crate) fn run_verify_stage_m5(
             ],
             audit_note.as_deref(),
         );
+        if g06_not_run {
+            if let Some(a17) = report
+                .case_results
+                .iter_mut()
+                .find(|c| c.case_id == "M5-A-17")
+            {
+                if a17.status == "passed" {
+                    a17.status = "not-run".into();
+                    a17.evidence
+                        .push_str("; M5-G-06 dependency audit was not-run offline");
+                }
+            }
+        }
 
         // 6. `M5-K02` / `M5-A-15` continuous playback benchmark.
         if ui_bench {
             let started = Instant::now();
             let exe = release_exe.as_ref().unwrap();
-            let res = run_logged(
+            let res = run_logged_command(
                 &root,
                 &logs,
                 &mut report,
@@ -1378,7 +1172,7 @@ pub(crate) fn run_verify_stage_m5(
             )?;
             let raw_path = reports.join("m5-k02-bench.json");
             fs::write(&raw_path, &res.stdout).map_err(|e| failure("bench_report", e))?;
-            let raw_rel = rel(&root, &raw_path);
+            let raw_rel = rel_path(&root, &raw_path);
             let parsed: Result<Value, String> = serde_json::from_str(&res.stdout)
                 .map_err(|e| format!("bench output is not JSON: {e}; stderr={}", res.stderr));
             let validated = parsed.as_ref().map_err(Clone::clone).and_then(|v| {
@@ -1396,9 +1190,16 @@ pub(crate) fn run_verify_stage_m5(
                     let bench = parsed.unwrap_or_default();
                     let detail = format!(
                         "release hidden HWND, 1h run, 1,000 visible bars + MA/MACD/RSI + 20 drawings + 5 order lines, {} steps at 150 ms: step p50/p95/p99 = {:.3}/{:.3}/{:.3} ms (p95 <= {M5_K02_STEP_P95_BUDGET_MS}), interval p50/p95/p99 = {:.3}/{:.3}/{:.3} ms (p95 <= {M5_K02_INTERVAL_P95_BUDGET_MS}); phase p95 {}; cpu {}; gpu {}; raw samples {raw_rel}",
-                        v.measured_steps, v.step_p50_ms, v.step_p95_ms, v.step_p99_ms,
-                        v.interval_p50_ms, v.interval_p95_ms, v.interval_p99_ms,
-                        bench["phase_p95_ms"], bench["cpu"], bench["gpu"]
+                        v.measured_steps,
+                        v.step_p50_ms,
+                        v.step_p95_ms,
+                        v.step_p99_ms,
+                        v.interval_p50_ms,
+                        v.interval_p95_ms,
+                        v.interval_p99_ms,
+                        bench["phase_p95_ms"],
+                        bench["cpu"],
+                        bench["gpu"]
                     );
                     report.poc_results.push(PocResultRecord {
                         id: "M5-K02".into(),
@@ -1492,20 +1293,7 @@ pub(crate) fn run_verify_stage_m5(
         Ok(())
     }));
 
-    match execution {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => report
-            .errors
-            .push(format!("{}: {}", error.code, error.message)),
-        Err(payload) => report.errors.push(format!(
-            "gate panic: {}",
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic")
-        )),
-    }
+    record_execution_outcome(&mut report, execution);
 
     // Quietness, isolation and regressions (`M5-A-16`).
     let a16 = Instant::now();
@@ -1522,10 +1310,8 @@ pub(crate) fn run_verify_stage_m5(
             .count();
     let after = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     report.outside_temp_created_dirs = after.difference(&before).count();
-    let release_after = stamp(appdata.as_ref().map(|p| p.join("delta")));
-    let dev_after = stamp(appdata.as_ref().map(|p| p.join("delta-dev")));
+    let release_after = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
     report.release_data_dir_touched = release_before != release_after;
-    let dev_touched = dev_before != dev_after;
     report.visible_window_count = count_visible_windows_for_current_process();
     report.window_details = observed_window_details();
     let fingerprint_unchanged = source_fingerprint(&root)? == report.source_fingerprint;
@@ -1540,9 +1326,7 @@ pub(crate) fn run_verify_stage_m5(
             format!("visible or foreground windows detected: {window_findings:?}"),
         )?;
         ensure(
-            report.outside_temp_created_dirs == 0
-                && !report.release_data_dir_touched
-                && !dev_touched,
+            report.outside_temp_created_dirs == 0 && !report.release_data_dir_touched,
             "developer delta/delta-dev data or document directories changed",
         )?;
         ensure(
@@ -1566,11 +1350,21 @@ pub(crate) fn run_verify_stage_m5(
     let a16_record = match quiet {
         Err(err) => a16_case("failed", format!("FAILED {}: {}", err.code, err.message)),
         Ok(()) if ui_smoke && ui_bench => {
-            match verify_prior_stage_regressions(&root, &report.source_fingerprint) {
+            match verify_prior_stage_regressions(
+                &root,
+                &report.source_fingerprint,
+                &[
+                    ("m1", "M1", "2.6"),
+                    ("m2", "M2", "1.0"),
+                    ("m3", "M3", "1.0"),
+                    ("m4", "M4", "1.0"),
+                ],
+                true,
+            ) {
                 Ok(summary) => a16_case(
                     "passed",
                     format!(
-                        "below_normal priority; {window_samples} quietness samples with 0 visible/foreground windows; LOCALAPPDATA and Documents delta/delta-dev untouched; 0 temp residuals; fingerprint stable; same-fingerprint regressions: {summary}"
+                        "below_normal priority; {window_samples} quietness samples with 0 visible/foreground windows; LOCALAPPDATA and Documents delta/delta-dev directory trees and release data untouched; 0 temp residuals; fingerprint stable; same-fingerprint regressions: {summary}"
                     ),
                 ),
                 Err(err) => a16_case("failed", format!("FAILED {}: {}", err.code, err.message)),
@@ -1612,11 +1406,11 @@ pub(crate) fn run_verify_stage_m5(
         || report
             .case_results
             .iter()
-            .any(|c| c.status == "failed" && c.tier != "live")
+            .any(|c| c.status == "failed" && (live_data || c.tier != "live"))
         || report
             .poc_results
             .iter()
-            .any(|p| p.status == "failed" && p.id != "M5-K01");
+            .any(|p| p.status == "failed" && (live_data || p.id != "M5-K01"));
     let required_not_run = report
         .case_results
         .iter()
@@ -1625,23 +1419,12 @@ pub(crate) fn run_verify_stage_m5(
             .poc_results
             .iter()
             .any(|p| p.status == "not-run" && p.id != "M5-K01");
-    report.overall_status = if failed {
-        "failed"
-    } else if required_not_run {
-        "not-run"
-    } else {
-        "passed"
-    }
-    .into();
-
-    let text = serde_json::to_string_pretty(&report).map_err(|e| failure("report", e))?;
-    fs::write(reports.join("verify-stage-report.json"), &text).map_err(|e| failure("report", e))?;
-    println!("{}", sanitize_terminal_output(&text));
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    finalize_and_write_report(
+        &mut report,
+        &reports.join("verify-stage-report.json"),
+        failed,
+        Some(required_not_run),
+    )
 }
 
 #[cfg(test)]
@@ -1656,6 +1439,7 @@ mod tests {
             "play_interval_ms": 150, "measured_steps": 300, "native_chart_paints": 300,
             "step_times_us": vec![step_us; 300], "interval_times_us": vec![interval_us; 300],
             "step_p95_ms": step_us as f64 / 1000.0,
+            "interval_p95_ms": interval_us as f64 / 1000.0,
         })
     }
 
@@ -1666,15 +1450,39 @@ mod tests {
         assert_eq!(ok.interval_p95_ms, 155.0);
         assert!(validate_m5_playback_bench(&bench(120_000, 155_000)).is_err());
         assert!(validate_m5_playback_bench(&bench(60_000, 250_000)).is_err());
+
         let mut dev = bench(60_000, 155_000);
         dev["build_profile"] = json!("dev");
         assert!(validate_m5_playback_bench(&dev).is_err());
+
         let mut short = bench(60_000, 155_000);
         short["step_times_us"] = json!(vec![60_000u64; 100]);
         assert!(validate_m5_playback_bench(&short).is_err());
-        let mut lied = bench(60_000, 155_000);
-        lied["step_p95_ms"] = json!(10.0);
-        assert!(validate_m5_playback_bench(&lied).is_err());
+
+        let mut mismatch_len = bench(60_000, 155_000);
+        mismatch_len["interval_times_us"] = json!(vec![155_000u64; 301]);
+        assert!(validate_m5_playback_bench(&mismatch_len).is_err());
+
+        let mut zero_sample = bench(60_000, 155_000);
+        zero_sample["step_times_us"][0] = json!(0);
+        assert!(validate_m5_playback_bench(&zero_sample).is_err());
+
+        let mut null_sample = bench(60_000, 155_000);
+        null_sample["interval_times_us"][0] = Value::Null;
+        assert!(validate_m5_playback_bench(&null_sample).is_err());
+
+        let mut lied_step = bench(60_000, 155_000);
+        lied_step["step_p95_ms"] = json!(10.0);
+        assert!(validate_m5_playback_bench(&lied_step).is_err());
+
+        let mut missing_step = bench(60_000, 155_000);
+        missing_step.as_object_mut().unwrap().remove("step_p95_ms");
+        assert!(validate_m5_playback_bench(&missing_step).is_err());
+
+        let mut lied_interval = bench(60_000, 155_000);
+        lied_interval["interval_p95_ms"] = json!(50.0);
+        assert!(validate_m5_playback_bench(&lied_interval).is_err());
+
         let mut small = bench(60_000, 155_000);
         small["drawings"] = json!(3);
         assert!(validate_m5_playback_bench(&small).is_err());

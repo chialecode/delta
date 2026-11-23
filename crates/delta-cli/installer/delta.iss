@@ -178,6 +178,7 @@ begin
     exit;
   Log('DELTA: {#Identity} is running; requesting quit-for-update');
   Cli := ExpandConstant('{localappdata}\Programs\{#Identity}\{#CliExe}');
+  ResultCode := -1;
   if FileExists(Cli) then
   begin
     if ExecAndLogOutput(Cli, 'control quit-for-update --identity {#Identity} --timeout-secs 30',
@@ -188,6 +189,17 @@ begin
   end
   else
     Log('DELTA: no installed control command; waiting for the application to exit');
+  { Exit 3 (busy/save-failed), 4 (already waited 30 s) or 6 (rejected) are final refusals;
+    do not stall an extra QuitWaitMs when the application is still holding its mutex. }
+  if ((ResultCode = 3) or (ResultCode = 4) or (ResultCode = 6)) and CheckForMutexes('{#MutexName}') then
+  begin
+    Log('DELTA: application is still running (busy, unsaved or not responding); installation aborted, nothing changed');
+    if not WizardSilent then
+      MsgBox('{#DisplayName} is still running or busy. Save your work, close it and run Setup again.',
+        mbError, MB_OK);
+    Result := False;
+    exit;
+  end;
   if WaitForAppExit(QuitWaitMs) then
   begin
     Log('DELTA: application saved and exited');

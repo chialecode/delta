@@ -1,8 +1,8 @@
-use crate::model::CorporateActionRecord;
+use crate::model::{deduplicate_corporate_actions, CorporateActionRecord};
 use crate::sim::{
     canon_decimal, round_price_adverse_tick, settle_order_fees, step_multi_bars, BarPathStage,
     FeeProfileVersion, OrderSide, SimFill, SimInstrumentSpec, SimState, SimStepBar,
-    SyntheticFillInput, SIM_ENGINE_VERSION,
+    SyntheticFillInput,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::prelude::*;
@@ -12,8 +12,170 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const SIM_REPORT_VERSION: &str = "m4-report-1";
 
-fn round_metric(value: Decimal, scale: u32) -> Decimal {
+pub(crate) fn round_metric(value: Decimal, scale: u32) -> Decimal {
     canon_decimal(value.round_dp_with_strategy(scale, RoundingStrategy::MidpointAwayFromZero))
+}
+
+/// Shared single-pass zero-allocation closed-trade-group metrics used by both
+/// `TrainingReport` (`m4-report-1`) and `AccountReport` (`m5-account-report-1`).
+pub(crate) struct ClosedGroupStats {
+    pub win_rate: WinRateSummary,
+    pub gross_profit: Decimal,
+    pub gross_loss_abs: Decimal,
+    pub average_win: Option<Decimal>,
+    pub average_loss_abs: Option<Decimal>,
+    pub profit_factor: RatioMetric,
+    pub payoff_ratio: RatioMetric,
+    pub largest_win: Option<Decimal>,
+    pub largest_loss: Option<Decimal>,
+    pub extreme_payoff_ratio: RatioMetric,
+    pub expectancy: ExpectancySummary,
+    pub average_holding_bars: Option<Decimal>,
+}
+
+pub(crate) fn compute_closed_group_stats<'a>(
+    groups: impl IntoIterator<Item = &'a ClosedTradeGroup>,
+) -> ClosedGroupStats {
+    let mut closed_count = 0_usize;
+    let mut winning_count = 0_usize;
+    let mut losing_count = 0_usize;
+    let mut zero_pnl_count = 0_usize;
+    let mut gross_profit = Decimal::ZERO;
+    let mut gross_loss_abs = Decimal::ZERO;
+    let mut largest_win: Option<Decimal> = None;
+    let mut largest_loss: Option<Decimal> = None;
+    let mut holding_bars_sum = 0_usize;
+
+    for g in groups {
+        closed_count += 1;
+        holding_bars_sum =
+            holding_bars_sum.saturating_add(g.exit_bar_index.saturating_sub(g.entry_bar_index));
+        if g.realized_pnl > Decimal::ZERO {
+            winning_count += 1;
+            gross_profit = canon_decimal(gross_profit + g.realized_pnl);
+            largest_win = Some(match largest_win {
+                Some(prev) => prev.max(g.realized_pnl),
+                None => g.realized_pnl,
+            });
+        } else if g.realized_pnl < Decimal::ZERO {
+            losing_count += 1;
+            gross_loss_abs = canon_decimal(gross_loss_abs + g.realized_pnl.abs());
+            largest_loss = Some(match largest_loss {
+                Some(prev) => prev.min(g.realized_pnl),
+                None => g.realized_pnl,
+            });
+        } else {
+            zero_pnl_count += 1;
+        }
+    }
+
+    let win_rate = if closed_count == 0 {
+        WinRateSummary {
+            status: WinRateStatus::NoClosedTrades,
+            closed_trade_count: 0,
+            winning_count: 0,
+            losing_count: 0,
+            zero_pnl_count: 0,
+            win_rate: None,
+            win_rate_pct: None,
+        }
+    } else {
+        let wr = round_metric(
+            Decimal::from(winning_count) / Decimal::from(closed_count),
+            8,
+        );
+        let wr_pct = round_metric(
+            Decimal::from(winning_count) * Decimal::from(100) / Decimal::from(closed_count),
+            6,
+        );
+        WinRateSummary {
+            status: WinRateStatus::Computed,
+            closed_trade_count: closed_count,
+            winning_count,
+            losing_count,
+            zero_pnl_count,
+            win_rate: Some(wr),
+            win_rate_pct: Some(wr_pct),
+        }
+    };
+
+    let average_win =
+        (winning_count > 0).then(|| round_metric(gross_profit / Decimal::from(winning_count), 8));
+    let average_loss_abs =
+        (losing_count > 0).then(|| round_metric(gross_loss_abs / Decimal::from(losing_count), 8));
+
+    let profit_factor = if closed_count == 0 {
+        RatioMetric::NoClosedTrades
+    } else if losing_count == 0 || gross_loss_abs.is_zero() {
+        RatioMetric::NoLosses
+    } else {
+        RatioMetric::Computed(round_metric(gross_profit / gross_loss_abs, 8))
+    };
+
+    let payoff_ratio = if closed_count == 0 {
+        RatioMetric::NoClosedTrades
+    } else if losing_count == 0 {
+        RatioMetric::NoLosses
+    } else if winning_count == 0 {
+        RatioMetric::NoWins
+    } else {
+        let avg_w = gross_profit / Decimal::from(winning_count);
+        let avg_l = gross_loss_abs / Decimal::from(losing_count);
+        RatioMetric::Computed(round_metric(avg_w / avg_l, 8))
+    };
+
+    let extreme_payoff_ratio = if closed_count == 0 {
+        RatioMetric::NoClosedTrades
+    } else if losing_count == 0 {
+        RatioMetric::NoLosses
+    } else if winning_count == 0 {
+        RatioMetric::NoWins
+    } else {
+        match (largest_win, largest_loss) {
+            (Some(w), Some(l)) if !l.is_zero() => RatioMetric::Computed(round_metric(w / (-l), 8)),
+            _ => RatioMetric::NoLosses,
+        }
+    };
+
+    let expectancy = if closed_count == 0 {
+        ExpectancySummary {
+            status: WinRateStatus::NoClosedTrades,
+            sample_count: 0,
+            value: None,
+        }
+    } else {
+        let net_closed_pnl = canon_decimal(gross_profit - gross_loss_abs);
+        ExpectancySummary {
+            status: WinRateStatus::Computed,
+            sample_count: closed_count,
+            value: Some(round_metric(
+                net_closed_pnl / Decimal::from(closed_count),
+                8,
+            )),
+        }
+    };
+
+    let average_holding_bars = (closed_count > 0).then(|| {
+        round_metric(
+            Decimal::from(holding_bars_sum) / Decimal::from(closed_count),
+            8,
+        )
+    });
+
+    ClosedGroupStats {
+        win_rate,
+        gross_profit,
+        gross_loss_abs,
+        average_win,
+        average_loss_abs,
+        profit_factor,
+        payoff_ratio,
+        largest_win,
+        largest_loss,
+        extreme_payoff_ratio,
+        expectancy,
+        average_holding_bars,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -375,8 +537,6 @@ struct ActiveCycle {
     entry_session_date: NaiveDate,
     entry_at: DateTime<Utc>,
     entry_bar_close_at: DateTime<Utc>,
-    first_entry_stage: BarPathStage,
-    first_entry_raw_price: Decimal,
     entry_fills: Vec<SimFill>,
     exit_fills: Vec<SimFill>,
     involved_order_ids: BTreeSet<String>,
@@ -384,8 +544,6 @@ struct ActiveCycle {
     scaled_entry_notional: Decimal,
     scaled_exit_qty: Decimal,
     scaled_exit_notional: Decimal,
-    total_buy_cost_quote: Decimal,
-    total_sell_net_proceeds_quote: Decimal,
     total_fees_quote: Decimal,
     realized_pnl_accum: Decimal,
     min_path_price: Option<Decimal>,
@@ -419,7 +577,6 @@ impl ActiveCycle {
 fn determine_plan_compliance(
     state: &SimState,
     cycle: &ActiveCycle,
-    exit_bar_open_at: DateTime<Utc>,
     exit_bar_close_at: DateTime<Utc>,
     notes: &[TrainingNoteRef],
 ) -> (bool, PlanCompliance) {
@@ -442,7 +599,6 @@ fn determine_plan_compliance(
         {
             order_ids.insert(ord.order_id.clone());
         }
-        let _ = exit_bar_open_at;
     }
 
     let has_plan = cycle.entry_fills.iter().any(|f| f.has_trade_plan)
@@ -555,6 +711,9 @@ pub fn compute_buy_and_hold_benchmark(
     }
 
     let first_bar = &bars[first_tradable_idx].bar;
+    if first_bar.open <= Decimal::ZERO || instrument_spec.lot_size <= Decimal::ZERO {
+        return empty_bench(BenchmarkStatus::NoTradableBar);
+    }
     let spread_delta = (first_bar.open * fee_profile.half_spread_bps) / Decimal::from(10_000);
     let slip_delta = fee_profile
         .slippage
@@ -564,6 +723,9 @@ pub fn compute_buy_and_hold_benchmark(
         OrderSide::Buy,
         instrument_spec.tick_size,
     );
+    if exec_open_price <= Decimal::ZERO {
+        return empty_bench(BenchmarkStatus::NoTradableBar);
+    }
 
     let max_lots_dec = (initial_cash / exec_open_price / instrument_spec.lot_size).floor();
     let max_lots = max_lots_dec.to_u128().unwrap_or(0);
@@ -612,48 +774,47 @@ pub fn compute_buy_and_hold_benchmark(
         }
     }
 
-    let Some((gross_qty, settlement)) = best else {
+    let Some((_gross_qty, settlement)) = best else {
         return empty_bench(BenchmarkStatus::InsufficientCashForOneLot);
     };
     let settled_fill = &settlement.fills[0];
     let net_qty = settled_fill.net_received_base_quantity;
 
     // Step `first_tradable_idx` first to apply any pre-open corporate actions on that date cleanly while flat,
-    // then record the AtOpen benchmark purchase on `first_tradable_idx`, and step remaining bars!
-    if let Ok((mut s_first, _)) = step_multi_bars(
+    // then record the AtOpen benchmark purchase on `first_tradable_idx`, and step remaining bars.
+    let Ok((mut s_first, _)) = step_multi_bars(
         &bench_state,
         std::slice::from_ref(&bars[first_tradable_idx]),
         corporate_actions,
-    ) {
-        s_first.cash_balance =
-            canon_decimal(s_first.cash_balance + settled_fill.net_quote_cash_delta);
-        s_first.total_fees_quote =
-            canon_decimal(s_first.total_fees_quote + settled_fill.fee_quote_value);
-        let lot_cost = canon_decimal(-settled_fill.net_quote_cash_delta);
-        s_first
-            .lots_by_instrument
-            .entry(instrument_spec.instrument_id.clone())
-            .or_default()
-            .push(crate::sim::SimLot {
-                lot_id: "BENCH-LOT-1".to_string(),
-                source_fill_id: "BENCH-FILL-1".to_string(),
-                instrument_id: instrument_spec.instrument_id.clone(),
-                acquired_at: first_bar.open_at,
-                original_quantity: net_qty,
-                remaining_quantity: net_qty,
-                original_cost_quote: lot_cost,
-                remaining_cost_quote: lot_cost,
-            });
-        if let Some(last_snap) = s_first.bar_snapshots.last_mut() {
-            last_snap.had_buy_fill = true;
-            last_snap.cash_after = s_first.cash_balance;
-            last_snap.position_qty_after = net_qty;
-            last_snap.position_cost_after = lot_cost;
-            last_snap.equity_at_close =
-                canon_decimal(s_first.cash_balance + net_qty * first_bar.close);
-        }
-        bench_state = s_first;
+    ) else {
+        return empty_bench(BenchmarkStatus::NoTradableBar);
+    };
+    s_first.cash_balance = canon_decimal(s_first.cash_balance + settled_fill.net_quote_cash_delta);
+    s_first.total_fees_quote =
+        canon_decimal(s_first.total_fees_quote + settled_fill.fee_quote_value);
+    let lot_cost = canon_decimal(-settled_fill.net_quote_cash_delta);
+    s_first
+        .lots_by_instrument
+        .entry(instrument_spec.instrument_id.clone())
+        .or_default()
+        .push(crate::sim::SimLot {
+            lot_id: "BENCH-LOT-1".to_string(),
+            source_fill_id: "BENCH-FILL-1".to_string(),
+            instrument_id: instrument_spec.instrument_id.clone(),
+            acquired_at: first_bar.open_at,
+            original_quantity: net_qty,
+            remaining_quantity: net_qty,
+            original_cost_quote: lot_cost,
+            remaining_cost_quote: lot_cost,
+        });
+    if let Some(last_snap) = s_first.bar_snapshots.last_mut() {
+        last_snap.had_buy_fill = true;
+        last_snap.cash_after = s_first.cash_balance;
+        last_snap.position_qty_after = net_qty;
+        last_snap.position_cost_after = lot_cost;
+        last_snap.equity_at_close = canon_decimal(s_first.cash_balance + net_qty * first_bar.close);
     }
+    bench_state = s_first;
 
     for sb in &bars[first_tradable_idx + 1..] {
         if let Ok((next_s, _)) =
@@ -679,11 +840,16 @@ pub fn compute_buy_and_hold_benchmark(
 
     let ending_equity = bench_state.total_equity_at_last_close();
     let total_pnl = canon_decimal(ending_equity - initial_cash);
-    let total_return = round_metric(total_pnl / initial_cash, 8);
-    let total_return_pct = round_metric(total_pnl * Decimal::from(100) / initial_cash, 6);
+    let (total_return, total_return_pct) = if initial_cash > Decimal::ZERO {
+        (
+            round_metric(total_pnl / initial_cash, 8),
+            round_metric(total_pnl * Decimal::from(100) / initial_cash, 6),
+        )
+    } else {
+        (Decimal::ZERO, Decimal::ZERO)
+    };
     let max_dd_rounded = round_metric(max_dd, 8);
     let max_dd_pct = round_metric(max_dd * Decimal::from(100), 6);
-    let _ = gross_qty;
 
     BuyAndHoldBenchmark {
         status: BenchmarkStatus::Executed,
@@ -706,75 +872,10 @@ pub fn compute_buy_and_hold_benchmark(
     }
 }
 
-/// Compute the full M4 Training Report purely in `Decimal` (`S-44`, `M4-A-12`).
-pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
-    let state = &input.state;
-    let initial_cash = canon_decimal(state.initial_cash);
-    let cutoff_opt = state.visible_until;
-
-    // Resolve visible training bars (never reading past `state.visible_until`)
-    let mut visible_bars: Vec<SimStepBar> = if !input.training_bars.is_empty() {
-        input
-            .training_bars
-            .iter()
-            .filter(|sb| {
-                sb.bar.is_final
-                    && match cutoff_opt {
-                        Some(cutoff) => sb.bar.close_at <= cutoff,
-                        None => true,
-                    }
-            })
-            .cloned()
-            .collect()
-    } else {
-        state
-            .bar_snapshots
-            .iter()
-            .map(|snap| SimStepBar {
-                bar: crate::model::BarRecord {
-                    id: format!("SNAP-{}", snap.step_index),
-                    instrument_id: snap.instrument_id.clone(),
-                    timeframe: "1d".to_string(),
-                    session: "regular".to_string(),
-                    session_date: snap.session_date,
-                    open_at: snap.open_at,
-                    close_at: snap.close_at,
-                    open: snap.open,
-                    high: snap.high,
-                    low: snap.low,
-                    close: snap.close,
-                    volume: snap.volume,
-                    source: "sim_snapshot".to_string(),
-                    adjustment: crate::model::AdjustmentKind::Raw,
-                    is_final: true,
-                    valid_from_version: input.dataset_version,
-                    valid_to_version: None,
-                    raw_payload_hash: None,
-                },
-                halted: false,
-                tradable: snap.tradable,
-            })
-            .collect()
-    };
-    visible_bars.sort_by(|a, b| {
-        a.bar
-            .close_at
-            .cmp(&b.bar.close_at)
-            .then_with(|| a.bar.instrument_id.cmp(&b.bar.instrument_id))
-    });
-
-    let max_vis_date = visible_bars.last().map(|b| b.bar.session_date);
-    let visible_cas: Vec<CorporateActionRecord> = input
-        .corporate_actions
-        .iter()
-        .filter(|ca| match max_vis_date {
-            Some(d) => ca.ex_date <= d,
-            None => false,
-        })
-        .cloned()
-        .collect();
-
-    // 1. Close-to-close equity curve, max drawdown, and time-in-market exposure
+fn build_equity_curve(
+    state: &SimState,
+    initial_cash: Decimal,
+) -> (Vec<EquityCurvePoint>, Decimal, Decimal, usize) {
     let mut equity_curve = Vec::with_capacity(state.bar_snapshots.len());
     let mut peak_equity = initial_cash;
     let mut max_drawdown_ratio = Decimal::ZERO;
@@ -821,23 +922,37 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
             drawdown_pct: round_metric(dd_ratio * Decimal::from(100), 6),
         });
     }
+    (
+        equity_curve,
+        max_drawdown_ratio,
+        max_drawdown_amount,
+        exposed_bars,
+    )
+}
 
-    let total_training_bars = if !state.bar_snapshots.is_empty() {
-        state.bar_snapshots.len()
-    } else {
-        visible_bars.len()
-    };
-    let exposure_ratio = if total_training_bars > 0 {
-        round_metric(
-            Decimal::from(exposed_bars) / Decimal::from(total_training_bars),
-            8,
-        )
-    } else {
-        Decimal::ZERO
-    };
-    let exposure_pct = round_metric(exposure_ratio * Decimal::from(100), 6);
+enum TimelineBarRef<'a> {
+    Visible(&'a crate::model::BarRecord),
+    Synthetic(Box<crate::model::BarRecord>),
+}
 
-    // 2. Reconstruct closed trade groups (`0 -> pos -> 0`) and open trade groups
+impl<'a> TimelineBarRef<'a> {
+    fn as_bar(&self) -> &crate::model::BarRecord {
+        match self {
+            Self::Visible(b) => b,
+            Self::Synthetic(b) => b.as_ref(),
+        }
+    }
+}
+
+fn reconstruct_trade_groups(
+    state: &SimState,
+    visible_bars: &[SimStepBar],
+    visible_cas: &[CorporateActionRecord],
+    notes: &[TrainingNoteRef],
+) -> (
+    Vec<ClosedTradeGroup>,
+    BTreeMap<String, (Decimal, ActiveCycle)>,
+) {
     let mut fills_by_bar_close: BTreeMap<(String, DateTime<Utc>), Vec<&SimFill>> = BTreeMap::new();
     for fill in &state.fills {
         fills_by_bar_close
@@ -849,8 +964,10 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         list.sort_by_key(|f| f.fill_seq);
     }
 
+    // Use the exact same corporate-action deduplication `(factor_version, source_priority, id)` as `sim.rs`.
+    let dedup_cas = deduplicate_corporate_actions(visible_cas);
     let mut split_map: BTreeMap<(String, NaiveDate), Decimal> = BTreeMap::new();
-    for ca in &visible_cas {
+    for ca in dedup_cas {
         if ca.action_type == crate::model::CorporateActionType::Split
             && ca.ratio_or_amount > Decimal::ZERO
         {
@@ -858,19 +975,82 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         }
     }
 
+    // Build a merged chronological timeline covering every visible training bar PLUS any fill
+    // timestamps not in `visible_bars` (e.g. step-0 `m5-sim-2` quick fills at `initial_visible_until`
+    // before the first training bar). Visible bar indices remain strictly aligned to `visible_bars`.
+    let visible_keys: BTreeSet<(String, DateTime<Utc>)> = visible_bars
+        .iter()
+        .map(|sb| (sb.bar.instrument_id.clone(), sb.bar.close_at))
+        .collect();
+    let mut timeline: Vec<(DateTime<Utc>, String, usize, TimelineBarRef<'_>)> =
+        Vec::with_capacity(visible_bars.len() + fills_by_bar_close.len());
+    for (bar_idx, sb) in visible_bars.iter().enumerate() {
+        timeline.push((
+            sb.bar.close_at,
+            sb.bar.instrument_id.clone(),
+            bar_idx,
+            TimelineBarRef::Visible(&sb.bar),
+        ));
+    }
+    for ((inst_id, close_at), list) in &fills_by_bar_close {
+        if visible_keys.contains(&(inst_id.clone(), *close_at)) {
+            continue;
+        }
+        let Some(first_fill) = list.first() else {
+            continue;
+        };
+        let approx_idx = if visible_bars.is_empty() {
+            0
+        } else {
+            visible_bars
+                .partition_point(|b| b.bar.close_at < *close_at)
+                .min(visible_bars.len() - 1)
+        };
+        let px = first_fill.raw_path_price;
+        let synth = crate::model::BarRecord {
+            id: format!("PRE-WINDOW:{}:{}", inst_id, close_at.to_rfc3339()),
+            instrument_id: inst_id.clone(),
+            timeframe: state.timeframe.clone().unwrap_or_else(|| "1d".to_string()),
+            session: "visible_close".to_string(),
+            session_date: first_fill.bar_session_date,
+            open_at: first_fill.bar_open_at,
+            close_at: *close_at,
+            open: px,
+            high: px,
+            low: px,
+            close: px,
+            volume: Decimal::ONE,
+            source: "sim_fill_synthetic".to_string(),
+            adjustment: crate::model::AdjustmentKind::Raw,
+            is_final: true,
+            valid_from_version: 0,
+            valid_to_version: None,
+            raw_payload_hash: None,
+        };
+        timeline.push((
+            *close_at,
+            inst_id.clone(),
+            approx_idx,
+            TimelineBarRef::Synthetic(Box::new(synth)),
+        ));
+    }
+    timeline.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
     let mut closed_trade_groups: Vec<ClosedTradeGroup> = Vec::new();
     let mut active_by_inst: BTreeMap<String, (Decimal, ActiveCycle)> = BTreeMap::new();
     let mut next_group_num = 1_usize;
 
-    for (bar_idx, sb) in visible_bars.iter().enumerate() {
-        let bar = &sb.bar;
+    for (_, _, bar_idx, bar_ref) in &timeline {
+        let bar = bar_ref.as_bar();
         let inst_id = &bar.instrument_id;
 
-        // Pre-open split adjustment on any already-open cycle
-        if let Some(&ratio) = split_map.get(&(inst_id.clone(), bar.session_date)) {
-            if let Some((cur_qty, cycle)) = active_by_inst.get_mut(inst_id) {
-                *cur_qty = canon_decimal(*cur_qty * ratio);
-                cycle.apply_split(ratio);
+        // Pre-open split adjustment on any already-open cycle (real visible bars only)
+        if matches!(bar_ref, TimelineBarRef::Visible(_)) {
+            if let Some(&ratio) = split_map.get(&(inst_id.clone(), bar.session_date)) {
+                if let Some((cur_qty, cycle)) = active_by_inst.get_mut(inst_id) {
+                    *cur_qty = canon_decimal(*cur_qty * ratio);
+                    cycle.apply_split(ratio);
+                }
             }
         }
 
@@ -880,7 +1060,6 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
             .unwrap_or_default();
 
         if bar_fills.is_empty() {
-            // If a cycle is open across this entire bar, observe `[L, H]`
             if let Some((_, cycle)) = active_by_inst.get_mut(inst_id) {
                 cycle.observe_extrema(bar.low, bar.high);
             }
@@ -905,38 +1084,18 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                         cycle.scaled_entry_notional = canon_decimal(
                             cycle.scaled_entry_notional + fill.net_base_quantity * fill.fill_price,
                         );
-                        let buy_cash_cost = if fill
-                            .fee_currency
-                            .eq_ignore_ascii_case(&state.quote_currency)
-                        {
-                            fill.gross_quantity * fill.fill_price + fill.fee_amount
-                        } else {
-                            fill.gross_quantity * fill.fill_price
-                        };
-                        cycle.total_buy_cost_quote =
-                            canon_decimal(cycle.total_buy_cost_quote + buy_cash_cost);
                         cycle.total_fees_quote =
                             canon_decimal(cycle.total_fees_quote + fill.fee_quote_value);
                     } else {
                         // Open new `0 -> pos` cycle at `(fill.path_stage, fill.raw_path_price)`
                         let mut involved = BTreeSet::new();
                         involved.insert(fill.order_id.clone());
-                        let buy_cash_cost = if fill
-                            .fee_currency
-                            .eq_ignore_ascii_case(&state.quote_currency)
-                        {
-                            fill.gross_quantity * fill.fill_price + fill.fee_amount
-                        } else {
-                            fill.gross_quantity * fill.fill_price
-                        };
                         let cycle = ActiveCycle {
                             instrument_id: inst_id.clone(),
-                            entry_bar_index: bar_idx,
+                            entry_bar_index: *bar_idx,
                             entry_session_date: bar.session_date,
                             entry_at: bar.open_at,
                             entry_bar_close_at: bar.close_at,
-                            first_entry_stage: fill.path_stage,
-                            first_entry_raw_price: fill.raw_path_price,
                             entry_fills: vec![fill.clone()],
                             exit_fills: Vec::new(),
                             involved_order_ids: involved,
@@ -946,8 +1105,6 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                             ),
                             scaled_exit_qty: Decimal::ZERO,
                             scaled_exit_notional: Decimal::ZERO,
-                            total_buy_cost_quote: canon_decimal(buy_cash_cost),
-                            total_sell_net_proceeds_quote: Decimal::ZERO,
                             total_fees_quote: fill.fee_quote_value,
                             realized_pnl_accum: Decimal::ZERO,
                             min_path_price: None,
@@ -969,10 +1126,6 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                         cycle.scaled_exit_notional = canon_decimal(
                             cycle.scaled_exit_notional + fill.net_base_quantity * fill.fill_price,
                         );
-                        let sell_net =
-                            canon_decimal(fill.gross_quantity * fill.fill_price - fill.fee_amount);
-                        cycle.total_sell_net_proceeds_quote =
-                            canon_decimal(cycle.total_sell_net_proceeds_quote + sell_net);
                         cycle.total_fees_quote =
                             canon_decimal(cycle.total_fees_quote + fill.fee_quote_value);
                         cycle.realized_pnl_accum =
@@ -995,8 +1148,11 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                             cycle.observe_extrema(lo, hi);
                         }
 
-                        let avg_entry =
-                            round_metric(cycle.scaled_entry_notional / cycle.scaled_entry_qty, 8);
+                        let avg_entry = if cycle.scaled_entry_qty > Decimal::ZERO {
+                            round_metric(cycle.scaled_entry_notional / cycle.scaled_entry_qty, 8)
+                        } else {
+                            Decimal::ZERO
+                        };
                         let avg_exit = if cycle.scaled_exit_qty > Decimal::ZERO {
                             round_metric(cycle.scaled_exit_notional / cycle.scaled_exit_qty, 8)
                         } else {
@@ -1006,34 +1162,30 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                         let max_p = cycle.max_path_price.unwrap_or(avg_entry);
                         let mae_unit = canon_decimal((avg_entry - min_p).max(Decimal::ZERO));
                         let mfe_unit = canon_decimal((max_p - avg_entry).max(Decimal::ZERO));
-                        let mae_ratio = round_metric(mae_unit / avg_entry, 8);
-                        let mae_pct = round_metric(mae_unit * Decimal::from(100) / avg_entry, 6);
-                        let mfe_ratio = round_metric(mfe_unit / avg_entry, 8);
-                        let mfe_pct = round_metric(mfe_unit * Decimal::from(100) / avg_entry, 6);
+                        let (mae_ratio, mae_pct, mfe_ratio, mfe_pct) = if avg_entry > Decimal::ZERO
+                        {
+                            (
+                                round_metric(mae_unit / avg_entry, 8),
+                                round_metric(mae_unit * Decimal::from(100) / avg_entry, 6),
+                                round_metric(mfe_unit / avg_entry, 8),
+                                round_metric(mfe_unit * Decimal::from(100) / avg_entry, 6),
+                            )
+                        } else {
+                            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
+                        };
                         let gross_pnl =
                             canon_decimal(cycle.scaled_exit_notional - cycle.scaled_entry_notional);
-                        let (has_plan, compliance) = determine_plan_compliance(
-                            state,
-                            &cycle,
-                            bar.open_at,
-                            bar.close_at,
-                            &input.notes,
-                        );
+                        let (has_plan, compliance) =
+                            determine_plan_compliance(state, &cycle, bar.close_at, notes);
 
                         let gid = format!("TRD-GRP-{next_group_num:04}");
                         next_group_num += 1;
-                        let _ = (
-                            cycle.first_entry_stage,
-                            cycle.first_entry_raw_price,
-                            cycle.total_buy_cost_quote,
-                            cycle.total_sell_net_proceeds_quote,
-                        );
 
                         closed_trade_groups.push(ClosedTradeGroup {
                             group_id: gid,
                             instrument_id: cycle.instrument_id,
                             entry_bar_index: cycle.entry_bar_index,
-                            exit_bar_index: bar_idx,
+                            exit_bar_index: *bar_idx,
                             entry_session_date: cycle.entry_session_date,
                             exit_session_date: bar.session_date,
                             entry_at: cycle.entry_at,
@@ -1080,7 +1232,14 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         }
     }
 
-    // 3. Open positions remaining at the end of the training window
+    (closed_trade_groups, active_by_inst)
+}
+
+fn summarize_open_positions(
+    state: &SimState,
+    visible_bars: &[SimStepBar],
+    active_by_inst: &BTreeMap<String, (Decimal, ActiveCycle)>,
+) -> (Vec<OpenTradeGroupSummary>, Decimal, Decimal) {
     let mut open_positions = Vec::new();
     let mut open_position_market_value = Decimal::ZERO;
     let mut total_carrying_cost_open = Decimal::ZERO;
@@ -1104,6 +1263,13 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
                     let fallback_date = visible_bars
                         .first()
                         .map(|b| b.bar.session_date)
+                        .or_else(|| {
+                            state
+                                .fills
+                                .iter()
+                                .find(|f| f.instrument_id == *inst_id)
+                                .map(|f| f.bar_session_date)
+                        })
                         .unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
                     (fallback_date, Decimal::ZERO)
                 });
@@ -1121,117 +1287,21 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         }
     }
 
-    let ending_cash = state.cash_balance;
-    let ending_equity = canon_decimal(ending_cash + open_position_market_value);
-    let unrealized_pnl = canon_decimal(open_position_market_value - total_carrying_cost_open);
-    let realized_pnl = state.realized_pnl;
-    let dividend_income = state.dividend_income;
-    let total_fees_quote = state.total_fees_quote;
-    let total_pnl = canon_decimal(ending_equity - initial_cash);
-    let total_return = round_metric(total_pnl / initial_cash, 8);
-    let total_return_pct = round_metric(total_pnl * Decimal::from(100) / initial_cash, 6);
+    (
+        open_positions,
+        open_position_market_value,
+        total_carrying_cost_open,
+    )
+}
 
-    // 4. Trade group statistics: Win Rate, Payoff Ratio, Profit Factor, Expectancy
-    let closed_count = closed_trade_groups.len();
-    let mut winning_count = 0_usize;
-    let mut losing_count = 0_usize;
-    let mut zero_pnl_count = 0_usize;
-    let mut gross_profit = Decimal::ZERO;
-    let mut gross_loss_abs = Decimal::ZERO;
-
-    for g in &closed_trade_groups {
-        if g.realized_pnl > Decimal::ZERO {
-            winning_count += 1;
-            gross_profit = canon_decimal(gross_profit + g.realized_pnl);
-        } else if g.realized_pnl < Decimal::ZERO {
-            losing_count += 1;
-            gross_loss_abs = canon_decimal(gross_loss_abs + g.realized_pnl.abs());
-        } else {
-            zero_pnl_count += 1;
-        }
-    }
-
-    let win_rate = if closed_count == 0 {
-        WinRateSummary {
-            status: WinRateStatus::NoClosedTrades,
-            closed_trade_count: 0,
-            winning_count: 0,
-            losing_count: 0,
-            zero_pnl_count: 0,
-            win_rate: None,
-            win_rate_pct: None,
-        }
-    } else {
-        let wr = round_metric(
-            Decimal::from(winning_count) / Decimal::from(closed_count),
-            8,
-        );
-        let wr_pct = round_metric(
-            Decimal::from(winning_count) * Decimal::from(100) / Decimal::from(closed_count),
-            6,
-        );
-        WinRateSummary {
-            status: WinRateStatus::Computed,
-            closed_trade_count: closed_count,
-            winning_count,
-            losing_count,
-            zero_pnl_count,
-            win_rate: Some(wr),
-            win_rate_pct: Some(wr_pct),
-        }
-    };
-
-    let average_win =
-        (winning_count > 0).then(|| round_metric(gross_profit / Decimal::from(winning_count), 8));
-    let average_loss_abs =
-        (losing_count > 0).then(|| round_metric(gross_loss_abs / Decimal::from(losing_count), 8));
-
-    let profit_factor = if closed_count == 0 {
-        RatioMetric::NoClosedTrades
-    } else if losing_count == 0 || gross_loss_abs.is_zero() {
-        RatioMetric::NoLosses
-    } else {
-        RatioMetric::Computed(round_metric(gross_profit / gross_loss_abs, 8))
-    };
-
-    let payoff_ratio = if closed_count == 0 {
-        RatioMetric::NoClosedTrades
-    } else if losing_count == 0 {
-        RatioMetric::NoLosses
-    } else if winning_count == 0 {
-        RatioMetric::NoWins
-    } else {
-        let avg_w = gross_profit / Decimal::from(winning_count);
-        let avg_l = gross_loss_abs / Decimal::from(losing_count);
-        RatioMetric::Computed(round_metric(avg_w / avg_l, 8))
-    };
-
-    let expectancy = if closed_count == 0 {
-        ExpectancySummary {
-            status: WinRateStatus::NoClosedTrades,
-            sample_count: 0,
-            value: None,
-        }
-    } else {
-        let net_closed_pnl = canon_decimal(gross_profit - gross_loss_abs);
-        ExpectancySummary {
-            status: WinRateStatus::Computed,
-            sample_count: closed_count,
-            value: Some(round_metric(
-                net_closed_pnl / Decimal::from(closed_count),
-                8,
-            )),
-        }
-    };
-
-    // 5. Plan execution rate
+fn summarize_plan_execution(closed_trade_groups: &[ClosedTradeGroup]) -> PlanExecutionSummary {
     let mut planned_count = 0_usize;
     let mut exited_by_plan_count = 0_usize;
     let mut deviated_with_note_count = 0_usize;
     let mut deviated_without_note_count = 0_usize;
     let mut unplanned_group_ids = Vec::new();
 
-    for g in &closed_trade_groups {
+    for g in closed_trade_groups {
         match &g.plan_compliance {
             PlanCompliance::ExitedByPlannedBracket => {
                 planned_count += 1;
@@ -1251,7 +1321,7 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         }
     }
     let compliant_count = exited_by_plan_count + deviated_with_note_count;
-    let plan_execution = if planned_count == 0 {
+    if planned_count == 0 {
         PlanExecutionSummary {
             status: PlanExecutionStatus::NoPlannedTrades,
             planned_closed_group_count: 0,
@@ -1285,33 +1355,16 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
             execution_rate: Some(rate),
             execution_rate_pct: Some(rate_pct),
         }
-    };
+    }
+}
 
-    // 6. Buy-and-Hold Benchmark (primary instrument in training session)
-    let primary_spec = state
-        .instruments
-        .values()
-        .next()
-        .cloned()
-        .expect("SimState always has at least one instrument");
-    let primary_bars: Vec<SimStepBar> = visible_bars
-        .iter()
-        .filter(|b| b.bar.instrument_id == primary_spec.instrument_id)
-        .cloned()
-        .collect();
-    let benchmark = compute_buy_and_hold_benchmark(
-        initial_cash,
-        &primary_spec,
-        &state.fee_profile,
-        &primary_bars,
-        &visible_cas,
-    );
-    let excess_return = canon_decimal(total_return - benchmark.total_return);
-    let excess_return_pct = canon_decimal(total_return_pct - benchmark.total_return_pct);
-
-    // 7. Structured sample limitations (`S-44`, `M4-A-12`)
+fn build_sample_limitations(
+    state: &SimState,
+    hidden_mode: bool,
+    closed_count: usize,
+    has_open_pos: bool,
+) -> SampleLimitations {
     let small_sample_warning = closed_count < 30;
-    let has_open_pos = !open_positions.is_empty();
     let mut items = vec![
         SampleLimitationItem {
             code: "SAMPLE_SIZE".to_string(),
@@ -1330,7 +1383,10 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         },
         SampleLimitationItem {
             code: "LIQUIDITY_ASSUMPTION".to_string(),
-            message: "Whole-order fill model (m4-sim-1): market impact and order-book participation limits are not simulated".to_string(),
+            message: format!(
+                "Whole-order fill model ({}): market impact and order-book participation limits are not simulated",
+                state.engine_version
+            ),
         },
         SampleLimitationItem {
             code: "AMBIGUOUS_FILLS".to_string(),
@@ -1348,7 +1404,7 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         },
     ];
 
-    let hidden_note = if input.hidden_mode {
+    let hidden_note = if hidden_mode {
         let msg = "Hidden mode masks instrument symbol and session dates during training, but raw price levels are untransformed and may hint at the instrument".to_string();
         items.push(SampleLimitationItem {
             code: "HIDDEN_MODE_PRICE_LEVEL".to_string(),
@@ -1381,7 +1437,7 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         None
     };
 
-    let limitations = SampleLimitations {
+    SampleLimitations {
         closed_trade_group_count: closed_count,
         small_sample_warning,
         ambiguous_fill_count: state.ambiguous_fill_count,
@@ -1389,18 +1445,183 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         liquidity_assumption: "whole_order_fill_no_liquidity_cap".to_string(),
         fee_profile_id: state.fee_profile.id.clone(),
         fee_assumption: state.fee_profile.assumption_note.clone(),
-        hidden_mode_enabled: input.hidden_mode,
+        hidden_mode_enabled: hidden_mode,
         hidden_mode_price_level_note: hidden_note,
         has_open_position_at_end: has_open_pos,
         open_position_valuation_note: open_pos_note,
         ex_date_dividend_assumed: state.ex_date_dividend_assumed,
         ex_date_dividend_note: div_note,
         items,
+    }
+}
+
+/// Compute the full M4/M5 Training Report purely in `Decimal` (`S-44`, `M4-A-12`).
+pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
+    let state = &input.state;
+    let initial_cash = canon_decimal(state.initial_cash);
+    let cutoff_opt = state.visible_until;
+
+    // Resolve visible training bars (never reading past `state.visible_until`)
+    let mut visible_bars: Vec<SimStepBar> = if !input.training_bars.is_empty() {
+        input
+            .training_bars
+            .iter()
+            .filter(|sb| {
+                sb.bar.is_final
+                    && match cutoff_opt {
+                        Some(cutoff) => sb.bar.close_at <= cutoff,
+                        None => true,
+                    }
+            })
+            .cloned()
+            .collect()
+    } else {
+        state
+            .bar_snapshots
+            .iter()
+            .map(|snap| SimStepBar {
+                bar: crate::model::BarRecord {
+                    id: format!("SNAP-{}", snap.step_index),
+                    instrument_id: snap.instrument_id.clone(),
+                    timeframe: state.timeframe.clone().unwrap_or_else(|| "1d".to_string()),
+                    session: "regular".to_string(),
+                    session_date: snap.session_date,
+                    open_at: snap.open_at,
+                    close_at: snap.close_at,
+                    open: snap.open,
+                    high: snap.high,
+                    low: snap.low,
+                    close: snap.close,
+                    volume: snap.volume,
+                    source: "sim_snapshot".to_string(),
+                    adjustment: crate::model::AdjustmentKind::Raw,
+                    is_final: true,
+                    valid_from_version: input.dataset_version,
+                    valid_to_version: None,
+                    raw_payload_hash: None,
+                },
+                halted: false,
+                tradable: snap.tradable,
+            })
+            .collect()
     };
+    visible_bars.sort_by(|a, b| {
+        a.bar
+            .close_at
+            .cmp(&b.bar.close_at)
+            .then_with(|| a.bar.instrument_id.cmp(&b.bar.instrument_id))
+    });
+
+    let max_vis_date = visible_bars.last().map(|b| b.bar.session_date);
+    let visible_cas: Vec<CorporateActionRecord> = input
+        .corporate_actions
+        .iter()
+        .filter(|ca| match max_vis_date {
+            Some(d) => ca.ex_date <= d,
+            None => false,
+        })
+        .cloned()
+        .collect();
+
+    // 1. Close-to-close equity curve, max drawdown, and time-in-market exposure
+    let (equity_curve, max_drawdown_ratio, max_drawdown_amount, exposed_bars) =
+        build_equity_curve(state, initial_cash);
+
+    let total_training_bars = if !state.bar_snapshots.is_empty() {
+        state.bar_snapshots.len()
+    } else {
+        visible_bars.len()
+    };
+    let exposure_ratio = if total_training_bars > 0 {
+        round_metric(
+            Decimal::from(exposed_bars) / Decimal::from(total_training_bars),
+            8,
+        )
+    } else {
+        Decimal::ZERO
+    };
+    let exposure_pct = round_metric(exposure_ratio * Decimal::from(100), 6);
+
+    // 2. Reconstruct closed trade groups (`0 -> pos -> 0`) and open trade groups
+    let (closed_trade_groups, active_by_inst) =
+        reconstruct_trade_groups(state, &visible_bars, &visible_cas, &input.notes);
+
+    // 3. Open positions remaining at the end of the training window
+    let (open_positions, open_position_market_value, total_carrying_cost_open) =
+        summarize_open_positions(state, &visible_bars, &active_by_inst);
+
+    let ending_cash = state.cash_balance;
+    let ending_equity = canon_decimal(ending_cash + open_position_market_value);
+    let unrealized_pnl = canon_decimal(open_position_market_value - total_carrying_cost_open);
+    let realized_pnl = state.realized_pnl;
+    let dividend_income = state.dividend_income;
+    let total_fees_quote = state.total_fees_quote;
+    let total_pnl = canon_decimal(ending_equity - initial_cash);
+    let (total_return, total_return_pct) = if initial_cash > Decimal::ZERO {
+        (
+            round_metric(total_pnl / initial_cash, 8),
+            round_metric(total_pnl * Decimal::from(100) / initial_cash, 6),
+        )
+    } else {
+        (Decimal::ZERO, Decimal::ZERO)
+    };
+
+    // 4. Trade group statistics: Win Rate, Payoff Ratio, Profit Factor, Expectancy
+    let stats = compute_closed_group_stats(&closed_trade_groups);
+
+    // 5. Plan execution rate
+    let plan_execution = summarize_plan_execution(&closed_trade_groups);
+
+    // 6. Buy-and-Hold Benchmark (primary instrument in training session)
+    let benchmark = match state.instruments.values().next() {
+        Some(primary_spec) => {
+            let primary_bars: Vec<SimStepBar> = visible_bars
+                .iter()
+                .filter(|b| b.bar.instrument_id == primary_spec.instrument_id)
+                .cloned()
+                .collect();
+            compute_buy_and_hold_benchmark(
+                initial_cash,
+                primary_spec,
+                &state.fee_profile,
+                &primary_bars,
+                &visible_cas,
+            )
+        }
+        None => BuyAndHoldBenchmark {
+            status: BenchmarkStatus::NoBars,
+            instrument_id: String::new(),
+            initial_cash,
+            entry_session_date: None,
+            entry_fill_price: None,
+            initial_quantity_bought: Decimal::ZERO,
+            ending_quantity: Decimal::ZERO,
+            ending_close_price: None,
+            cash_remaining: initial_cash,
+            dividend_income: Decimal::ZERO,
+            total_fees_quote: Decimal::ZERO,
+            ending_equity: initial_cash,
+            total_pnl: Decimal::ZERO,
+            total_return: Decimal::ZERO,
+            total_return_pct: Decimal::ZERO,
+            max_drawdown: Decimal::ZERO,
+            max_drawdown_pct: Decimal::ZERO,
+        },
+    };
+    let excess_return = canon_decimal(total_return - benchmark.total_return);
+    let excess_return_pct = canon_decimal(total_return_pct - benchmark.total_return_pct);
+
+    // 7. Structured sample limitations (`S-44`, `M4-A-12`)
+    let limitations = build_sample_limitations(
+        state,
+        input.hidden_mode,
+        closed_trade_groups.len(),
+        !open_positions.is_empty(),
+    );
 
     TrainingReport {
         report_version: SIM_REPORT_VERSION.to_string(),
-        engine_version: SIM_ENGINE_VERSION.to_string(),
+        engine_version: state.engine_version.clone(),
         run_id: input.run_id.clone(),
         dataset_version: input.dataset_version,
         fee_profile_version_id: state.fee_profile.id.clone(),
@@ -1425,14 +1646,14 @@ pub fn compute_training_report(input: &TrainingReportInput) -> TrainingReport {
         max_drawdown_pct: round_metric(max_drawdown_ratio * Decimal::from(100), 6),
         max_drawdown_amount,
         equity_curve,
-        win_rate,
-        gross_profit,
-        gross_loss_abs,
-        average_win,
-        average_loss_abs,
-        payoff_ratio,
-        profit_factor,
-        expectancy,
+        win_rate: stats.win_rate,
+        gross_profit: stats.gross_profit,
+        gross_loss_abs: stats.gross_loss_abs,
+        average_win: stats.average_win,
+        average_loss_abs: stats.average_loss_abs,
+        payoff_ratio: stats.payoff_ratio,
+        profit_factor: stats.profit_factor,
+        expectancy: stats.expectancy,
         plan_execution,
         closed_trade_groups,
         open_positions,
@@ -2348,5 +2569,258 @@ mod tests {
         assert_eq!(rep.max_drawdown_pct, dec("8.461538"));
         assert_eq!(rep.payoff_ratio, RatioMetric::NoWins);
         assert_eq!(rep.profit_factor, RatioMetric::Computed(Decimal::ZERO));
+    }
+
+    #[test]
+    fn m5_step0_quick_fill_trades_appear_in_report_and_report_engine_version() {
+        use crate::sim::{FillRule, SIM_ENGINE_VERSION_M5};
+
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let st0 = SimState::new_m5(
+            "USD",
+            dec("10000"),
+            fixed_one_dollar_fee_profile(),
+            vec![SimInstrumentSpec {
+                instrument_id: "NASDAQ:AAPL".to_string(),
+                base_asset_id: "AAPL".to_string(),
+                quote_currency: "USD".to_string(),
+                lot_size: dec("1"),
+                tick_size: dec("0.01"),
+            }],
+            Some(t0),
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), dec("100"))]),
+            "1d",
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), true)]),
+        )
+        .unwrap();
+
+        let quick = |side: OrderSide, qty: &str| {
+            let mut req = OrderSubmitRequest::single(
+                "NASDAQ:AAPL",
+                side,
+                SimOrderType::Market,
+                TimeInForce::Day,
+                dec(qty),
+            );
+            req.fill_rule = Some(FillRule::VisibleClose);
+            SimCommand::SubmitOrder(req)
+        };
+
+        let bar_jan3 = make_bar("NASDAQ:AAPL", 2025, 1, 3, "102", "112", "98", "110", "1000");
+
+        // Sub-case A: step-0 quick buy -> advance bar_jan3 -> quick sell at 110.
+        let (st1, _) = step(&st0, quick(OrderSide::Buy, "10"), None).unwrap();
+        let (st2, _) = step(
+            &st1,
+            SimCommand::AdvanceBar {
+                corporate_actions: vec![],
+            },
+            Some(&bar_jan3),
+        )
+        .unwrap();
+        let (st3, _) = step(&st2, quick(OrderSide::Sell, "10"), None).unwrap();
+        let (st4, _) = step(&st3, SimCommand::Finish, None).unwrap();
+
+        let rep = compute_training_report(&TrainingReportInput {
+            run_id: "RUN-M5-STEP0-A".to_string(),
+            dataset_version: 7,
+            hidden_mode: false,
+            state: st4,
+            training_bars: vec![bar_jan3.clone()],
+            corporate_actions: vec![],
+            notes: vec![],
+        });
+        assert_eq!(rep.engine_version, SIM_ENGINE_VERSION_M5);
+        assert_eq!(rep.closed_trade_groups.len(), 1);
+        let g = &rep.closed_trade_groups[0];
+        assert_eq!(g.total_quantity, dec("10"));
+        assert_eq!(g.weighted_avg_entry_price, dec("100"));
+        assert_eq!(g.weighted_avg_exit_price, dec("110"));
+        assert_eq!(g.realized_pnl, dec("98"));
+        assert_eq!(g.min_path_price, dec("98"));
+        assert_eq!(g.max_path_price, dec("112"));
+
+        // Sub-case B: step-0 quick buy + step-0 quick sell with 0 stepped bars.
+        let (st_b1, _) = step(&st1, quick(OrderSide::Sell, "10"), None).unwrap();
+        let (st_b2, _) = step(&st_b1, SimCommand::Finish, None).unwrap();
+        let rep_b = compute_training_report(&TrainingReportInput {
+            run_id: "RUN-M5-STEP0-B".to_string(),
+            dataset_version: 7,
+            hidden_mode: false,
+            state: st_b2,
+            training_bars: vec![bar_jan3],
+            corporate_actions: vec![],
+            notes: vec![],
+        });
+        assert_eq!(rep_b.closed_trade_groups.len(), 1);
+        assert_eq!(rep_b.closed_trade_groups[0].realized_pnl, dec("-2"));
+        assert_eq!(rep_b.benchmark.status, BenchmarkStatus::NoBars);
+    }
+
+    #[test]
+    fn split_deduplication_uses_source_priority_matching_sim() {
+        let zero_fp = builtin_fee_profiles()
+            .into_iter()
+            .find(|p| p.preset_key == "zero_cost")
+            .unwrap();
+
+        let t0 = Utc.with_ymd_and_hms(2025, 1, 2, 21, 0, 0).unwrap();
+        let mut state = SimState::new(
+            "USD",
+            dec("10000"),
+            zero_fp,
+            vec![SimInstrumentSpec {
+                instrument_id: "NASDAQ:AAPL".to_string(),
+                base_asset_id: "AAPL".to_string(),
+                quote_currency: "USD".to_string(),
+                lot_size: dec("1"),
+                tick_size: dec("0.01"),
+            }],
+            Some(t0),
+            BTreeMap::from([("NASDAQ:AAPL".to_string(), dec("400"))]),
+        )
+        .unwrap();
+
+        let b1 = make_bar(
+            "NASDAQ:AAPL",
+            2025,
+            1,
+            3,
+            "400",
+            "404",
+            "396",
+            "400",
+            "1000",
+        );
+        let b2 = make_bar("NASDAQ:AAPL", 2025, 1, 6, "100", "110", "90", "105", "4000");
+        let b3 = make_bar(
+            "NASDAQ:AAPL",
+            2025,
+            1,
+            7,
+            "105",
+            "106",
+            "104",
+            "105",
+            "4000",
+        );
+
+        // Higher-priority tiingo split (4x) appears BEFORE lower-priority yahoo split (2x).
+        let cas = vec![
+            CorporateActionRecord {
+                id: "SPLIT-TIINGO".to_string(),
+                instrument_id: "NASDAQ:AAPL".to_string(),
+                action_type: CorporateActionType::Split,
+                ex_date: NaiveDate::from_ymd_opt(2025, 1, 6).unwrap(),
+                pay_date: None,
+                ratio_or_amount: dec("4"),
+                currency: None,
+                announced_at: None,
+                source: "tiingo".to_string(),
+                factor_version: 1,
+                raw_payload_hash: None,
+            },
+            CorporateActionRecord {
+                id: "SPLIT-YAHOO".to_string(),
+                instrument_id: "NASDAQ:AAPL".to_string(),
+                action_type: CorporateActionType::Split,
+                ex_date: NaiveDate::from_ymd_opt(2025, 1, 6).unwrap(),
+                pay_date: None,
+                ratio_or_amount: dec("2"),
+                currency: None,
+                announced_at: None,
+                source: "yahoo".to_string(),
+                factor_version: 1,
+                raw_payload_hash: None,
+            },
+        ];
+
+        (state, _) = step(
+            &state,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                "NASDAQ:AAPL",
+                OrderSide::Buy,
+                SimOrderType::Market,
+                TimeInForce::Day,
+                dec("10"),
+            )),
+            None,
+        )
+        .unwrap();
+        (state, _) = step(
+            &state,
+            SimCommand::AdvanceBar {
+                corporate_actions: cas.clone(),
+            },
+            Some(&b1),
+        )
+        .unwrap();
+        (state, _) = step(
+            &state,
+            SimCommand::AdvanceBar {
+                corporate_actions: cas.clone(),
+            },
+            Some(&b2),
+        )
+        .unwrap();
+        (state, _) = step(
+            &state,
+            SimCommand::SubmitOrder(OrderSubmitRequest::single(
+                "NASDAQ:AAPL",
+                OrderSide::Sell,
+                SimOrderType::Market,
+                TimeInForce::Day,
+                dec("40"),
+            )),
+            None,
+        )
+        .unwrap();
+        (state, _) = step(
+            &state,
+            SimCommand::AdvanceBar {
+                corporate_actions: cas.clone(),
+            },
+            Some(&b3),
+        )
+        .unwrap();
+        (state, _) = step(&state, SimCommand::Finish, None).unwrap();
+
+        let rep = compute_training_report(&TrainingReportInput {
+            run_id: "RUN-SPLIT-PRIO".to_string(),
+            dataset_version: 7,
+            hidden_mode: false,
+            state,
+            training_bars: vec![b1, b2, b3],
+            corporate_actions: cas,
+            notes: vec![],
+        });
+        assert_eq!(rep.closed_trade_groups.len(), 1);
+        let g = &rep.closed_trade_groups[0];
+        assert_eq!(g.total_quantity, dec("40"));
+        assert_eq!(g.weighted_avg_entry_price, dec("100"));
+        // Post-4x-split extrema: b1 [99, 101], b2 [90, 110], b3 AtOpen [105] -> MAE 10, MFE 10.
+        assert_eq!(g.mae_per_unit, dec("10"));
+        assert_eq!(g.mfe_per_unit, dec("10"));
+    }
+
+    #[test]
+    fn benchmark_with_zero_open_bar_returns_no_tradable_bar_without_panic() {
+        let spec = SimInstrumentSpec {
+            instrument_id: "NASDAQ:AAPL".to_string(),
+            base_asset_id: "AAPL".to_string(),
+            quote_currency: "USD".to_string(),
+            lot_size: dec("1"),
+            tick_size: dec("0.01"),
+        };
+        let bad_bar = make_bar("NASDAQ:AAPL", 2025, 1, 3, "0", "10", "0", "5", "100");
+        let bm = compute_buy_and_hold_benchmark(
+            dec("10000"),
+            &spec,
+            &fixed_one_dollar_fee_profile(),
+            &[bad_bar],
+            &[],
+        );
+        assert_eq!(bm.status, BenchmarkStatus::NoTradableBar);
+        assert_eq!(bm.ending_equity, dec("10000"));
     }
 }

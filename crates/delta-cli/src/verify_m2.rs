@@ -1,15 +1,18 @@
 use super::{
-    verify::{
-        case_from_tests, directory_snapshot, failure, owned_test_directories, record_tests,
-        source_files, source_fingerprint,
+    verify::{directory_snapshot, failure, owned_test_directories, source_fingerprint},
+    verify_common::{
+        build_gate_env, check_delta_app_boundary, check_delta_core_purity,
+        check_desktop_metadata_deps, check_workspace_source_hygiene, default_gate_jobs,
+        finalize_and_write_report, make_initial_report, record_execution_outcome,
+        record_mapped_case, run_logged_command, run_mechanical_gates, stamp_path,
+        MechanicalGateConfig,
     },
-    CaseResultRecord, PocResultRecord, VerifyStageReport,
+    CaseResultRecord, PocResultRecord,
 };
 use chrono::Utc;
 use delta_app::{
-    count_visible_windows_for_current_process, current_process_priority, observed_window_details,
-    run_m2_k02_viewport_bench, run_quiet_command, sanitize_terminal_output, AppService,
-    BuildChannel, ErrorEnvelope, QuietJobObject, ResolvedAppPaths,
+    count_visible_windows_for_current_process, observed_window_details, run_m2_k02_viewport_bench,
+    run_quiet_command, AppService, BuildChannel, ErrorEnvelope, QuietJobObject, ResolvedAppPaths,
 };
 use delta_data::run_m2_k05_fts5_trigram_spike;
 use delta_model::run_m2_k03_and_a13_verification;
@@ -140,43 +143,17 @@ pub(super) fn run_verify_stage_m2(
     let before = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     let test_directories_before =
         owned_test_directories().map_err(|e| failure("temp_snapshot", e))?;
-    let release_before = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
+    let release_before = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
 
-    let jobs = env::var("DELTA_GATE_JOBS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get().saturating_sub(2).max(1))
-                .unwrap_or(1)
-        });
-
-    let mut report = VerifyStageReport {
-        stage: "M2".into(),
-        plan_version: "1.0".into(),
-        executed_at: Utc::now().to_rfc3339(),
+    let jobs = default_gate_jobs();
+    let mut report = make_initial_report(
+        "M2",
+        "1.0",
         live_mode,
-        source_fingerprint: fingerprint,
-        visible_window_count: 0,
-        window_details: Vec::new(),
-        temp_residual_dirs: 0,
-        outside_temp_created_dirs: 0,
-        path_observation_scope: "directory metadata under real LOCALAPPDATA/delta and delta-dev; test roots are isolated in TEMP; no system-wide write tracing".into(),
-        release_data_dir_touched: false,
-        poc_results: Vec::new(),
-        case_results: Vec::new(),
-        live_probes: Vec::new(),
-        overall_status: "running".into(),
-        gate_jobs: jobs,
-        process_priority: current_process_priority(),
-        test_results: BTreeMap::new(),
-        log_files: BTreeMap::new(),
-        errors: Vec::new(),
-    };
+        fingerprint,
+        jobs,
+        "directory metadata under real LOCALAPPDATA/delta and delta-dev; test roots are isolated in TEMP; no system-wide write tracing",
+    );
 
     let execution = catch_unwind(AssertUnwindSafe(|| -> Result<(), ErrorEnvelope> {
         let job = QuietJobObject::new().map_err(|e| failure("job_object", e))?;
@@ -184,151 +161,36 @@ pub(super) fn run_verify_stage_m2(
             .map_err(|e| failure("job_object", e))?;
 
         // 1. Static source boundary & loopback bind scans (`S-12`, `S-22`)
-        let mut core_files = Vec::new();
-        source_files(&root.join("crates/delta-core"), &mut core_files)
-            .map_err(|e| failure("boundary_scan", e))?;
-        for file in core_files {
-            let text = fs::read_to_string(&file).map_err(|e| failure("boundary_scan", e))?;
-            if text.contains("tokio") || text.contains("reqwest") || text.contains("gpui") {
-                return Err(failure(
-                    "boundary_scan",
-                    "delta-core contains IO or UI dependencies",
-                ));
-            }
-        }
-
-        let mut app_files = Vec::new();
-        source_files(&root.join("crates/delta-app/src"), &mut app_files)
-            .map_err(|e| failure("boundary_scan", e))?;
-        for file in app_files {
-            if fs::read_to_string(&file)
-                .map_err(|e| failure("boundary_scan", e))?
-                .contains("pub async fn")
-            {
-                return Err(failure(
-                    "boundary_scan",
-                    "delta-app leaks a public async API",
-                ));
-            }
-        }
-
-        let forbidden_bind = ["0.0", ".0.0"].concat();
-        let mut all_crate_files = Vec::new();
-        source_files(&root.join("crates"), &mut all_crate_files)
-            .map_err(|e| failure("bind_scan", e))?;
-        for file in all_crate_files {
-            if file.extension().is_some_and(|e| e == "rs")
-                && fs::read_to_string(&file)
-                    .map_err(|e| failure("bind_scan", e))?
-                    .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains(&forbidden_bind))
-            {
-                return Err(failure("bind_scan", "non-loopback test bind address found"));
-            }
-        }
+        check_delta_core_purity(
+            &root,
+            "boundary_scan",
+            "crates/delta-core",
+            &["tokio", "reqwest", "gpui"],
+            &[],
+        )?;
+        check_delta_app_boundary(&root, "boundary_scan", None)?;
+        check_workspace_source_hygiene(&root, "bind_scan", false)?;
 
         // 2. Run M2 Mechanical Gates (`M2-G-01`..`M2-G-05`)
-        let gate_env = BTreeMap::from([
-            (
-                "DELTA_DATA_DIR".into(),
-                temp.join("gate-data").display().to_string(),
-            ),
-            (
-                "DELTA_DOCUMENTS_DIR".into(),
-                temp.join("gate-documents").display().to_string(),
-            ),
-            (
-                "LOCALAPPDATA".into(),
-                temp.join("gate-localappdata").display().to_string(),
-            ),
-            ("CARGO_BUILD_JOBS".into(), jobs.to_string()),
-            ("CARGO_INCREMENTAL".into(), "0".into()),
-            ("PYTHONUTF8".into(), "1".into()),
-            ("RUST_TEST_THREADS".into(), jobs.to_string()),
-            (
-                "DELTA_TEST_ROOT".into(),
-                temp.join("tests").display().to_string(),
-            ),
-        ]);
-
-        for (id, program, args) in [
-            ("M2-G-01", "python", vec!["scripts/check_docs.py"]),
-            ("M2-G-02", "git", vec!["diff", "--check"]),
-            ("M2-G-03", "cargo", vec!["fmt", "--all", "--check"]),
-            (
-                "M2-G-04",
-                "cargo",
-                vec![
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--",
-                    "-D",
-                    "warnings",
-                ],
-            ),
-            ("M2-G-05", "cargo", vec!["test", "--workspace", "--locked"]),
-        ] {
-            let started = Instant::now();
-            let result =
-                run_quiet_command(OsStr::new(program), args.clone(), Some(&root), &gate_env)
-                    .map_err(|e| failure("gate_command", e))?;
-            let path = logs.join(format!("{id}.json"));
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&result).map_err(|e| failure("gate_log", e))?,
-            )
-            .map_err(|e| failure("gate_log", e))?;
-            report.log_files.insert(
-                id.into(),
-                path.strip_prefix(&root).unwrap().display().to_string(),
-            );
-            if id == "M2-G-05" {
-                record_tests(&result.stdout, &mut report.test_results);
-            }
-            report.case_results.push(CaseResultRecord {
-                case_id: id.into(),
-                work_package: "M2-W08".into(),
-                tier: "required".into(),
-                status: if result.status_code == Some(0) && !result.timed_out {
-                    "passed"
-                } else {
-                    "failed"
-                }
-                .into(),
-                elapsed_ms: started.elapsed().as_millis() as u64,
-                evidence: format!(
-                    "{program} {}; exit={:?}; captured log {}",
-                    args.join(" "),
-                    result.status_code,
-                    path.display()
-                ),
-            });
-            if result.status_code != Some(0) || result.timed_out {
-                return Err(failure(
-                    "gate_failed",
-                    format!("{id}: see {}", path.display()),
-                ));
-            }
-        }
+        let gate_env = build_gate_env(&temp, jobs);
+        run_mechanical_gates(
+            &root,
+            &logs,
+            &mut report,
+            &gate_env,
+            MechanicalGateConfig {
+                stage_prefix: "M2",
+                work_package: "M2-W08",
+                clippy_locked: false,
+                test_locked: true,
+            },
+        )?;
 
         // 3. `M2-G-06`: `cargo metadata --locked` dependency boundary (`S-12`) & license inventory (`M2-A-19`, `OSS-11`)
         let g06_start = Instant::now();
-        let meta_res = run_quiet_command(
-            OsStr::new("cargo"),
-            ["metadata", "--locked", "--format-version", "1"],
-            Some(&root),
-            &gate_env,
-        )
-        .map_err(|e| failure("cargo_metadata", e))?;
-        if meta_res.status_code != Some(0) {
-            return Err(failure("cargo_metadata", "cargo metadata --locked failed"));
-        }
         let meta_path = reports.join("cargo-metadata-locked.json");
-        fs::write(&meta_path, &meta_res.stdout).map_err(|e| failure("write_metadata", e))?;
-        let meta_json: Value =
-            serde_json::from_str(&meta_res.stdout).map_err(|e| failure("parse_metadata", e))?;
+        let (meta_json, desktop_deps) =
+            check_desktop_metadata_deps(&root, &gate_env, "cargo_metadata", Some(&meta_path))?;
         let packages = meta_json["packages"]
             .as_array()
             .ok_or_else(|| failure("metadata_packages", "missing packages array"))?;
@@ -340,34 +202,6 @@ pub(super) fn run_verify_stage_m2(
                     .collect()
             })
             .unwrap_or_default();
-
-        let desktop_pkg = packages
-            .iter()
-            .find(|p| p["name"].as_str() == Some("delta-desktop"))
-            .ok_or_else(|| failure("metadata_desktop", "delta-desktop not found in metadata"))?;
-        let desktop_deps: Vec<String> = desktop_pkg["dependencies"]
-            .as_array()
-            .map(|deps| {
-                deps.iter()
-                    .filter_map(|d| d["name"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for forbidden_dep in [
-            "delta-data",
-            "delta-core",
-            "delta-model",
-            "rusqlite",
-            "tokio",
-            "reqwest",
-        ] {
-            if desktop_deps.iter().any(|d| d == forbidden_dep) {
-                return Err(failure(
-                    "desktop_boundary_violation",
-                    format!("delta-desktop directly depends on forbidden crate '{forbidden_dep}'"),
-                ));
-            }
-        }
 
         let mut third_party_count = 0usize;
         let mut mpl_packages = Vec::new();
@@ -427,22 +261,19 @@ pub(super) fn run_verify_stage_m2(
                 ],
             ),
         ] {
-            let result = run_quiet_command(OsStr::new("python"), arguments, Some(&root), &gate_env)
-                .map_err(|e| failure("license_command", e))?;
-            let path = logs.join(format!("{id}.json"));
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&result).map_err(|e| failure("license_log", e))?,
-            )
-            .map_err(|e| failure("license_log", e))?;
-            report.log_files.insert(
-                id.into(),
-                path.strip_prefix(&root).unwrap().display().to_string(),
-            );
+            let result = run_logged_command(
+                &root,
+                &logs,
+                &mut report,
+                id,
+                OsStr::new("python"),
+                arguments,
+                &gate_env,
+            )?;
             if result.status_code != Some(0) || result.timed_out {
                 return Err(failure(
                     "license_collection",
-                    format!("{id}: see {}", path.display()),
+                    format!("{id}: see {}", report.log_files[id]),
                 ));
             }
         }
@@ -514,7 +345,10 @@ pub(super) fn run_verify_stage_m2(
         k02_metrics.insert("frames_executed".into(), json!(300));
         k02_metrics.insert("p50_us".into(), json!(k02_p50_us));
         k02_metrics.insert("p95_us".into(), json!(k02_p95_us));
-        k02_metrics.insert("measurement".into(), json!("viewport slice microbenchmark only; excludes GPUI layout, painting and presentation"));
+        k02_metrics.insert(
+            "measurement".into(),
+            json!("viewport slice microbenchmark only; excludes GPUI layout, painting and presentation"),
+        );
         report.poc_results.push(PocResultRecord {
             id: "M2-K02".into(),
             title: "100,000-bar native GPUI K-line benchmark (release); separate viewport microbenchmark".into(),
@@ -533,12 +367,7 @@ pub(super) fn run_verify_stage_m2(
         report.poc_results.push(PocResultRecord {
             id: "M2-K03".into(),
             title: "eventsource-stream 0.2.3 SSE framing & OpenAI Responses / Chat Completions loopback verification".into(),
-            status: if k03_passed {
-                "passed"
-            } else {
-                "failed"
-            }
-            .into(),
+            status: if k03_passed { "passed" } else { "failed" }.into(),
             metrics: k03_metrics,
             detail: "Both protocols verified across loopback cases (cross-byte UTF-8, split tool arguments, [DONE]/response.completed, truncated stream no-replay, 401/403 no-retry, 429 Retry-After, cancellation, unknown protocol rejection)".into(),
         });
@@ -547,7 +376,6 @@ pub(super) fn run_verify_stage_m2(
         let k04_start = Instant::now();
         let pkg_localappdata = temp.join("k04-localappdata");
         let pkg_out = reports.join("packages");
-        // Seed user data directories for both `delta` and `delta-dev` to verify uninstall preserves them
         fs::create_dir_all(pkg_localappdata.join("delta")).map_err(|e| failure("k04_seed", e))?;
         fs::write(
             pkg_localappdata.join("delta/user_marker.txt"),
@@ -589,7 +417,6 @@ pub(super) fn run_verify_stage_m2(
             &gate_env,
         )?)
         .map_err(|e| failure("package_receipt", e))?;
-        // Verify both coexist side-by-side under Programs/delta and Programs/delta-dev
         let both_coexist = Path::new(&rel_pkg.install_dir).join("delta.exe").is_file()
             && Path::new(&dev_pkg.install_dir)
                 .join("delta-dev.exe")
@@ -628,7 +455,6 @@ pub(super) fn run_verify_stage_m2(
                 "running installed CLI must refuse before removing files",
             ));
         }
-        // Uninstall `dev` channel and verify `delta-dev/user_marker.txt` and `Programs/delta` remain intact
         package_cli_command(
             dev_artifact,
             "package-uninstall",
@@ -641,7 +467,6 @@ pub(super) fn run_verify_stage_m2(
             && pkg_localappdata.join("delta/user_marker.txt").is_file()
             && Path::new(&rel_pkg.install_dir).join("delta.exe").is_file()
             && !Path::new(&dev_pkg.install_dir).exists();
-        // Re-install `dev` so both packages remain available for inspection
         let dev_pkg: PerUserPackageReceipt = serde_json::from_value(package_cli_command(
             dev_artifact,
             "package-install",
@@ -749,34 +574,26 @@ pub(super) fn run_verify_stage_m2(
         k06_metrics.insert("msvc_stack_bytes".into(), json!(8_388_608));
         k06_metrics.insert("ui_smoke_executed".into(), json!(ui_smoke));
         if ui_smoke {
-            let smoke_res = run_quiet_command(
+            let smoke_res = run_logged_command(
+                &root,
+                &logs,
+                &mut report,
+                "native-ui-smoke",
                 OsStr::new("cargo"),
-                [
-                    "run",
-                    "-p",
-                    "delta-desktop",
-                    "--bin",
-                    "delta",
-                    "--locked",
-                    "--",
-                    "--ui-smoke",
-                    "--data-dir",
-                    &temp.join("ui-smoke-data").display().to_string(),
+                vec![
+                    "run".into(),
+                    "-p".into(),
+                    "delta-desktop".into(),
+                    "--bin".into(),
+                    "delta".into(),
+                    "--locked".into(),
+                    "--".into(),
+                    "--ui-smoke".into(),
+                    "--data-dir".into(),
+                    temp.join("ui-smoke-data").display().to_string(),
                 ],
-                Some(&root),
                 &gate_env,
-            )
-            .map_err(|e| failure("ui_smoke", e))?;
-            let path = logs.join("native-ui-smoke.json");
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&smoke_res).map_err(|e| failure("smoke_log", e))?,
-            )
-            .map_err(|e| failure("smoke_log", e))?;
-            report.log_files.insert(
-                "native-ui-smoke".into(),
-                path.strip_prefix(&root).unwrap().display().to_string(),
-            );
+            )?;
             let smoke: Value =
                 serde_json::from_str(&smoke_res.stdout).map_err(|e| failure("smoke_report", e))?;
             if smoke_res.status_code != Some(0)
@@ -796,7 +613,14 @@ pub(super) fn run_verify_stage_m2(
         report.poc_results.push(PocResultRecord {
             id: "M2-K06".into(),
             title: "Windows main-thread 8 MiB stack configuration (/STACK:8388608) & quiet window startup".into(),
-            status: if !has_8mb_stack { "failed" } else if ui_smoke { "passed" } else { "not-run" }.into(),
+            status: if !has_8mb_stack {
+                "failed"
+            } else if ui_smoke {
+                "passed"
+            } else {
+                "not-run"
+            }
+            .into(),
             metrics: k06_metrics,
             detail: format!(
                 "MSVC /STACK:8388608 configured; real hidden-window startup ui_smoke={ui_smoke}; configuration alone does not count as a window test"
@@ -809,8 +633,10 @@ pub(super) fn run_verify_stage_m2(
                 "M2-A-01",
                 "M2-W01",
                 "required",
-                vec!["host::tests::test_m2_a01_scoped_query_consistency_and_stale_generation_rejection",
-                    "regression::frozen_empty_scope_and_zero_market_version_never_expand_to_new_data"],
+                vec![
+                    "host::tests::test_m2_a01_scoped_query_consistency_and_stale_generation_rejection",
+                    "regression::frozen_empty_scope_and_zero_market_version_never_expand_to_new_data",
+                ],
             ),
             (
                 "M2-A-02",
@@ -849,17 +675,21 @@ pub(super) fn run_verify_stage_m2(
                 "M2-A-07",
                 "M2-W03",
                 "required",
-                vec!["workbench::tests::test_m2_a07_workbench_navigation_scope_bar_layout_recovery_and_import_preview",
+                vec![
+                    "workbench::tests::test_m2_a07_workbench_navigation_scope_bar_layout_recovery_and_import_preview",
                     "workbench::tests::actual_controls_preserve_input_save_before_scope_switch_and_recover_failure",
-                    "workbench::tests::actual_first_run_import_preview_commit_and_ai_failure_controls_reach_the_host"],
+                    "workbench::tests::actual_first_run_import_preview_commit_and_ai_failure_controls_reach_the_host",
+                ],
             ),
             (
                 "M2-A-08",
                 "M2-W03",
                 "required",
-                vec!["workbench::tests::test_m2_a08_data_center_sync_progress_cancel_and_failure_states",
+                vec![
+                    "workbench::tests::test_m2_a08_data_center_sync_progress_cancel_and_failure_states",
                     "regression::in_flight_sync_cancellation_releases_resources_and_delete_restore_keep_identity",
-                    "regression::real_sync_job_reports_actual_prepared_and_published_records"],
+                    "regression::real_sync_job_reports_actual_prepared_and_published_records",
+                ],
             ),
             (
                 "M2-A-09",
@@ -871,8 +701,10 @@ pub(super) fn run_verify_stage_m2(
                 "M2-A-10",
                 "M2-W05",
                 "required",
-                vec!["kline::tests::test_m2_a10_kline_viewport_100k_bars_window_invariance_and_future_sentinel",
-                    "workbench::tests::chart_mouse_wheel_crosshair_escape_and_marker_click_reach_scoped_host"],
+                vec![
+                    "kline::tests::test_m2_a10_kline_viewport_100k_bars_window_invariance_and_future_sentinel",
+                    "workbench::tests::chart_mouse_wheel_crosshair_escape_and_marker_click_reach_scoped_host",
+                ],
             ),
             (
                 "M2-A-11",
@@ -904,16 +736,20 @@ pub(super) fn run_verify_stage_m2(
                 "M2-A-14",
                 "M2-W07",
                 "required",
-                vec!["ai::tests::test_m2_a14_ai_review_ac02_qa_evidence_number_verification_and_injection_defense",
+                vec![
+                    "ai::tests::test_m2_a14_ai_review_ac02_qa_evidence_number_verification_and_injection_defense",
                     "ai::tests::report_requires_explicit_evidence_and_rejects_chinese_signed_or_forged_values",
-                    "ai::tests::detail_projection_has_its_own_result_id_and_excludes_omitted_evidence"],
+                    "ai::tests::detail_projection_has_its_own_result_id_and_excludes_omitted_evidence",
+                ],
             ),
             (
                 "M2-A-15",
                 "M2-W07",
                 "required",
-                vec!["ai::tests::test_m2_a15_sessions_atomic_compaction_recovery_cancel_and_late_events",
-                    "ai::tests::model_credentials_are_library_scoped_and_blank_edits_restart_and_rollback_preserve_them"],
+                vec![
+                    "ai::tests::test_m2_a15_sessions_atomic_compaction_recovery_cancel_and_late_events",
+                    "ai::tests::model_credentials_are_library_scoped_and_blank_edits_restart_and_rollback_preserve_them",
+                ],
             ),
             (
                 "M2-A-16",
@@ -929,16 +765,18 @@ pub(super) fn run_verify_stage_m2(
                 "M2-A-17",
                 "M2-W08",
                 "required",
-                vec!["service::export::tests::test_m2_a17_backup_restore_export_delete_and_log_redaction",
+                vec![
+                    "service::export::tests::test_m2_a17_backup_restore_export_delete_and_log_redaction",
                     "regression::in_flight_sync_cancellation_releases_resources_and_delete_restore_keep_identity",
                     "packaging::tests::uninstall_validates_all_hashes_before_mutation_and_retains_unknown_files",
                     "packaging::tests::installer_rejects_wrong_identity_before_creating_target",
                     "packaging::tests::windows_pe_runtime_imports_include_delay_load_and_reject_truncation",
                     "packaging::tests::windows_pe_inspection_reads_the_actual_executable",
-                    "verify_m2::benchmark_tests::viewport_or_dev_samples_cannot_pass_native_frame_acceptance"],
+                    "verify_m2::benchmark_tests::viewport_or_dev_samples_cannot_pass_native_frame_acceptance",
+                ],
             ),
         ] {
-            case_from_tests(&mut report, id, package, tier, &names);
+            record_mapped_case(&mut report, "M2-G-05", id, package, tier, &names, None);
         }
 
         // M2-A-18: M1 regression through the M2 workspace
@@ -980,12 +818,14 @@ pub(super) fn run_verify_stage_m2(
             "regression::public_sessions_require_lock_and_cannot_impersonate_release_channel",
             "regression::source_channel_cannot_target_release_user_file_root",
         ];
-        case_from_tests(
+        record_mapped_case(
             &mut report,
+            "M2-G-05",
             "M2-A-18",
             "M2-W08",
             "required",
             &m1_regression_tests,
+            None,
         );
 
         // M2-A-19: Dependency lock and license inventory for distribution
@@ -1003,27 +843,19 @@ pub(super) fn run_verify_stage_m2(
         // M2-A-20: Fixed-scale performance benchmarks (`--ui-bench`)
         if ui_bench {
             let b_start = Instant::now();
-            let bench_res = run_quiet_command(
+            let bench_res = run_logged_command(
+                &root,
+                &logs,
+                &mut report,
+                "native-ui-bench",
                 release_artifact.directory.join("delta.exe").as_os_str(),
-                [
-                    "--ui-bench",
-                    "--data-dir",
-                    &temp.join("ui-bench-data").display().to_string(),
+                vec![
+                    "--ui-bench".into(),
+                    "--data-dir".into(),
+                    temp.join("ui-bench-data").display().to_string(),
                 ],
-                Some(&root),
                 &gate_env,
-            )
-            .map_err(|e| failure("ui_bench", e))?;
-            let path = logs.join("native-ui-bench.json");
-            fs::write(
-                &path,
-                serde_json::to_vec_pretty(&bench_res).map_err(|e| failure("bench_log", e))?,
-            )
-            .map_err(|e| failure("bench_log", e))?;
-            report.log_files.insert(
-                "native-ui-bench".into(),
-                path.strip_prefix(&root).unwrap().display().to_string(),
-            );
+            )?;
             let bench_path = reports.join("ui-bench-report.json");
             fs::write(&bench_path, &bench_res.stdout).map_err(|e| failure("write_bench", e))?;
             let bench: Value =
@@ -1040,8 +872,12 @@ pub(super) fn run_verify_stage_m2(
                 k02.status = status.into();
                 k02.metrics
                     .insert("native_release_frames".into(), bench.clone());
-                k02.detail = format!("Real release package ran a hidden Windows HWND, 100k bars/rows and 300 measured frames per component; p95 chart={} us, table={} us; raw samples saved in {}",
-                    bench["kline_p95_us"], bench["table_scroll_p95_us"], bench_path.display());
+                k02.detail = format!(
+                    "Real release package ran a hidden Windows HWND, 100k bars/rows and 300 measured frames per component; p95 chart={} us, table={} us; raw samples saved in {}",
+                    bench["kline_p95_us"],
+                    bench["table_scroll_p95_us"],
+                    bench_path.display()
+                );
             }
             report.case_results.push(CaseResultRecord {
                 case_id: "M2-A-20".into(),
@@ -1051,9 +887,18 @@ pub(super) fn run_verify_stage_m2(
                 elapsed_ms: b_start.elapsed().as_millis() as u64,
                 evidence: format!(
                     "Explicit native release --ui-bench; 5 AC-02 first screens p95={} ms, 300 navigation actions p95={} us; 100k transactions/bars, 300 measured frames each; chart p50/p95/p99={}/{}/{} us, table={}/{}/{} us; controlled cancellation dispatch={} ms / actual worker release={} ms; power throttling {}; raw report {}",
-                    bench["first_screen_p95_ms"], bench["interaction_p95_us"],
-                    bench["kline_p50_us"], bench["kline_p95_us"], bench["kline_p99_us"], bench["table_scroll_p50_us"], bench["table_scroll_p95_us"], bench["table_scroll_p99_us"],
-                    bench["cancel_ui_latency_ms"], bench["cancel_backend_latency_ms"], bench["power_throttling"], bench_path.display()
+                    bench["first_screen_p95_ms"],
+                    bench["interaction_p95_us"],
+                    bench["kline_p50_us"],
+                    bench["kline_p95_us"],
+                    bench["kline_p99_us"],
+                    bench["table_scroll_p50_us"],
+                    bench["table_scroll_p95_us"],
+                    bench["table_scroll_p99_us"],
+                    bench["cancel_ui_latency_ms"],
+                    bench["cancel_backend_latency_ms"],
+                    bench["power_throttling"],
+                    bench_path.display()
                 ),
             });
         } else {
@@ -1186,31 +1031,18 @@ pub(super) fn run_verify_stage_m2(
         Ok(())
     }));
 
-    match execution {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => report
-            .errors
-            .push(format!("{}: {}", error.code, error.message)),
-        Err(payload) => report.errors.push(format!(
-            "gate panic: {}",
-            payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("non-string panic")
-        )),
-    }
+    record_execution_outcome(&mut report, execution);
 
     if let Err(error) = fs::remove_dir_all(&temp) {
         report
             .errors
             .push(format!("temporary cleanup failed: {error}"));
     }
-    report.temp_residual_dirs = usize::from(temp.exists());
-    report.temp_residual_dirs += owned_test_directories()
-        .map_err(|e| failure("temp_snapshot", e))?
-        .difference(&test_directories_before)
-        .count();
+    report.temp_residual_dirs = usize::from(temp.exists())
+        + owned_test_directories()
+            .map_err(|e| failure("temp_snapshot", e))?
+            .difference(&test_directories_before)
+            .count();
     if report.temp_residual_dirs > 0 {
         report
             .errors
@@ -1218,10 +1050,7 @@ pub(super) fn run_verify_stage_m2(
     }
     let after = directory_snapshot(&watched).map_err(|e| failure("path_snapshot", e))?;
     report.outside_temp_created_dirs = after.difference(&before).count();
-    let release_after = appdata
-        .as_ref()
-        .map(|p| p.join("delta"))
-        .map(|p| (p.exists(), p.metadata().and_then(|m| m.modified()).ok()));
+    let release_after = stamp_path(appdata.as_ref().map(|p| p.join("delta")));
     report.release_data_dir_touched = release_before != release_after;
     report.visible_window_count = count_visible_windows_for_current_process();
     report.window_details = observed_window_details();
@@ -1252,27 +1081,17 @@ pub(super) fn run_verify_stage_m2(
         .iter()
         .any(|case| case.tier == "required" && case.status == "not-run")
         || report.poc_results.iter().any(|poc| poc.status == "not-run");
-    report.overall_status = if failed {
-        "failed"
-    } else if required_not_run {
-        "not-run"
-    } else {
-        "passed"
-    }
-    .into();
-    let json = serde_json::to_string_pretty(&report).map_err(|e| failure("report", e))?;
     let name = if live_mode {
         "verify-stage-live-report.json"
     } else {
         "verify-stage-report.json"
     };
-    fs::write(reports.join(name), &json).map_err(|e| failure("report", e))?;
-    println!("{}", sanitize_terminal_output(&json));
-    Ok(if failed {
-        ExitCode::from(1)
-    } else {
-        ExitCode::SUCCESS
-    })
+    finalize_and_write_report(
+        &mut report,
+        &reports.join(name),
+        failed,
+        Some(required_not_run),
+    )
 }
 
 fn native_benchmark_passed(report: &Value) -> bool {

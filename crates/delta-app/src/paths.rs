@@ -310,14 +310,18 @@ pub fn ensure_writable_data_dir(data_dir: &Path) -> Result<(), PathResolutionErr
         reason: e.to_string(),
     })?;
 
-    let probe_path = data_dir.join(".write_probe.tmp");
+    let probe_path = data_dir.join(format!(
+        ".write_probe.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
     match OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .open(&probe_path)
     {
-        Ok(_) => {
+        Ok(file) => {
+            drop(file);
             let _ = fs::remove_file(&probe_path);
             Ok(())
         }
@@ -395,5 +399,40 @@ impl Drop for InstanceLock {
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
             let _ = UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_writable_data_dir_is_safe_under_concurrency_and_leaves_no_probe() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_probe_conc_{}", uuid::Uuid::new_v4()));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let dir = root.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..10 {
+                        ensure_writable_data_dir(&dir).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let leftover: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "unexpected leftover probe files: {leftover:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

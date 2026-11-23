@@ -286,15 +286,18 @@ pub fn send_control_request(
 ) -> Result<ControlReply, InstanceError> {
     #[cfg(windows)]
     {
-        let payload = serde_json::to_vec(request).map_err(|e| InstanceError::Io(e.to_string()))?;
-        let name = pipe_name.to_string();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(windows_pipe::exchange(&name, &payload));
-        });
-        let bytes = receiver
-            .recv_timeout(timeout)
-            .map_err(|_| InstanceError::Timeout(timeout))??;
+        let bytes = {
+            let payload =
+                serde_json::to_vec(request).map_err(|e| InstanceError::Io(e.to_string()))?;
+            let name = pipe_name.to_string();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(windows_pipe::exchange(&name, &payload, timeout));
+            });
+            receiver
+                .recv_timeout(timeout + Duration::from_millis(250))
+                .map_err(|_| InstanceError::Timeout(timeout))??
+        };
         serde_json::from_slice(&bytes).map_err(|e| InstanceError::Io(e.to_string()))
     }
     #[cfg(not(windows))]
@@ -307,9 +310,11 @@ pub fn send_control_request(
 #[cfg(windows)]
 mod windows_pipe {
     use super::*;
+    use std::time::Instant;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
-        INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_MORE_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+        HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -322,6 +327,7 @@ mod windows_pipe {
     };
 
     const BUFFER: u32 = 8192;
+    const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 
     pub(super) struct PipeHandle(pub HANDLE);
     unsafe impl Send for PipeHandle {}
@@ -364,7 +370,7 @@ mod windows_pipe {
 
     fn user_sid_of(pid: u32) -> Option<Vec<u8>> {
         use windows_sys::Win32::Security::{
-            GetLengthSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
+            GetLengthSid, GetTokenInformation, IsValidSid, TokenUser, TOKEN_QUERY, TOKEN_USER,
         };
         use windows_sys::Win32::System::Threading::{
             OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -377,24 +383,44 @@ mod windows_pipe {
             let mut token: HANDLE = std::ptr::null_mut();
             let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token);
             CloseHandle(process);
-            if opened == 0 {
+            if opened == 0 || token.is_null() {
                 return None;
             }
-            let mut buffer = vec![0u8; 256];
+            // Allocate `usize`-aligned words (`align_of::<usize>() >= align_of::<TOKEN_USER>()`)
+            // and grow on `ERROR_INSUFFICIENT_BUFFER` (`XCR-U01`).
+            let word_size = std::mem::size_of::<usize>();
+            let mut words = vec![0usize; 32];
             let mut needed = 0u32;
-            let ok = GetTokenInformation(
+            let mut ok = GetTokenInformation(
                 token,
                 TokenUser,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
+                words.as_mut_ptr().cast(),
+                (words.len() * word_size) as u32,
                 &mut needed,
             );
+            if ok == 0 && GetLastError() == ERROR_INSUFFICIENT_BUFFER && needed > 0 {
+                let required_words = (needed as usize).div_ceil(word_size);
+                words.resize(required_words, 0usize);
+                ok = GetTokenInformation(
+                    token,
+                    TokenUser,
+                    words.as_mut_ptr().cast(),
+                    (words.len() * word_size) as u32,
+                    &mut needed,
+                );
+            }
             CloseHandle(token);
-            if ok == 0 {
+            if ok == 0 || (needed as usize) < std::mem::size_of::<TOKEN_USER>() {
                 return None;
             }
-            let user = &*(buffer.as_ptr() as *const TOKEN_USER);
+            let user = std::ptr::read_unaligned(words.as_ptr() as *const TOKEN_USER);
+            if user.User.Sid.is_null() || IsValidSid(user.User.Sid) == 0 {
+                return None;
+            }
             let length = GetLengthSid(user.User.Sid) as usize;
+            if length == 0 {
+                return None;
+            }
             Some(std::slice::from_raw_parts(user.User.Sid as *const u8, length).to_vec())
         }
     }
@@ -412,35 +438,55 @@ mod windows_pipe {
     }
 
     fn read_message(pipe: HANDLE) -> Option<Vec<u8>> {
-        let mut buffer = vec![0u8; BUFFER as usize];
-        let mut read = 0u32;
-        let ok = unsafe {
-            ReadFile(
-                pipe,
-                buffer.as_mut_ptr(),
-                BUFFER,
-                &mut read,
-                std::ptr::null_mut(),
-            )
-        };
-        (ok != 0).then(|| {
-            buffer.truncate(read as usize);
-            buffer
-        })
+        let mut out = Vec::new();
+        let mut chunk = vec![0u8; BUFFER as usize];
+        loop {
+            let mut read = 0u32;
+            let ok = unsafe {
+                ReadFile(
+                    pipe,
+                    chunk.as_mut_ptr(),
+                    BUFFER,
+                    &mut read,
+                    std::ptr::null_mut(),
+                )
+            };
+            let more = ok == 0 && unsafe { GetLastError() } == ERROR_MORE_DATA;
+            if ok == 0 && !more {
+                return None;
+            }
+            let read_len = read as usize;
+            if out.len().saturating_add(read_len) > MAX_MESSAGE_BYTES {
+                return None;
+            }
+            out.extend_from_slice(&chunk[..read_len]);
+            if !more {
+                return Some(out);
+            }
+        }
     }
 
     fn write_message(pipe: HANDLE, bytes: &[u8]) -> bool {
+        let Ok(len) = u32::try_from(bytes.len()) else {
+            return false;
+        };
         let mut written = 0u32;
         let ok = unsafe {
             WriteFile(
                 pipe,
                 bytes.as_ptr(),
-                bytes.len() as u32,
+                len,
                 &mut written,
                 std::ptr::null_mut(),
             )
         };
-        ok != 0 && written as usize == bytes.len() && unsafe { FlushFileBuffers(pipe) } != 0
+        ok != 0 && written == len && unsafe { FlushFileBuffers(pipe) } != 0
+    }
+
+    fn rejected_reply(identity: &str, reason: impl Into<String>) -> ControlReply {
+        let mut reply = ControlReply::new(ControlStatus::Rejected, reason);
+        reply.identity = identity.to_string();
+        reply
     }
 
     /// Serve one pipe instance for the whole app lifetime: reusing the handle avoids a window
@@ -467,17 +513,14 @@ mod windows_pipe {
                 continue;
             }
             let reply = if !client_is_same_user_session(pipe.0) {
-                ControlReply::new(
-                    ControlStatus::Rejected,
-                    "client is outside this user session",
-                )
+                rejected_reply(identity, "client is outside this user session")
             } else {
                 match read_message(pipe.0)
                     .and_then(|bytes| serde_json::from_slice::<ControlRequest>(&bytes).ok())
                 {
-                    None => ControlReply::new(ControlStatus::Rejected, "malformed control request"),
-                    Some(request) if request.identity != identity => ControlReply::new(
-                        ControlStatus::Rejected,
+                    None => rejected_reply(identity, "malformed control request"),
+                    Some(request) if request.identity != identity => rejected_reply(
+                        identity,
                         format!(
                             "request for {} sent to the {identity} control pipe",
                             request.identity
@@ -495,37 +538,54 @@ mod windows_pipe {
         }
     }
 
-    fn open_client(name: &str) -> Result<PipeHandle, InstanceError> {
+    fn open_client(name: &str, timeout: Duration) -> Result<PipeHandle, InstanceError> {
         let wide = wide(name);
-        if unsafe { WaitNamedPipeW(wide.as_ptr(), 5_000) } == 0 {
-            return Err(InstanceError::NotRunning(name.into()));
+        let deadline = Instant::now() + timeout;
+        loop {
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                let mode = PIPE_READMODE_MESSAGE;
+                unsafe {
+                    SetNamedPipeHandleState(handle, &mode, std::ptr::null(), std::ptr::null());
+                }
+                return Ok(PipeHandle(handle));
+            }
+            let code = unsafe { GetLastError() };
+            if code == ERROR_FILE_NOT_FOUND {
+                return Err(InstanceError::NotRunning(name.into()));
+            }
+            if code != ERROR_PIPE_BUSY {
+                return Err(InstanceError::Io(format!("{name}: {}", last_error())));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(InstanceError::Timeout(timeout));
+            }
+            let wait_ms = (remaining.as_millis() as u32).clamp(1, 500);
+            if unsafe { WaitNamedPipeW(wide.as_ptr(), wait_ms) } == 0
+                && unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND
+            {
+                return Err(InstanceError::NotRunning(name.into()));
+            }
         }
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                std::ptr::null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(InstanceError::NotRunning(format!(
-                "{name}: {}",
-                last_error()
-            )));
-        }
-        let mode = PIPE_READMODE_MESSAGE;
-        unsafe {
-            SetNamedPipeHandleState(handle, &mode, std::ptr::null(), std::ptr::null());
-        }
-        Ok(PipeHandle(handle))
     }
 
-    pub(super) fn exchange(name: &str, payload: &[u8]) -> Result<Vec<u8>, InstanceError> {
-        let pipe = open_client(name)?;
+    pub(super) fn exchange(
+        name: &str,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, InstanceError> {
+        let pipe = open_client(name, timeout)?;
         if !write_message(pipe.0, payload) {
             return Err(InstanceError::Io(last_error()));
         }
@@ -616,6 +676,7 @@ mod tests {
         );
         let rejected = request("delta-dev-test", ControlCommand::QuitForUpdate);
         assert_eq!(rejected.status, ControlStatus::Rejected);
+        assert_eq!(rejected.identity, "delta-test");
         busy.store(false, Ordering::SeqCst);
         assert_eq!(
             request("delta-test", ControlCommand::QuitForUpdate).status,
@@ -639,6 +700,47 @@ mod tests {
                     command: ControlCommand::Focus
                 },
                 Duration::from_secs(8)
+            ),
+            Err(InstanceError::NotRunning(_))
+        ));
+    }
+
+    #[test]
+    fn control_pipe_handles_multi_chunk_replies_and_nonexistent_not_running() {
+        let unique = uuid::Uuid::new_v4().simple().to_string();
+        let pipe = format!(r"\\.\pipe\delta-unit-{unique}-large");
+        let large_detail = "x".repeat(16_384);
+        let detail_clone = large_detail.clone();
+        let handler: ControlHandler = Arc::new(move |_| {
+            let mut reply = ControlReply::new(ControlStatus::Ok, detail_clone.clone());
+            reply.identity = "delta-test".into();
+            reply
+        });
+        let server =
+            ControlServer::start_named(pipe.clone(), "delta-test".into(), handler).unwrap();
+        let reply = send_control_request(
+            &pipe,
+            &ControlRequest {
+                identity: "delta-test".into(),
+                command: ControlCommand::Focus,
+            },
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(reply.status, ControlStatus::Ok);
+        assert_eq!(reply.reason.len(), large_detail.len());
+        assert_eq!(reply.reason, large_detail);
+        drop(server);
+
+        let missing = format!(r"\\.\pipe\delta-unit-{unique}-missing");
+        assert!(matches!(
+            send_control_request(
+                &missing,
+                &ControlRequest {
+                    identity: "delta-test".into(),
+                    command: ControlCommand::Focus,
+                },
+                Duration::from_millis(50),
             ),
             Err(InstanceError::NotRunning(_))
         ));

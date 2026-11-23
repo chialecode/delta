@@ -327,14 +327,65 @@ pub const VALUATION_ONLY_QUALITY_KINDS: &[&str] = &[
 ];
 
 pub fn quality_kind_impact(kind: &str) -> QualityImpact {
-    let lower = kind.trim().to_ascii_lowercase();
-    if VALUATION_ONLY_QUALITY_KINDS.contains(&lower.as_str()) {
+    let trimmed = kind.trim();
+    if VALUATION_ONLY_QUALITY_KINDS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(trimmed))
+    {
         QualityImpact::ValuationOnly
-    } else if SOURCE_NOTE_QUALITY_KINDS.contains(&lower.as_str()) {
+    } else if SOURCE_NOTE_QUALITY_KINDS
+        .iter()
+        .any(|k| k.eq_ignore_ascii_case(trimmed))
+    {
         QualityImpact::SourceNote
     } else {
         QualityImpact::AffectsPrice
     }
+}
+
+pub(crate) fn corporate_action_source_priority(source: &str) -> u8 {
+    match source {
+        "tiingo" => 3,
+        "yahoo" => 2,
+        _ => 1,
+    }
+}
+
+/// Deterministically deduplicate corporate actions by `(instrument_id, ex_date, action_type)`,
+/// keeping the highest `(factor_version, source_priority, id)` record.
+pub(crate) fn deduplicate_corporate_actions<'a>(
+    actions: &'a [CorporateActionRecord],
+) -> Vec<&'a CorporateActionRecord> {
+    let mut dedup: std::collections::BTreeMap<(String, NaiveDate, u8), &'a CorporateActionRecord> =
+        std::collections::BTreeMap::new();
+    for action in actions {
+        let type_disc = match action.action_type {
+            CorporateActionType::Split => 0,
+            CorporateActionType::CashDividend => 1,
+        };
+        let key = (action.instrument_id.clone(), action.ex_date, type_disc);
+        match dedup.get(&key) {
+            Some(existing) => {
+                let new_rank = (
+                    action.factor_version,
+                    corporate_action_source_priority(&action.source),
+                    &action.id,
+                );
+                let old_rank = (
+                    existing.factor_version,
+                    corporate_action_source_priority(&existing.source),
+                    &existing.id,
+                );
+                if new_rank > old_rank {
+                    dedup.insert(key, action);
+                }
+            }
+            None => {
+                dedup.insert(key, action);
+            }
+        }
+    }
+    dedup.into_values().collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -43,7 +43,7 @@ cargo run -p delta-cli -- explain --as-of 2020-09-02
 
 **SmartScreen 提示**：安装包没有 Authenticode 代码签名（`Q-04`），Windows 可能显示“Windows 已保护你的电脑 / 未知发布者”。只在文件来自 DELTA 官方 GitHub Release 页面时，点“更多信息 → 仍要运行”。正式版的在线更新另用内置公钥校验 Ed25519 签名，签名、版本或通道不符的更新包一律不安装；这一点与 SmartScreen 提示无关。
 
-正式版启动时最多每 24 小时检查一次 GitHub Releases（设置页可关闭自动检查或手动检查），下载完成后顶部工具栏显示“更新就绪”，由你确认安装；安装前自动做一致性备份，备份失败则不安装。开发版不联网检查，开发者用 `cargo run -p delta-cli -- package-build` 生成 `delta-dev` 安装包（固定输出到仓库根的 `dist/delta-dev-setup-<版本>-x64.exe`，每个身份只保留最新一个；构建日志在 `.local/reports/m3/packages/`），再用 `cargo run -p delta-cli -- install-dev` 本机更新（运行中的开发版会被请求保存退出，安装后按原参数重启）。M2 便携 ZIP 安装会被新安装程序自动迁移：只删除哈希未变的清单文件，修改过的文件改名为 `*.m2-modified` 保留，未知文件原样保留并写入安装日志。`package-portable-build`、`package-install`、`package-uninstall` 仅供测试与迁移诊断。
+正式版启动时最多每 24 小时检查一次 GitHub Releases（设置页可关闭自动检查或手动检查），下载完成后顶部工具栏显示“更新就绪”，由你确认安装；安装前自动做一致性备份，备份失败则不安装。开发版不联网检查，开发者用 `cargo run -p delta-cli -- package-build` 生成 `delta-dev` 安装包（固定输出到仓库根的 `dist/delta-dev-setup-<版本>-x64.exe`，每个身份只保留最新一个；构建日志在 `.local/reports/m3/packages/`），再用 `cargo run -p delta-cli -- install-dev` 本机更新（运行中的开发版会被请求保存退出；安装后不论原来是否在运行，都以最小化、不抢焦点的方式重新打开，D-36）。M2 便携 ZIP 安装会被新安装程序自动迁移：只删除哈希未变的清单文件，修改过的文件改名为 `*.m2-modified` 保留，未知文件原样保留并写入安装日志。`package-portable-build`、`package-install`、`package-uninstall` 仅供测试与迁移诊断。
 
 ## 文档导航
 
