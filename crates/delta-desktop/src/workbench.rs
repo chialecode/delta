@@ -43,7 +43,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    div, px, rgb, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
     WindowOptions,
@@ -2765,7 +2765,7 @@ impl Render for DeltaWorkbench {
                                     .items_center()
                                     .justify_center()
                                     .rounded(px(5.))
-                                    .bg(cx.theme().foreground)
+                                    .bg(rgb(0x3C4043))
                                     .text_color(cx.theme().background)
                                     .text_sm()
                                     .font_bold()
@@ -2985,6 +2985,9 @@ impl DeltaWorkbench {
             && self.pending_exit.is_none()
         {
             self.pending_exit = Some(PendingExit::new(ExitReason::ApplyUpdate));
+        }
+        if options().is_none_or(|options| options.allow_focus) {
+            crate::tray::sync_window_frame_for_appearance(window.appearance());
         }
         if crate::tray::is_active() {
             let active_work = {
