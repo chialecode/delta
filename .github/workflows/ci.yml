@@ -7,7 +7,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # Cancel superseded PR runs only; every push to main finishes (and seeds the cache).
+  # Cancel superseded PR runs only; a running main run is never cancelled (GitHub may still
+  # replace a queued main run with a newer one, so not every push to main gets its own run).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Required by the main-protection ruleset; no path filters so every PR reports it.
