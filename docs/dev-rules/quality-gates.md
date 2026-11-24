@@ -30,7 +30,7 @@
 
 <a id="dependencies"></a>**依赖盘点（D-35、D-38）。** [每周维护](development-workflow.md#weekly)时做一次，结果写在维护 PR 里：
 
-1. **还开着的 Dependabot PR**：Cargo 兼容更新与 `rust-toolchain.toml` 小版本在本机拉取该分支跑通 `python scripts/quick_gate.py`（改了 `Cargo.lock` 或工具链时覆盖整个工作区；CI 目前不构建 Rust）且 CI 通过后按低风险合并；含不兼容（主版本）变化的，或 GitHub Actions 的更新（改的是 `.github/workflows/`），按[高风险](development-workflow.md#high-risk)加 `risk:high` 等用户合并；不采用的写明原因关闭。安全修复随时尽快处理，风险分级不变。
+1. **还开着的 Dependabot PR**：Cargo 兼容更新与 `rust-toolchain.toml` 小版本在本机拉取该分支跑通 `python scripts/quick_gate.py`（改了 `Cargo.lock` 或工具链时覆盖整个工作区）且 CI `repository-quality`（含 Rust 格式、Clippy 与全工作区测试）通过后按低风险合并；含不兼容（主版本）变化的，或 GitHub Actions 的更新（改的是 `.github/workflows/`），按[高风险](development-workflow.md#high-risk)加 `risk:high` 等用户合并；不采用的写明原因关闭。安全修复随时尽快处理，风险分级不变。
 2. **盘点** `python scripts/deps.py`：列出工作区直接依赖的 crates.io 包与 `rust-toolchain.toml` 满 7 天（与 Dependabot 冷却期相同）的新版本，分兼容（`cargo update -p` 可取）与不兼容（要改 `Cargo.toml`）。兼容的默认全部升级；不兼容的单独升级并跑回归，失败回退，在维护 PR 写明尝试的版本、失败命令与复查条件。工具链升级同时核对 `clippy`。
 3. **漏洞** `python scripts/deps.py --audit`：用 OSV（含 RustSec 数据库）查 `Cargo.lock` 里的全部 crates.io 包。有修复版本的先升级；确实无法修复或不适用的登记到 `scripts/deps-exceptions.json`，写明原因和复查日期 `reviewBy`，同时写进维护 PR。RustSec 的“停止维护”“不健全”类告警只列出，不算失败。
 4. **发布前复跑**：发布正式版、跑整套 `verify-stage` 时一并复跑盘点和 `--audit`；`--audit` 退出码 1（有未登记的漏洞或过期例外）时不发布。新版本没升只在 PR 里说明。

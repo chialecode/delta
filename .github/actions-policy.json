@@ -8,6 +8,7 @@
     "github_owned_allowed": false,
     "verified_allowed": false,
     "patterns_allowed": [
+      "actions/cache@*",
       "actions/checkout@*"
     ]
   },

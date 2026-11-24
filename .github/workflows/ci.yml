@@ -5,12 +5,61 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded PR runs only; a running main run is never cancelled (GitHub may still
+  # replace a queued main run with a newer one, so not every push to main gets its own run).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Required by the main-protection ruleset; no path filters so every PR reports it.
+  # Runs the same checks as `python scripts/quick_gate.py --all` (docs, whitespace, script unit
+  # tests, fmt, clippy, workspace tests), on Windows like the product.
   repository-quality:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      PYTHONIOENCODING: utf-8
+    # pwsh only reports the last command of a multi-line step; bash runs with -eo pipefail.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Repository Actions allowlist only permits actions/checkout (.github/actions-policy.json);
-      # check_docs.py is dependency-free, so use the runner's preinstalled python3.
-      - run: python3 --version && python3 scripts/check_docs.py
+        with:
+          persist-credentials: false
+      # check_docs.py is dependency-free; the runner's preinstalled Python is enough.
+      - name: Documentation and whitespace
+        run: |
+          python --version
+          python -B scripts/check_docs.py
+          git diff --check
+      - name: Script unit tests
+        run: python -B -m unittest discover -s scripts -p "test_*.py"
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          cargo --version
+          cargo clippy --version
+      # Keyed on the toolchain and lockfile; fallbacks stay within the same toolchain so an
+      # upgrade starts clean instead of piling two toolchains' output into one cache entry.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Tests use temporary data roots and offline fixtures; live data and UI smoke are opt-in and never run here.
+      - name: cargo test
+        run: cargo test --workspace --locked
