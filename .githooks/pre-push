@@ -1,10 +1,11 @@
 #!/bin/sh
 # Local pre-push gate. Enable once per clone: git config --local core.hooksPath .githooks
-# Runs the everyday quick gate (docs, whitespace, fmt, clippy and tests of changed crates).
+# Runs the quick gate with --all: at push time the changes are already committed, so the
+# "changed since HEAD" selection would skip clippy and tests; --all covers the whole workspace.
 # Skip once with `git push --no-verify` and say why in the PR; a hook never replaces
 # the remote `main-protection` ruleset and its required `repository-quality` check.
 set -eu
 root=$(git rev-parse --show-toplevel)
 py=python
 command -v "$py" >/dev/null 2>&1 || py=python3
-"$py" -B "$root/scripts/quick_gate.py"
+"$py" -B "$root/scripts/quick_gate.py" --all

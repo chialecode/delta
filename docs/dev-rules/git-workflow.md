@@ -4,7 +4,7 @@
 
 1. 第一提交 `8329f638536e4f303764045a2f10a2c1ab31fcd3`（空 `README.md`）为不可变基础提交，**严禁 amend 或改写其 SHA**。
 2. 按用户 2026-11-07 指示（[D-20](../decisions/confirmed-decisions.md)），项目已从文档治理基线重建；远端 `chialecode/delta` 同日重建，旧仓库改名保留。远端重建或历史改写后，先核对本地 `main` 与 `origin/main` 是否分叉再切换；分叉的旧提交先用 `git bundle` 备份到 `.local/` 再对齐。
-3. 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`，并执行一次 `git config --local core.hooksPath .githooks` 启用 [`pre-push`](../../.githooks/pre-push)：每次 `git push` 前自动跑 `python scripts/quick_gate.py`。确需跳过时用 `git push --no-verify`，并在 PR 里写明原因；hook 不代替远端规则集。
+3. 本仓设置 `core.autocrlf=false`、`pull.ff=only`、`fetch.prune=true`，并执行一次 `git config --local core.hooksPath .githooks` 启用 [`pre-push`](../../.githooks/pre-push)：每次 `git push` 前自动跑 `python scripts/quick_gate.py --all`（push 时改动都已提交，按“自上次提交以来的改动”挑 crate 会跳过 Clippy 与测试，所以覆盖整个工作区）。确需跳过时用 `git push --no-verify`，并在 PR 里写明原因；hook 不代替远端规则集。
 
 <a id="dco"></a>
 
