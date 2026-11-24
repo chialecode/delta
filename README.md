@@ -12,7 +12,7 @@ DELTA = **Delta + Evaluation + Ledger + Training + Analyzer**。
 
 - **M1（已完成，PR #1 合并）**：已建立 `delta-core`、`delta-data`、`delta-app`、`delta-cli`。提供欧易 OKX / 币安公共现货日线与归档、Yahoo / 东方财富美股日线核验、Frankfurter 法币及 Coinbase / Bitstamp / Kraken 稳定币汇率、`XNYS` / `XNAS` / `CRYPTO_24_7` 日历；账本支持富途、OKX、币安、IBKR Flex 与通用模板、资金流水、FIFO、事件 FX 固定、不可变数据版本、报告、导出和备份恢复。实际验证与未完成边界见 [M1 阶段报告](docs/evidence/2026-11-08-m1-stage-report.md)。
 - **M2（已完成，PR #2 合并）**：按 [D-21](docs/decisions/confirmed-decisions.md) 与 [ADR-0003](docs/decisions/0003-first-round-stack.md)，在 M1 数据底座之上新增 `delta-model` 与 `delta-desktop`（二进制 `delta`），采用最新 **GPUI Kit（`=0.9.0`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` 面板体系**及自建 `MetricCard`、`KlineViewport` / `KlineChartView`、`StatusBanner` 构建六页工作台，包含实际输入/后台操作、范围与期间隔离、`schema 4` 笔记/附件/FTS5 搜索、期间损益分解与现金换汇（`m2-ledger-1`）、双协议只读 AI 复盘和真实两通道静态 CRT 包。M2 全门禁与 M1 回归通过；实际证据和未测范围见阶段报告，产品验收未完成。
-- **M3（已完成，PR #3 合并；首个正式版 v0.1.1 已发布）**：按 [D-31](docs/decisions/confirmed-decisions.md) 补齐 Windows 安装体验：正式版 `delta` 与开发版 `delta-dev` 的 Inno Setup 7.1.x 按用户安装程序（无需管理员、开始菜单、“应用和功能”卸载、可并存、升级与卸载保留数据）、应用图标与版本资源、单实例与本通道控制管道、开发版 `install-dev` 本机更新，以及正式版基于 GitHub Releases 与 Ed25519 签名的自动更新（检查、断点续传、验签、拒绝降级、更新前一致性备份、静默安装后重启）。门禁只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；首个正式版 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 已于 2026-11-12 发布，发布资产用内置公钥验证通过。安装包未做 Authenticode 代码签名，见下文“安装”。
+- **M3（已完成，PR #3 合并；首个正式版 v0.1.1 已发布）**：按 [D-31](docs/decisions/confirmed-decisions.md) 补齐 Windows 安装体验：正式版 `delta` 与开发版 `delta-dev` 的按用户安装程序（无需管理员、开始菜单、“应用和功能”卸载、可并存、升级与卸载保留数据；M3 时为 Inno Setup，2026-11-25 起为 NSIS 3.13，见 [D-39](docs/decisions/confirmed-decisions.md#d-39)）、应用图标与版本资源、单实例与本通道控制管道、开发版 `install-dev` 本机更新，以及正式版基于 GitHub Releases 与 Ed25519 签名的自动更新（检查、断点续传、验签、拒绝降级、更新前一致性备份、静默安装后重启）。门禁只真实安装测试身份 `delta-test` / `delta-dev-test`，在线更新以 `127.0.0.1` 回环源演练；首个正式版 [v0.1.1](https://github.com/chialecode/delta/releases/tag/v0.1.1) 已于 2026-11-12 发布，发布资产用内置公钥验证通过。安装包未做 Authenticode 代码签名，见下文“安装”。
 - **M4（已完成，PR #6 合并）**：K 线训练——随机历史片段与隐藏名称/日期、只经回放时钟取数、现货模拟委托（市价/限价/止损/OCO）与可配置费用、每步原子保存与确定性重放、训练报告（含 MAE/MFE 与计划执行率）以及结束后的 AI 复盘；模拟数据不进入真实账本。
 - **M5（已完成，PR #9 合并）**：训练工作台——默认比特币训练数据（自动准备 BTC/USDT 全历史日线、4H、1H）、跨局练习账户与账户分析、连续播放、图上成交标记与挂单线拖动改价、画线下单与绘图、快捷买卖与单次撤销；美股/ETF 与加密现货共用一套，不做期货。
 
@@ -66,7 +66,7 @@ cargo run -p delta-cli --locked -- verify-stage --stage M2 --plan-version 1.0 --
 cargo run -p delta-cli --locked -- verify-stage --stage M3 --plan-version 1.0 --installer --ui-smoke
 ```
 
-门禁实际执行文档、diff、格式、Clippy、工作区测试、依赖许可、打包与隔离检查，M1 回归还执行百万行 SQLite POC；日志和源码指纹分别保存在 `.local/reports/m1/`、`m2/`、`m3/`。M3 的 `--installer` 需要本机安装 Inno Setup 7.1.x（`winget install --id JRSoftware.InnoSetup.7 --version 7.1.1 --scope user`），构建测试身份安装包并真实静默安装/升级/卸载 `delta-test` 与 `delta-dev-test`，从不触碰本机的 `delta` / `delta-dev`；M3 要求先在同一源码指纹下通过 M1、M2 回归。M2 的两个 UI 开关运行隐藏原生窗口、首屏/导航与 100k 图表/表格基准；缺开关时相应结果与 overall 保持 not-run。可显式追加 `--live` 单列公共端点在线探针；本轮未运行，不使用私人样本或私有凭据。静音与观测范围见 [质量门禁](docs/dev-rules/quality-gates.md)。
+门禁实际执行文档、diff、格式、Clippy、工作区测试、依赖许可、打包与隔离检查，M1 回归还执行百万行 SQLite POC；日志和源码指纹分别保存在 `.local/reports/m1/`、`m2/`、`m3/`。M3 的 `--installer` 需要固定版本的 NSIS 3.13（`python -B scripts/fetch_nsis.py` 下载并核对 SHA-256，放到 Git 忽略的 `.local/tools/`），构建测试身份安装包并真实静默安装/升级/卸载 `delta-test` 与 `delta-dev-test`，从不触碰本机的 `delta` / `delta-dev`；M3 要求先在同一源码指纹下通过 M1、M2 回归。M2 的两个 UI 开关运行隐藏原生窗口、首屏/导航与 100k 图表/表格基准；缺开关时相应结果与 overall 保持 not-run。可显式追加 `--live` 单列公共端点在线探针；本轮未运行，不使用私人样本或私有凭据。静音与观测范围见 [质量门禁](docs/dev-rules/quality-gates.md)。
 
 ## 许可
 

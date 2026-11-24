@@ -190,10 +190,10 @@ fn gate_owned_image(image: &str) -> bool {
     name.starts_with("delta-test")
         || name.starts_with("delta-dev-test")
         || name.starts_with("delta-migrate-helper")
-        || name.starts_with("unins")
-        || name.starts_with("_unins")
-        || name.starts_with("_iu")
-        || name.starts_with("iscc")
+        // The NSIS uninstaller and the copy of it that runs from %TEMP% (`Un_A.exe`).
+        || name == "uninstall.exe"
+        || name.starts_with("un_")
+        || name.starts_with("makensis")
         || name.contains("-setup-")
 }
 
@@ -865,47 +865,46 @@ fn mechanical_gates(gate: &mut Gate, jobs: usize) -> Result<(), ErrorEnvelope> {
 fn offline_contracts(gate: &mut Gate) {
     let started = Instant::now();
     let outcome = (|| -> Result<String, ErrorEnvelope> {
-        let template = read_lossy(&gate.root.join("crates/delta-cli/installer/delta.iss"));
+        let template = read_lossy(&gate.root.join(installer::NSIS_TEMPLATE));
         for directive in [
-            "PrivilegesRequired=lowest",
-            "ArchitecturesAllowed=x64compatible",
-            "DefaultDirName={localappdata}\\Programs\\{#Identity}",
-            "AppMutex={#MutexName}",
-            "CloseApplications=no",
-            "RestartApplications=no",
-            "ShowLanguageDialog=no",
-            "EncodeVer(7, 1, 0)",
-            "compiler:Languages\\ChineseSimplified.isl",
-            "Name: \"startmenuicon\"",
-            "Name: \"desktopicon\"",
-            "Check: WantStartMenuIcon",
-            "Check: WantDesktopIcon",
-            "Result := FirstInstall or FileExists(StartMenuIconPath)",
-            "Result := FirstInstall or RecreateDesktopIconOnUpdate or FileExists(DesktopIconPath)",
-            "#ifndef DesktopOnUpdate",
+            "RequestExecutionLevel user",
+            "${RunningX64}",
+            "!if \"${NSIS_VERSION}\" != \"v3.13\"",
+            "StrCpy $INSTDIR \"$LOCALAPPDATA\\Programs\\${DELTA_IDENTITY}\"",
+            "OpenMutexW(i 0x00100000, i 0, w \"${DELTA_MUTEX}\")",
+            "CreateMutexW(p 0, i 0, w \"${DELTA_SETUP_MUTEX}\")",
+            "control quit-for-update --identity ${DELTA_IDENTITY}",
             "__migrate-portable",
-            "control quit-for-update",
+            "!insertmacro MUI_LANGUAGE \"SimpChinese\"",
+            "SetCompressor zlib",
+            "Section \"开始菜单快捷方式\" SecStartMenu",
+            "Section \"桌面快捷方式\" SecDesktop",
+            "!if \"${DELTA_DESKTOP_ON_UPDATE}\" == \"1\"",
+            "Call DeltaSetShortcutAumid",
+            "Uninstall\\${DELTA_APP_ID}",
+            "!insertmacro DELTA_REMOVE_INSTALLED_FILES",
+            "\"/RELAUNCH\"",
+            "--restore-args",
         ] {
             ensure(
                 template.contains(directive),
-                format!("delta.iss lacks {directive}"),
+                format!("delta.nsi lacks {directive}"),
             )?;
         }
+        // Never delete application data or documents, never force-close, never LZMA (CPL-1.0).
         for forbidden in [
-            "[UninstallDelete]",
-            "{userappdata}",
-            "{userdocs}",
+            "$APPDATA",
+            "$DOCUMENTS",
+            "RMDir /r",
             "taskkill",
+            "TerminateProcess",
+            "lzma",
         ] {
             ensure(
                 !template.contains(forbidden),
-                format!("delta.iss must not contain {forbidden}"),
+                format!("delta.nsi must not contain {forbidden}"),
             )?;
         }
-        ensure(
-            template.is_ascii(),
-            "delta.iss must stay ASCII (wizard text comes from the .isl files)",
-        )?;
         let key: Value =
             serde_json::from_str(update::RELEASE_KEY_JSON).map_err(|e| failure("M3_CHECK", e))?;
         let embedded = key["public_key_hex"].as_str().unwrap_or_default();
@@ -938,7 +937,7 @@ fn offline_contracts(gate: &mut Gate) {
             "identity values are not distinct",
         )?;
         Ok(format!(
-            "delta.iss directives present, no data deletion; {key_state}; four identities have distinct AppId, mutex, pipe, executable and AUMID"
+            "delta.nsi directives present, no data deletion; {key_state}; four identities have distinct app id, mutex, pipe, executable and AUMID"
         ))
     })();
     gate.record("M3-G-06", "M3-W02,M3-W04", started, outcome);
@@ -1025,7 +1024,7 @@ fn installer_cases(gate: &mut Gate) {
     // Preflight: leftovers of an earlier run are removed; a running test app stops the gate.
     if let Err(error) = preflight(gate) {
         blocked(gate, &done, &error.message);
-        poc(gate, "M3-K01", "Inno per-user install", true, false);
+        poc(gate, "M3-K01", "NSIS per-user install", true, false);
         poc(gate, "M3-K02", "AppMutex and control pipe", true, false);
         poc(gate, "M3-K03", "Ed25519 and loopback update", true, false);
         return;
@@ -1042,7 +1041,7 @@ fn installer_cases(gate: &mut Gate) {
                 &done,
                 &format!("package build failed: {}", error.message),
             );
-            poc(gate, "M3-K01", "Inno per-user install", true, false);
+            poc(gate, "M3-K01", "NSIS per-user install", true, false);
             poc(gate, "M3-K02", "AppMutex and control pipe", true, false);
             poc(gate, "M3-K03", "Ed25519 and loopback update", true, false);
             return;
@@ -1056,7 +1055,7 @@ fn installer_cases(gate: &mut Gate) {
     done.insert("M3-A-05");
     if !ok05 {
         blocked(gate, &done, "M3-A-05 failed");
-        poc(gate, "M3-K01", "Inno per-user install", true, false);
+        poc(gate, "M3-K01", "NSIS per-user install", true, false);
         poc(gate, "M3-K02", "AppMutex and control pipe", true, false);
         poc(gate, "M3-K03", "Ed25519 and loopback update", true, false);
         return;
@@ -1069,7 +1068,7 @@ fn installer_cases(gate: &mut Gate) {
         gate.record("M3-A-03", "M3-W02", started_a03, Err(error));
         done.insert("M3-A-03");
         blocked(gate, &done, "M3-A-03 failed");
-        poc(gate, "M3-K01", "Inno per-user install", true, false);
+        poc(gate, "M3-K01", "NSIS per-user install", true, false);
         poc(gate, "M3-K02", "AppMutex and control pipe", true, false);
         poc(gate, "M3-K03", "Ed25519 and loopback update", true, false);
         return;
@@ -1121,7 +1120,7 @@ fn installer_cases(gate: &mut Gate) {
         a03.map(|e| format!("{e}; packages built in {build_ms} ms")),
     );
     done.insert("M3-A-03");
-    poc(gate, "M3-K01", "Inno per-user install", true, ok03 && ok05);
+    poc(gate, "M3-K01", "NSIS per-user install", true, ok03 && ok05);
     poc(gate, "M3-K02", "AppMutex and control pipe", true, ok04);
     poc(
         gate,
@@ -1133,7 +1132,7 @@ fn installer_cases(gate: &mut Gate) {
 }
 
 fn preflight(gate: &mut Gate) -> Result<(), ErrorEnvelope> {
-    installer::find_iscc()?;
+    installer::find_makensis(&gate.root)?;
     for identity in TEST_IDENTITIES {
         ensure(
             !delta_app::identity_is_running(identity),
@@ -1342,15 +1341,17 @@ fn case_a03_install(gate: &mut Gate, packages: &Packages) -> Result<String, Erro
             Path::new(location.trim_end_matches('\\')) == directory,
             format!("{} InstallLocation {location}", identity.name()),
         )?;
-        let inno = installed_value(identity, "Inno Setup: Setup Version").unwrap_or_default();
+        let quiet = installed_value(identity, "QuietUninstallString").unwrap_or_default();
         ensure(
-            inno.starts_with("7.1."),
-            format!("{} built with Inno Setup {inno}", identity.name()),
+            quiet == format!("\"{}\" /S", directory.join("Uninstall.exe").display()),
+            format!("{} QuietUninstallString {quiet}", identity.name()),
         )?;
-        ensure(
-            installed_value(identity, "QuietUninstallString").is_some(),
-            "QuietUninstallString missing",
-        )?;
+        for value in ["DisplayName", "Publisher", "DisplayIcon", "UninstallString"] {
+            ensure(
+                installed_value(identity, value).is_some(),
+                format!("{} uninstall entry lacks {value}", identity.name()),
+            )?;
+        }
         ensure(
             shortcut(identity).is_some_and(|link| link.is_file()),
             format!("{} Start-menu shortcut missing", identity.name()),
@@ -1414,10 +1415,11 @@ fn case_a03_install(gate: &mut Gate, packages: &Packages) -> Result<String, Erro
         )
         .map_err(|e| failure("A03", e))?;
         evidence.push(format!(
-            "{} {} in Programs/{} (HKCU key, Inno {inno}, Start-menu shortcut, build-info and VERSIONINFO {product_version} {numbers:?}, {smoke})",
+            "{} {} in Programs/{} (HKCU key {}, Start-menu shortcut, build-info and VERSIONINFO {product_version} {numbers:?}, {smoke})",
             identity.name(),
             artifact.version,
-            identity.name()
+            identity.name(),
+            identity.app_id()
         ));
     }
     Ok(format!(
@@ -1449,7 +1451,7 @@ fn case_a03_uninstall(gate: &mut Gate, installed: String) -> Result<String, Erro
         ensure(
             !directory.join(identity.desktop_exe()).exists()
                 && !directory.join(identity.cli_exe()).exists()
-                && !directory.join("unins000.exe").exists(),
+                && !directory.join("Uninstall.exe").exists(),
             "installed files remain",
         )?;
         ensure(
@@ -1709,10 +1711,12 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
     let receipt: Value = serde_json::from_str(result.stdout.trim()).unwrap_or(Value::Null);
     ensure(
         result.status_code == Some(0)
-            && receipt["was_running"] == true
-            && receipt["restarted"] == true
+            && receipt["installed"] == true
+            && receipt["wasRunning"] == true
+            && receipt["relaunched"] == true
             && receipt["background"] == true
-            && receipt["installed_version"] == packages.dev_test_v2.version.as_str(),
+            && receipt["newVersion"] == packages.dev_test_v2.version.as_str()
+            && receipt["verifiedRegistryVersion"] == packages.dev_test_v2.version.as_str(),
         format!("install-dev failed: {}", result.stderr.trim()),
     )?;
     ensure(
@@ -1728,7 +1732,7 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         "the app did not exit cleanly",
     )?;
     drop(resident);
-    let restarted = receipt["restart_process_id"].clone();
+    let restarted = receipt["restartProcessId"].clone();
     let restarted_ready = wait_until(Duration::from_secs(90), || {
         resident_events(&data)
             .iter()

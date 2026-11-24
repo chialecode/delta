@@ -727,7 +727,7 @@ pub fn sanitize_terminal_output(raw: &str) -> String {
 }
 
 /// Whether a top-level window can be seen by the user: `WS_VISIBLE`, a non-empty window
-/// rectangle and not cloaked by DWM. Toolkits such as Inno Setup keep zero-size, disabled
+/// rectangle and not cloaked by DWM. Some installer toolkits keep zero-size, disabled
 /// `WS_VISIBLE` helper windows (`TWindowDisabler-Window`) that nobody can see or activate;
 /// those are not popups in the sense of `D-25`.
 #[cfg(windows)]
@@ -834,6 +834,69 @@ fn count_visible_windows_for_filter(
         let observed = ctx.count.load(Ordering::Relaxed);
         OBSERVED_WINDOWS.fetch_max(observed, Ordering::SeqCst);
         observed
+    }
+}
+
+/// Whether a process started from `exe` shows a top-level window the user can see
+/// (`window_is_perceivable`: a minimized window counts, one hidden to the tray does not).
+/// `install-dev` waits while the installed dev build has one open: the person is using it.
+pub fn exe_has_visible_window(exe: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId};
+
+        struct Search {
+            exe: String,
+            found: bool,
+        }
+
+        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> i32 {
+            let search = &mut *(lparam as *mut Search);
+            if !window_is_perceivable(hwnd as isize) {
+                return 1;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return 1;
+            }
+            let mut buffer = [0u16; 1024];
+            let mut length = buffer.len() as u32;
+            let named = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                buffer.as_mut_ptr(),
+                &mut length,
+            ) != 0;
+            CloseHandle(process);
+            if named
+                && String::from_utf16_lossy(&buffer[..length as usize]).to_lowercase() == search.exe
+            {
+                search.found = true;
+                return 0;
+            }
+            1
+        }
+
+        let mut search = Search {
+            exe: exe.to_string_lossy().to_lowercase(),
+            found: false,
+        };
+        unsafe {
+            let _ = EnumWindows(Some(visit), &mut search as *mut Search as LPARAM);
+        }
+        search.found
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        false
     }
 }
 

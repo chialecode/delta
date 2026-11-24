@@ -50,7 +50,7 @@
     },
     {
       "id": "M3-A-03",
-      "title": "Inno Setup per-user silent install and uninstall of the test identity (M3-K01)",
+      "title": "NSIS per-user silent install and uninstall of the test identity (M3-K01; Inno Setup until 2026-11-25)",
       "mode": "automated",
       "work_packages": [
         "M3-W02"
@@ -63,9 +63,9 @@
         "AC-27",
         "AC-30"
       ],
-      "precondition": "Pinned Inno Setup 7.1.x present; test identity setup.exe built; developer delta/delta-dev installs untouched.",
+      "precondition": "Pinned NSIS 3.13 present (scripts/fetch_nsis.py); test identity setup.exe built; developer delta/delta-dev installs untouched.",
       "steps": [
-        "Run setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART for delta-test and delta-dev-test.",
+        "Run setup.exe /S /LOG=<file> for delta-test and delta-dev-test.",
         "Check install directories, Start menu shortcut, HKCU uninstall keys and the installed --build-info.",
         "Run the installed --ui-smoke, then uninstall silently."
       ],

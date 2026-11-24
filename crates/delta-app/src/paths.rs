@@ -191,7 +191,7 @@ pub(crate) fn system_documents_root() -> Result<PathBuf, PathResolutionError> {
     ))
 }
 
-/// The current user's Desktop folder (`FOLDERID_Desktop`, Inno Setup's `{userdesktop}`), where
+/// The current user's Desktop folder (`FOLDERID_Desktop`, NSIS's `$DESKTOP`), where
 /// per-user installers put the desktop shortcut. `None` off Windows or when it is not registered.
 pub fn user_desktop_dir() -> Option<PathBuf> {
     #[cfg(windows)]

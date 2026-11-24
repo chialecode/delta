@@ -810,7 +810,7 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                 None => installer::latest_package(&root.join(installer::DIST_DIR), expected)?,
             };
             // Keep `dist/` limited to installers: logs go to the workspace report directory.
-            let log_dir = if root.join("crates/delta-cli/installer/delta.iss").is_file() {
+            let log_dir = if root.join(installer::NSIS_TEMPLATE).is_file() {
                 root.join(".local/reports/m3/install-dev")
             } else {
                 package
@@ -818,13 +818,29 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                     .map(Path::to_path_buf)
                     .unwrap_or_else(env::temp_dir)
             };
-            let receipt = installer::install_dev(&package, expected, &log_dir)?;
-            print_json(&receipt);
-            if receipt.in_job {
-                eprintln!(
-                    "install-dev: {} {} was started inside this command's job object and may end with the command; open it once from the Start menu",
-                    receipt.identity, receipt.installed_version
+            // The receipt is also kept as `install-dev.json` beside the setup logs, failures too.
+            let receipt = installer::install_dev(&package, expected, &log_dir);
+            let written = match &receipt {
+                Ok(receipt) => receipt.clone(),
+                Err(error) => installer::InstallDevReceipt {
+                    reason: Some(error.code.to_ascii_lowercase()),
+                    error: Some(error.message.clone()),
+                    install_location: installer::install_dir(expected)
+                        .map(|dir| dir.display().to_string())
+                        .unwrap_or_default(),
+                    ..installer::InstallDevReceipt::start(expected.name(), &package, "")
+                },
+            };
+            if std::fs::create_dir_all(&log_dir).is_ok() {
+                let _ = std::fs::write(
+                    log_dir.join("install-dev.json"),
+                    serde_json::to_vec_pretty(&written).unwrap_or_default(),
                 );
+            }
+            let receipt = receipt?;
+            print_json(&receipt);
+            if let Some(guidance) = &receipt.guidance {
+                eprintln!("install-dev: {guidance}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -958,7 +974,7 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                 "__migrate-portable",
                 sub_args,
                 FlagSpec {
-                    value_flags: &["--identity", "--install-dir"],
+                    value_flags: &["--identity", "--install-dir", "--log"],
                     ..Default::default()
                 },
             )?;
@@ -972,9 +988,16 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                 ));
             }
             let directory = PathBuf::from(flags.required("__migrate-portable", "--install-dir")?);
-            let report = installer::migrate_portable(&directory, identity)?;
-            // Printed to stdout so Inno's ExecAndLogOutput copies it into the setup log.
-            print_json(&report);
+            let result = installer::migrate_portable(&directory, identity);
+            // The installer passes its own /LOG= file: the report (or the error) goes there.
+            if let Some(log) = flags.one("--log").filter(|log| !log.is_empty()) {
+                let line = match &result {
+                    Ok(report) => serde_json::to_string(report).unwrap_or_default(),
+                    Err(error) => format!("{}: {}", error.code, error.message),
+                };
+                installer::append_setup_log(Path::new(log), &format!("migration {line}"));
+            }
+            print_json(&result?);
             Ok(ExitCode::SUCCESS)
         }
         _ => unreachable!("dispatch only routes installer commands here"),

@@ -722,17 +722,13 @@ pub fn decode_relaunch_args(encoded: &str) -> Option<Vec<String>> {
     serde_json::from_slice(&hex::decode(encoded).ok()?).ok()
 }
 
-/// Silent installer arguments shared by the updater, `install-dev` and the gates.
+/// Silent installer arguments shared by the updater, `install-dev` and the gates: `/S`, the
+/// `/LOG=` file the installer appends to, and after an update `/RELAUNCH` with the app's
+/// previous arguments (`/DELTAARGS=`, handed back through `--restore-args`).
 pub fn silent_installer_args(log: &Path, restart_args: Option<&[String]>) -> Vec<String> {
-    let mut args = vec![
-        "/VERYSILENT".to_string(),
-        "/SUPPRESSMSGBOXES".into(),
-        "/NORESTART".into(),
-        "/SP-".into(),
-        format!("/LOG={}", log.display()),
-    ];
+    let mut args = vec!["/S".to_string(), format!("/LOG={}", log.display())];
     if let Some(restart) = restart_args {
-        args.push("/DELTARESTART=1".into());
+        args.push("/RELAUNCH".into());
         args.push(format!("/DELTAARGS={}", encode_relaunch_args(restart)));
     }
     args
@@ -1234,6 +1230,15 @@ mod tests {
             decode_relaunch_args(&encode_relaunch_args(&args)).unwrap(),
             args
         );
+        // The NSIS installer's options: silent, its log, and after an update the relaunch with
+        // the previous arguments (hex, so they reach it as one token without quoting).
+        let log = Path::new("u.log");
+        assert_eq!(silent_installer_args(log, None), vec!["/S", "/LOG=u.log"]);
+        let restart = silent_installer_args(log, Some(&args));
+        assert_eq!(&restart[..3], &["/S", "/LOG=u.log", "/RELAUNCH"]);
+        let hex = restart[3].strip_prefix("/DELTAARGS=").unwrap();
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(decode_relaunch_args(hex).unwrap(), args);
     }
 
     #[test]
