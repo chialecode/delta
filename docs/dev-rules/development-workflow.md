@@ -61,7 +61,7 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 2. **窗口开着时推迟**：`delta-dev` 在运行且已安装的 `delta-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时，说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败，退出码 0），回执记 `reason=window_open` 并提示关窗后重新运行 `install-dev`。窗口按已安装的 `delta-dev.exe` 路径匹配，`cargo run` 从源码运行的副本不算。
 3. **请托盘中的实例保存后退出**：经控制管道 `quit-for-update`，最多等 30 秒，从不强杀；忙碌或保存失败时放弃本次安装（`INSTALL_DEV_APP_BUSY`），本机不变。
 4. **静默安装并核对**：以 `/S /LOG=<日志>` 安装，从卸载项与已安装程序的 `--build-info` 双重核对版本等于安装包；装完不论原来是否在运行，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）。
-5. **回执**：打印到标准输出并写 `.local/reports/m3/install-dev/install-dev.json`（失败时也写），字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`restartProcessId`、`launchMethod`、`guidance`、`setup`。`inJob: true` 时请用户从开始菜单打开一次。
+5. **回执**：打印到标准输出并写 `.local/reports/m3/install-dev/install-dev.json`（失败时也写，带已知的旧版本、是否在运行与安装日志；门禁的测试身份写 `install-dev-delta-dev-test.json`，不覆盖它），字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`restartProcessId`、`launchMethod`、`guidance`、`setup`。`inJob: true` 时请用户从开始菜单打开一次。
 
 装好的版本与 `source_fingerprint` 写进 PR 或 issue 评论。只为自动验证的打包与门禁都不安装。
 

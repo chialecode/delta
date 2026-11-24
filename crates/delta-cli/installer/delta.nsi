@@ -90,8 +90,25 @@ VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "FileDescription" "${DELTA_DISPLAY_NAM
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "CompanyName" "DELTA Contributors"
 VIAddVersionKey /LANG=${LANG_SIMPCHINESE} "LegalCopyright" "Copyright (C) DELTA Contributors. Apache-2.0."
 
+; Sets $8 to the first of this version's files that is already in $INSTDIR
+; and cannot be opened for writing (held open by a running delta CLI, an
+; editor or a scanner), unless $8 is set already.
+!macro DELTA_CHECK_WRITABLE RELATIVE
+  ${If} $8 == ""
+  ${AndIf} ${FileExists} "$INSTDIR\${RELATIVE}"
+    ClearErrors
+    FileOpen $9 "$INSTDIR\${RELATIVE}" a
+    ${If} ${Errors}
+      StrCpy $8 "${RELATIVE}"
+    ${Else}
+      FileClose $9
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 ; DELTA_REMOVE_INSTALLED_FILES: deletes exactly the files this version
 ; installs, then the folders it made when they are empty.
+; DELTA_CHECK_FILES_WRITABLE: DELTA_CHECK_WRITABLE for each of those files.
 !include "${DELTA_FILES_NSH}"
 
 Var LogFile
@@ -182,6 +199,15 @@ Function ${UN}DeltaCloseApp
   Call ${UN}DeltaIsRunning
   Pop $0
   ${If} $0 == "1"
+    ; /RELAUNCH comes only from the in-app updater, which started this setup and
+    ; is exiting by itself: asking it to quit would find it busy exiting.
+    ${GetParameters} $1
+    ClearErrors
+    ${GetOptions} $1 "/RELAUNCH" $2
+    ${IfNot} ${Errors}
+      !insertmacro DELTA_LOG "${DELTA_IDENTITY} is exiting after starting this update; waiting for it"
+      Goto delta_wait
+    ${EndIf}
     !insertmacro DELTA_LOG "${DELTA_IDENTITY} is running; requesting quit-for-update"
     MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "${DELTA_DISPLAY_NAME} 正在运行。点“确定”让它保存后退出并继续，点“取消”退出。" /SD IDOK IDOK delta_quit
     !insertmacro DELTA_LOG "cancelled while ${DELTA_IDENTITY} runs; installation aborted, nothing changed"
@@ -222,6 +248,7 @@ Function ${UN}DeltaCloseApp
         Quit
       ${EndIf}
     ${EndIf}
+    delta_wait:
     StrCpy $2 0
     ${Do}
       Call ${UN}DeltaIsRunning
@@ -272,7 +299,7 @@ Function DeltaSetShortcutAumid
         System::Call '$1->0(g "{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}", *p .r3) i .r5'
         ${If} $5 = 0
           ; PKEY_AppUserModel_ID and a VT_LPWSTR PROPVARIANT
-          System::Call '*(g "{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}", i 5) p .r4'
+          System::Call '*(&g16 "{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}", &i4 5) p .r4'
           System::Call '*(&i2 31, &i2 0, &i2 0, &i2 0, w "${DELTA_AUMID}", i 0, i 0) p .r6'
           ; SetValue, Commit, then IPersistFile::Save(NULL, TRUE)
           System::Call '$3->6(p r4, p r6) i .r5'
@@ -292,7 +319,8 @@ Function DeltaSetShortcutAumid
     System::Call '$1->2()'
   ${EndIf}
   ${If} $5 <> 0
-    !insertmacro DELTA_LOG "could not set the AppUserModelID of $0 (0x$5)"
+    IntFmt $5 "0x%08X" $5
+    !insertmacro DELTA_LOG "could not set the AppUserModelID of $0 ($5)"
   ${EndIf}
   Pop $6
   Pop $5
@@ -337,6 +365,18 @@ Section "-Install"
     Quit
   ${EndIf}
   Call DeltaCloseApp
+
+  ; A file of this version held open by another program (a running delta CLI)
+  ; would make the old uninstaller and File skip it and leave a mix of
+  ; versions: stop before anything changes.
+  StrCpy $8 ""
+  !insertmacro DELTA_CHECK_FILES_WRITABLE
+  ${If} $8 != ""
+    !insertmacro DELTA_LOG "$INSTDIR\$8 is held open by another program; installation aborted, nothing changed"
+    MessageBox MB_OK|MB_ICONSTOP "$INSTDIR\$8 正被别的程序占用，没有做任何改动。请关闭占用它的程序后重新运行安装程序。" /SD IDOK
+    SetErrorLevel ${DELTA_EXIT_FILES_NOT_WRITTEN}
+    Quit
+  ${EndIf}
 
   ; S-34: remove an M2 portable installation's verified files before copying;
   ; modified and unknown files are kept and listed in the log by the helper.

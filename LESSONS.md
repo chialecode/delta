@@ -16,4 +16,5 @@
 ## 打包与安装
 
 - **安装器的压缩算法也要过许可证白名单。** NSIS 的安装器外壳与 zlib 模块是 zlib/libpng 许可，但 LZMA 模块是带链接例外的 CPL-1.0，会静态进每个安装包；本仓的安装包只用 zlib（D-39）。证据：[#22](https://github.com/chialecode/delta/issues/22)。出现 1 次。
-- **NSIS 的 `GetOptions` 认不出整段加了引号的参数。** Rust 与 Python 给带空格的参数整段加引号（`"/LOG=<带空格的日志路径>"`），`GetOptions` 取不到值；先把 `"/LOG=` 换成 `/LOG="` 再取。`/D=` 则必须放在最后且不加引号，否则 NSIS 不认它，还会混进别的参数。证据：[#22](https://github.com/chialecode/delta/issues/22) 的安装冒烟。出现 1 次。
+- **NSIS 的 `GetOptions` 认不出整段加了引号的参数。** Rust 与 Python 给带空格的参数整段加引号（`"/LOG=<带空格的日志路径>"`），`GetOptions` 取不到值；先把 `"/LOG=` 换成 `/LOG="` 再取。值里的 `/` 也会被当成下一个选项的开头，所以传给安装器的路径一律先换成反斜杠（`Path::join` 拼出的 `.local/reports/...` 就带 `/`）。`/D=` 则必须放在最后且不加引号，否则 NSIS 不认它，还会混进别的参数。证据：[#22](https://github.com/chialecode/delta/issues/22) 的安装冒烟。出现 1 次。
+- **makensis 打不开超过 260 个字符的路径。** 门禁在 `%TEMP%` 下暂存安装内容，暂存目录名带身份、版本和 UUID，再加上第三方许可证的长文件名就超过 MAX_PATH，`File` 报 “failed opening file”，单独在仓库目录里打包却正常；暂存目录名要短，编译失败时把 makensis 的最后几行写进错误信息（日志所在的临时目录会被门禁删掉）。证据：[#22](https://github.com/chialecode/delta/issues/22) 的 M3 门禁。出现 1 次。

@@ -111,9 +111,26 @@ fn nsis_escape(text: &str) -> String {
     text.replace('$', "$$")
 }
 
+/// The last lines makensis printed (errors go to stdout), for a failure message.
+fn output_tail(stdout: &str, stderr: &str) -> String {
+    let lines: Vec<&str> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(6)..].join(" | ");
+    if tail.is_empty() {
+        "no output".into()
+    } else {
+        tail
+    }
+}
+
 /// The `DELTA_REMOVE_INSTALLED_FILES` macro: every staged file, then its folders deepest
 /// first. The uninstaller (and the next version's installer, through `/UPDATE`) removes
 /// exactly these, so files a later version drops do not linger and user files stay.
+/// `DELTA_CHECK_FILES_WRITABLE` checks the same files before the installer changes anything.
 pub(crate) fn render_remove_files_nsh(stage: &Path) -> Result<String, ErrorEnvelope> {
     let mut files = Vec::new();
     collect_paths(stage, stage, &mut files)?;
@@ -151,6 +168,13 @@ pub(crate) fn render_remove_files_nsh(stage: &Path) -> Result<String, ErrorEnvel
         folders
             .iter()
             .map(|folder| format!("  RMDir \"$INSTDIR\\{}\"", windows(folder))),
+    );
+    lines.push("!macroend".into());
+    lines.push("!macro DELTA_CHECK_FILES_WRITABLE".into());
+    lines.extend(
+        files
+            .iter()
+            .map(|file| format!("  !insertmacro DELTA_CHECK_WRITABLE \"{}\"", windows(file))),
     );
     lines.push("!macroend".into());
     Ok(lines.join("\n") + "\n")
@@ -309,10 +333,11 @@ impl PackagingContext {
             ));
         }
         let built = target.join("x86_64-pc-windows-msvc/release");
+        // A short name: makensis cannot open files past MAX_PATH (260), and the gate stages
+        // under %TEMP% with long third-party-licenses names below it.
         let stage = self.output.join(format!(
-            "stage-{}-{version}-{}",
-            identity.name(),
-            uuid::Uuid::new_v4()
+            "stage-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
         ));
         fs::create_dir(&stage).map_err(|e| failure("PACKAGE_STAGE", e))?;
         let result = self.stage_and_compile(identity, &parsed, &built, &stage, target_dir);
@@ -401,9 +426,15 @@ impl PackagingContext {
         )
         .map_err(|e| failure("NSIS_COMPILE", e))?;
         if compiled.status_code != Some(0) || compiled.timed_out || !setup_path.is_file() {
+            // The log may sit in a temporary folder a gate removes, so the reason goes in the message too.
             return Err(failure(
                 "NSIS_COMPILE",
-                format!("NSIS compilation failed; see {log_name}"),
+                format!(
+                    "NSIS compilation failed (exit {:?}, timed out: {}); see {log_name}: {}",
+                    compiled.status_code,
+                    compiled.timed_out,
+                    output_tail(&compiled.stdout, &compiled.stderr)
+                ),
             ));
         }
         let artifact = InstallerArtifact {
@@ -965,12 +996,56 @@ fn should_use_desktop_shell(identity: InstallIdentity, caller_in_job: bool) -> b
 /// first use too. While a window of the running app is open it waits (`WINDOW_WAIT`) and
 /// then skips; after every successful install the app is started in the background, whether
 /// it was running or not (D-36: the person keeps the dev build running).
+/// A failed `install-dev`: the error and the receipt as far as it got.
+#[derive(Debug)]
+pub(crate) struct InstallDevFailure {
+    pub error: ErrorEnvelope,
+    pub receipt: Box<InstallDevReceipt>,
+}
+
+/// Where `install-dev` keeps its receipt: `install-dev.json` for `delta-dev`, a name of its
+/// own for the gate's test identity, so a gate run never overwrites the real receipt.
+pub(crate) fn install_dev_receipt_name(identity: InstallIdentity) -> String {
+    if identity == InstallIdentity::Dev {
+        "install-dev.json".into()
+    } else {
+        format!("install-dev-{}.json", identity.name())
+    }
+}
+
 pub(crate) fn install_dev(
     package: &Path,
     expected: InstallIdentity,
     log_dir: &Path,
-) -> Result<InstallDevReceipt, ErrorEnvelope> {
+) -> Result<InstallDevReceipt, InstallDevFailure> {
     let started = Instant::now();
+    let mut receipt = InstallDevReceipt::start(expected.name(), package, "");
+    receipt.install_location = install_dir(expected)
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+    match install_dev_into(&mut receipt, package, expected, log_dir) {
+        Ok(()) => {
+            receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+            Ok(receipt)
+        }
+        Err(error) => {
+            receipt.reason = Some(error.code.to_ascii_lowercase());
+            receipt.error = Some(error.message.clone());
+            receipt.elapsed_ms = started.elapsed().as_millis() as u64;
+            Err(InstallDevFailure {
+                error,
+                receipt: Box::new(receipt),
+            })
+        }
+    }
+}
+
+fn install_dev_into(
+    receipt: &mut InstallDevReceipt,
+    package: &Path,
+    expected: InstallIdentity,
+    log_dir: &Path,
+) -> Result<(), ErrorEnvelope> {
     let artifact = InstallerArtifact::load(package)?;
     let identity = artifact.identity()?;
     if identity != expected || !identity.is_dev_like() {
@@ -993,15 +1068,11 @@ pub(crate) fn install_dev(
         .to_string();
     let directory = install_dir(identity)
         .ok_or_else(|| failure("INSTALL_DEV_DIR", "LOCALAPPDATA is not set"))?;
-    let mut receipt = InstallDevReceipt::start(identity.name(), package, &validated_version);
+    receipt.new_version = validated_version.clone();
     receipt.install_location = directory.display().to_string();
     let previous = installed_version(identity);
     receipt.first_install = previous.is_none();
     receipt.old_version = previous.clone();
-    let finish = |mut receipt: InstallDevReceipt| {
-        receipt.elapsed_ms = started.elapsed().as_millis() as u64;
-        receipt
-    };
     if auto_install_disabled(identity, std::env::var(AUTO_INSTALL_SWITCH).ok().as_deref()) {
         receipt.skipped = true;
         receipt.reason = Some("disabled".into());
@@ -1009,7 +1080,7 @@ pub(crate) fn install_dev(
             "{AUTO_INSTALL_SWITCH}=0 turns install-dev off; unset it to install {}",
             identity.name()
         ));
-        return Ok(finish(receipt));
+        return Ok(());
     }
     if let Some(previous) = &previous {
         if !delta_app::is_upgrade(previous, &validated_version) {
@@ -1043,7 +1114,7 @@ pub(crate) fn install_dev(
                 identity.display_name(),
                 WINDOW_WAIT.as_secs() / 60
             ));
-            return Ok(finish(receipt));
+            return Ok(());
         }
     }
     // The person may have quit the app while install-dev waited.
@@ -1095,10 +1166,27 @@ pub(crate) fn install_dev(
     receipt.setup = Some(setup.clone());
     let installed = installed_version(identity).unwrap_or_default();
     if setup.exit_code != Some(0) || setup.timed_out || installed != validated_version {
+        // Setup stops before it changes anything when it can (exit codes 3-9): start again
+        // whatever is installed, so the app this command quit does not stay closed.
+        let mut restarted = String::new();
+        if was_running && desktop_exe.is_file() {
+            if let Ok((process_id, in_job, method)) = start_in_background(
+                identity,
+                &desktop_exe,
+                background_launch_args(relaunch_args),
+            ) {
+                receipt.relaunched = true;
+                receipt.background = true;
+                receipt.restart_process_id = Some(process_id);
+                receipt.launch_method = Some(method.into());
+                receipt.in_job = in_job;
+                restarted = "; started the installed copy again in the background".into();
+            }
+        }
         return Err(failure(
             "INSTALL_DEV_FAILED",
             format!(
-                "setup exit {:?}; installed version {installed:?}; see {}",
+                "setup exit {:?}; installed version {installed:?}{restarted}; see {}",
                 setup.exit_code,
                 log.display()
             ),
@@ -1114,38 +1202,17 @@ pub(crate) fn install_dev(
     // and outside any caller job; otherwise (or for isolated `--test-identity` gate runs, or when
     // the shell cannot), it breaks away when allowed. A job that forbids both still gets the app,
     // reported as `inJob` instead of failing the install.
-    // Pass `SW_SHOWNORMAL` (1): `delta-dev --background` opens no window at startup (`show: false`),
-    // and `SW_SHOWNORMAL` avoids overriding the first tray-click reveal with a minimized state.
-    const SW_SHOWNORMAL: i32 = 1;
-    let launch_args = background_launch_args(relaunch_args);
-    let shell_pid = if should_use_desktop_shell(identity, delta_app::process_in_job(None)) {
-        delta_app::spawn_via_desktop_shell(&desktop_exe, &launch_args, SW_SHOWNORMAL).ok()
-    } else {
-        None
-    };
-    let (process_id, in_job, method) = match shell_pid {
-        // Launched by `explorer.exe`, so it is outside any caller sandbox job. Check against
-        // `ACTIVE_JOB` rather than `process_in_job(Some(pid))`, because `delta-desktop` joins its
-        // own `QuietJobObject` at startup and Windows 10/11 PCA/Shell routinely assigns GUI apps
-        // launched via `ShellExecute` to a system job, both of which would falsely make
-        // `IsProcessInJob(pid, NULL)` return true.
-        Some(pid) => (pid, delta_app::process_in_active_job(pid), "desktop_shell"),
-        None => {
-            let launch = delta_app::spawn_detached_app(
-                desktop_exe.as_os_str(),
-                launch_args,
-                &BTreeMap::new(),
-                true,
-            )
-            .map_err(|e| {
-                failure(
-                    "INSTALL_DEV_RESTART",
-                    format!("installed {installed}, but could not start it: {e}"),
-                )
-            })?;
-            (launch.process_id, !launch.broke_away_from_job, "detached")
-        }
-    };
+    let (process_id, in_job, method) = start_in_background(
+        identity,
+        &desktop_exe,
+        background_launch_args(relaunch_args),
+    )
+    .map_err(|e| {
+        failure(
+            "INSTALL_DEV_RESTART",
+            format!("installed {installed}, but could not start it: {e}"),
+        )
+    })?;
     receipt.relaunched = true;
     receipt.background = true;
     receipt.restart_process_id = Some(process_id);
@@ -1157,7 +1224,42 @@ pub(crate) fn install_dev(
             identity.name()
         ));
     }
-    Ok(finish(receipt))
+    Ok(())
+}
+
+/// Start the desktop app in the background (tray only): through the desktop shell inside a
+/// job object, otherwise detached. Answers its process id, whether it stayed in a job, and how.
+fn start_in_background(
+    identity: InstallIdentity,
+    desktop_exe: &Path,
+    launch_args: Vec<String>,
+) -> Result<(u32, bool, &'static str), String> {
+    // Pass `SW_SHOWNORMAL` (1): `delta-dev --background` opens no window at startup (`show: false`),
+    // and `SW_SHOWNORMAL` avoids overriding the first tray-click reveal with a minimized state.
+    const SW_SHOWNORMAL: i32 = 1;
+    let shell_pid = if should_use_desktop_shell(identity, delta_app::process_in_job(None)) {
+        delta_app::spawn_via_desktop_shell(desktop_exe, &launch_args, SW_SHOWNORMAL).ok()
+    } else {
+        None
+    };
+    match shell_pid {
+        // Launched by `explorer.exe`, so it is outside any caller sandbox job. Check against
+        // `ACTIVE_JOB` rather than `process_in_job(Some(pid))`, because `delta-desktop` joins its
+        // own `QuietJobObject` at startup and Windows 10/11 PCA/Shell routinely assigns GUI apps
+        // launched via `ShellExecute` to a system job, both of which would falsely make
+        // `IsProcessInJob(pid, NULL)` return true.
+        Some(pid) => Ok((pid, delta_app::process_in_active_job(pid), "desktop_shell")),
+        None => {
+            let launch = delta_app::spawn_detached_app(
+                desktop_exe.as_os_str(),
+                launch_args,
+                &BTreeMap::new(),
+                true,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((launch.process_id, !launch.broke_away_from_job, "detached"))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +1754,12 @@ mod tests {
                 r#"  Delete "$INSTDIR\third-party-licenses\b.txt""#,
                 r#"  RMDir "$INSTDIR\third-party-licenses\a""#,
                 r#"  RMDir "$INSTDIR\third-party-licenses""#,
+                "!macroend",
+                "!macro DELTA_CHECK_FILES_WRITABLE",
+                r#"  !insertmacro DELTA_CHECK_WRITABLE "delta-dev.exe""#,
+                r#"  !insertmacro DELTA_CHECK_WRITABLE "odd$$name.txt""#,
+                r#"  !insertmacro DELTA_CHECK_WRITABLE "third-party-licenses\a\LICENSE""#,
+                r#"  !insertmacro DELTA_CHECK_WRITABLE "third-party-licenses\b.txt""#,
                 "!macroend",
             ]
         );

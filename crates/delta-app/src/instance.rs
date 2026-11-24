@@ -1,7 +1,7 @@
 //! Single instance and per-identity control pipe (`S-29`).
 //!
-//! The running desktop app holds the named mutex `<identity>-instance` (also the installer
-//! `AppMutex`) and serves `\\.\pipe\<identity>-control`. Only clients in the same Windows
+//! The running desktop app holds the named mutex `<identity>-instance` (also the installer's
+//! running check) and serves `\\.\pipe\<identity>-control`. Only clients in the same Windows
 //! session running as the same user are served. The protocol has exactly two commands:
 //! `focus` and `quit-for-update`; the latter is answered only after pending note saves and
 //! layout persistence finish, or with `busy` while sync/import/AI work is running.

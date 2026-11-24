@@ -892,6 +892,8 @@ fn offline_contracts(gate: &mut Gate) {
             )?;
         }
         // Never delete application data or documents, never force-close, never LZMA (CPL-1.0).
+        // NSIS keywords are case-insensitive, so the check is too.
+        let lowered = template.to_ascii_lowercase();
         for forbidden in [
             "$APPDATA",
             "$DOCUMENTS",
@@ -901,7 +903,7 @@ fn offline_contracts(gate: &mut Gate) {
             "lzma",
         ] {
             ensure(
-                !template.contains(forbidden),
+                !lowered.contains(&forbidden.to_ascii_lowercase()),
                 format!("delta.nsi must not contain {forbidden}"),
             )?;
         }

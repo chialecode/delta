@@ -120,7 +120,7 @@ impl InstallIdentity {
         }
     }
 
-    /// Named mutex held by the running desktop app; also the installer `AppMutex`.
+    /// Named mutex held by the running desktop app; the installer checks it to see the app running.
     pub fn mutex_name(self) -> String {
         format!("{}-instance", self.name())
     }

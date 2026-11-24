@@ -818,26 +818,20 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                     .map(Path::to_path_buf)
                     .unwrap_or_else(env::temp_dir)
             };
-            // The receipt is also kept as `install-dev.json` beside the setup logs, failures too.
-            let receipt = installer::install_dev(&package, expected, &log_dir);
-            let written = match &receipt {
-                Ok(receipt) => receipt.clone(),
-                Err(error) => installer::InstallDevReceipt {
-                    reason: Some(error.code.to_ascii_lowercase()),
-                    error: Some(error.message.clone()),
-                    install_location: installer::install_dir(expected)
-                        .map(|dir| dir.display().to_string())
-                        .unwrap_or_default(),
-                    ..installer::InstallDevReceipt::start(expected.name(), &package, "")
-                },
+            // The receipt is also kept beside the setup logs (`install-dev.json` for delta-dev,
+            // `install-dev-<identity>.json` for the gate's test identity), failures too.
+            let result = installer::install_dev(&package, expected, &log_dir);
+            let written = match &result {
+                Ok(receipt) => receipt,
+                Err(failed) => failed.receipt.as_ref(),
             };
             if std::fs::create_dir_all(&log_dir).is_ok() {
                 let _ = std::fs::write(
-                    log_dir.join("install-dev.json"),
-                    serde_json::to_vec_pretty(&written).unwrap_or_default(),
+                    log_dir.join(installer::install_dev_receipt_name(expected)),
+                    serde_json::to_vec_pretty(written).unwrap_or_default(),
                 );
             }
-            let receipt = receipt?;
+            let receipt = result.map_err(|failed| failed.error)?;
             print_json(&receipt);
             if let Some(guidance) = &receipt.guidance {
                 eprintln!("install-dev: {guidance}");

@@ -726,7 +726,9 @@ pub fn decode_relaunch_args(encoded: &str) -> Option<Vec<String>> {
 /// `/LOG=` file the installer appends to, and after an update `/RELAUNCH` with the app's
 /// previous arguments (`/DELTAARGS=`, handed back through `--restore-args`).
 pub fn silent_installer_args(log: &Path, restart_args: Option<&[String]>) -> Vec<String> {
-    let mut args = vec!["/S".to_string(), format!("/LOG={}", log.display())];
+    // NSIS's GetOptions ends an option value at the next "/", so the path gets backslashes only.
+    let log = log.display().to_string().replace('/', "\\");
+    let mut args = vec!["/S".to_string(), format!("/LOG={log}")];
     if let Some(restart) = restart_args {
         args.push("/RELAUNCH".into());
         args.push(format!("/DELTAARGS={}", encode_relaunch_args(restart)));
@@ -735,7 +737,7 @@ pub fn silent_installer_args(log: &Path, restart_args: Option<&[String]>) -> Vec
 }
 
 /// Start the verified installer detached. The caller must have finished the consistent
-/// backup and must exit afterwards; the installer waits on the identity `AppMutex`.
+/// backup and must exit afterwards; the installer (given `/RELAUNCH`) waits for the identity mutex.
 pub fn launch_installer(
     policy: &UpdatePolicy,
     offer: &UpdateOffer,
@@ -1239,6 +1241,11 @@ mod tests {
         let hex = restart[3].strip_prefix("/DELTAARGS=").unwrap();
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(decode_relaunch_args(hex).unwrap(), args);
+        // A path joined with "/" (a gate's `.local/reports/...`) must not be cut at the "/".
+        assert_eq!(
+            silent_installer_args(Path::new(r"repo\.local/reports/m3/a.log"), None)[1],
+            r"/LOG=repo\.local\reports\m3\a.log"
+        );
     }
 
     #[test]
