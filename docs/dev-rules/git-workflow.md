@@ -30,8 +30,8 @@
 | 合并[高风险](development-workflow.md#high-risk) PR | 用户合并 |
 | 发布正式版、改远端设置与规则集、签名密钥、改写已推送历史 | 用户对具体动作授权（改写时用指定旧 SHA 的 `--force-with-lease`） |
 
-- **规则集 `main-protection`**：`main` 只经 PR 写入，禁止强推和删除，线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)，目前只跑文档检查；Rust 构建与测试进 CI 见 [#34](https://github.com/chialecode/delta/issues/34)），无绕过名单。
+- **规则集 `main-protection`**：`main` 只经 PR 写入，禁止强推和删除，线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)：Windows 运行器上的文档与空白检查、`cargo fmt --check`、`cargo clippy -D warnings` 与 `cargo test --workspace --locked`，等同 `quick_gate.py --all`；Cargo 依赖与 `target/` 用 `actions/cache` 按 `Cargo.lock` 与工具链缓存），无绕过名单。
 - **仓库入口**：开启 [Issues](https://github.com/chialecode/delta/issues)（只允许协作者创建）与 [Discussions](https://github.com/chialecode/delta/discussions)，关闭 Wiki 与 Projects；PR 仅协作者可创建；允许自动合并与更新分支，合并后删除分支；网页提交要求 DCO 签名；来自 fork 的 PR 运行 workflow 前须维护者批准（所有外部贡献者）；安全问题走私密漏洞报告。远端设置的镜像是 [repository-settings.json](../../.github/repository-settings.json)、[rulesets/main.json](../../.github/rulesets/main.json) 与 [actions-policy.json](../../.github/actions-policy.json)，以 GitHub 实际回读为准，改远端设置时同步更新镜像；其中 `issue_creation_policy` 与 `pull_request_creation_policy` 的 REST 接口不返回，用 GraphQL 仓库字段 `issueCreationPolicy` / `pullRequestCreationPolicy` 核对。
-- **Actions**：只允许镜像里列出的官方 action，远端强制固定完整 SHA 并注明版本，Dependabot 同步更新；token 默认只读。
+- **Actions**：只允许镜像里列出的官方 action（`actions/checkout`、`actions/cache`），远端强制固定完整 SHA 并注明版本，Dependabot 同步更新；token 默认只读。
 - **Dependabot**（[.github/dependabot.yml](../../.github/dependabot.yml)，D-35）：Cargo 与 `rust-toolchain.toml` 每周、Actions 每月，冷却期 7 天，兼容更新合为一组，关闭自动 rebase；版本更新 PR 在[每周维护](development-workflow.md#weekly)时处理，风险分级见[依赖盘点](quality-gates.md#dependencies)：Cargo 兼容更新与 `rust-toolchain.toml` 小版本按低风险，主版本与 Actions 更新按高风险。Dependabot 告警与自动安全修复 PR 已打开；安全修复 PR 不受冷却期限制，有就尽快处理。
 - **GitHub API / CLI 低频原则**：优先单次 `gh api` / `gh pr view` 获取所需字段，禁止高频轮询 CI 状态或重复调用远端写操作。
