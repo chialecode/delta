@@ -4,13 +4,72 @@
 //! [`crate::MarketColorConvention`] so up/down always carries a sign and a word.
 
 use gpui_kit::component::theme::{Theme, ThemeMode};
-use gpui_kit::{px, rgb, App, Hsla};
+use gpui_kit::{px, rgb, App, Global, Hsla, SharedString};
 
 /// Fixed shell metrics shared by the workbench chrome.
 pub const TOOLBAR_HEIGHT: f32 = 40.;
 pub const NAV_RAIL_WIDTH: f32 = 60.;
 pub const STATUS_BAR_HEIGHT: f32 = 26.;
 pub const PANEL_HEADER_HEIGHT: f32 = 36.;
+
+/// Preferred UI sans-serif family when installed (`gpui-kit` keeps `.SystemUIFont` otherwise).
+pub const PREFERRED_UI_FONT_FAMILIES: &[&str] = &["Inter"];
+
+/// Preferred monospace families in priority order; DirectWrite provides CJK fallback once loaded.
+pub const PREFERRED_MONO_FONT_FAMILIES: &[&str] = &["JetBrains Mono", "Cascadia Mono", "Consolas"];
+
+#[derive(Clone)]
+struct CachedInstalledFontNames(Vec<String>);
+
+impl Global for CachedInstalledFontNames {}
+
+fn installed_font_names(cx: &mut App) -> Vec<String> {
+    if let Some(cached) = cx.try_global::<CachedInstalledFontNames>() {
+        return cached.0.clone();
+    }
+    let names = cx.text_system().all_font_names();
+    cx.set_global(CachedInstalledFontNames(names.clone()));
+    names
+}
+
+/// Select the first candidate present in `installed_families`, preserving `fallback` when none are
+/// installed so GPUI never lays out text against a missing font family.
+pub fn select_installed_font_family(
+    candidates: &[&str],
+    installed_families: &[String],
+    fallback: &SharedString,
+) -> SharedString {
+    for candidate in candidates {
+        if let Some(installed) = installed_families
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(candidate))
+        {
+            return SharedString::from(installed.clone());
+        }
+    }
+    fallback.clone()
+}
+
+/// Resolve DELTA's `(font_family, mono_font_family)` pair against `installed_families` without
+/// risking a GPUI missing-font panic.
+pub fn resolve_delta_font_families(
+    installed_families: &[String],
+    default_ui_family: &SharedString,
+    default_mono_family: &SharedString,
+) -> (SharedString, SharedString) {
+    (
+        select_installed_font_family(
+            PREFERRED_UI_FONT_FAMILIES,
+            installed_families,
+            default_ui_family,
+        ),
+        select_installed_font_family(
+            PREFERRED_MONO_FONT_FAMILIES,
+            installed_families,
+            default_mono_family,
+        ),
+    )
+}
 
 fn c(hex: u32) -> Hsla {
     rgb(hex).into()
@@ -49,7 +108,15 @@ impl Chrome {
 /// Applies the DELTA workbench palette on top of the `gpui-kit` defaults.
 pub fn apply_delta_theme(cx: &mut App) {
     Theme::change(ThemeMode::Light, None, cx);
+    let installed_fonts = installed_font_names(cx);
     Theme::update(cx, |theme| {
+        let (ui_font, mono_font) = resolve_delta_font_families(
+            &installed_fonts,
+            &theme.font_family,
+            &theme.mono_font_family,
+        );
+        theme.font_family = ui_font;
+        theme.mono_font_family = mono_font;
         theme.font_size = px(15.);
         theme.mono_font_size = px(14.);
         theme.radius = px(4.);
@@ -131,4 +198,94 @@ pub fn apply_delta_theme(cx: &mut App) {
         theme.scrollbar_thumb = c(0xD5D8DC);
         theme.scrollbar_thumb_hover = c(0xB9BDC3);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn families(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn ui_font_prefers_inter_only_when_installed() {
+        let fallback = SharedString::from(".SystemUIFont");
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_UI_FONT_FAMILIES,
+                &families(&["Segoe UI", "Inter", "Microsoft YaHei UI"]),
+                &fallback,
+            ),
+            SharedString::from("Inter")
+        );
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_UI_FONT_FAMILIES,
+                &families(&["Segoe UI", "Microsoft YaHei UI"]),
+                &fallback,
+            ),
+            fallback
+        );
+        assert_eq!(
+            select_installed_font_family(PREFERRED_UI_FONT_FAMILIES, &[], &fallback),
+            fallback
+        );
+    }
+
+    #[test]
+    fn mono_font_walks_jetbrains_then_cascadia_then_consolas_then_fallback() {
+        let fallback = SharedString::from(".SystemUIFont");
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_MONO_FONT_FAMILIES,
+                &families(&["Consolas", "Cascadia Mono", "JetBrains Mono"]),
+                &fallback,
+            ),
+            SharedString::from("JetBrains Mono")
+        );
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_MONO_FONT_FAMILIES,
+                &families(&["Consolas", "Cascadia Mono"]),
+                &fallback,
+            ),
+            SharedString::from("Cascadia Mono")
+        );
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_MONO_FONT_FAMILIES,
+                &families(&["Consolas", "Courier New"]),
+                &fallback,
+            ),
+            SharedString::from("Consolas")
+        );
+        assert_eq!(
+            select_installed_font_family(
+                PREFERRED_MONO_FONT_FAMILIES,
+                &families(&["Courier New"]),
+                &fallback,
+            ),
+            fallback
+        );
+    }
+
+    #[test]
+    fn resolve_delta_font_families_preserves_registered_casing_and_headless_defaults() {
+        let default_ui = SharedString::from(".SystemUIFont");
+        let default_mono = SharedString::from(".SystemUIFont");
+        assert_eq!(
+            resolve_delta_font_families(&[], &default_ui, &default_mono),
+            (default_ui.clone(), default_mono.clone())
+        );
+
+        let installed = families(&["inter", "Cascadia Mono", "Consolas"]);
+        assert_eq!(
+            resolve_delta_font_families(&installed, &default_ui, &SharedString::from("Consolas")),
+            (
+                SharedString::from("inter"),
+                SharedString::from("Cascadia Mono")
+            )
+        );
+    }
 }

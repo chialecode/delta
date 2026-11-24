@@ -9,13 +9,21 @@
 //! icon (`D-25`).
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicIsize, Ordering},
+    atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering},
     mpsc, Mutex,
 };
 
 use serde::{Deserialize, Serialize};
 
 use crate::lock_or_recover;
+
+/// Win10 2004+ / Win11 DWM attribute controlling dark vs light native caption chrome.
+pub(crate) const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+/// Pre-2004 Win10 fallback attribute for immersive dark mode.
+#[cfg(windows)]
+const DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY: u32 = 19;
+/// `FALSE` (`0`) keeps the native caption bar light to match DELTA's `ThemeMode::Light` workbench.
+pub(crate) const DWM_LIGHT_CAPTION_VALUE: i32 = 0;
 
 /// Action performed when the user clicks the main window close button (`X` / `Alt+F4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -154,6 +162,7 @@ static FORCE_EXIT: AtomicBool = AtomicBool::new(false);
 static USER_QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static MAIN_WINDOW_HWND: AtomicIsize = AtomicIsize::new(0);
 static TRAY_WINDOW_HWND: AtomicIsize = AtomicIsize::new(0);
+static LAST_OS_APPEARANCE: AtomicU8 = AtomicU8::new(0);
 
 static TRAY_RECEIVER: Mutex<Option<mpsc::Receiver<TrayCommand>>> = Mutex::new(None);
 static TRAY_TOOLTIP: Mutex<String> = Mutex::new(String::new());
@@ -257,15 +266,37 @@ pub(crate) fn start_interactive_tray(display_name: &str) -> InteractiveTrayGuard
     InteractiveTrayGuard
 }
 
-/// Record the GPUI main window HWND and initial visibility right after `cx.open_window`.
+/// Record the GPUI main window HWND, enforce a light native DWM caption frame, and set initial
+/// visibility right after `cx.open_window`.
 pub(crate) fn register_main_window(initially_shown: bool) {
     EVER_SHOWN.store(initially_shown, Ordering::SeqCst);
     HIDDEN_IN_TRAY.store(!initially_shown, Ordering::SeqCst);
+    LAST_OS_APPEARANCE.store(0, Ordering::SeqCst);
     #[cfg(windows)]
     {
         let hwnd = win32::find_main_gpui_hwnd(TRAY_WINDOW_HWND.load(Ordering::SeqCst));
         if hwnd != 0 {
             MAIN_WINDOW_HWND.store(hwnd, Ordering::SeqCst);
+            let _ = win32::enforce_light_window_frame(hwnd);
+        }
+    }
+}
+
+/// Keep the native Windows caption bar light when the OS theme switches at runtime (GPUI's
+/// `ImmersiveColorSet` handler re-applies the OS appearance onto the HWND).
+pub(crate) fn sync_window_frame_for_appearance(appearance: gpui_kit::WindowAppearance) {
+    let encoded = match appearance {
+        gpui_kit::WindowAppearance::Light | gpui_kit::WindowAppearance::VibrantLight => 1u8,
+        gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::VibrantDark => 2u8,
+    };
+    if LAST_OS_APPEARANCE.swap(encoded, Ordering::SeqCst) == encoded {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let hwnd = resolve_main_hwnd();
+        if hwnd != 0 {
+            let _ = win32::enforce_light_window_frame(hwnd);
         }
     }
 }
@@ -308,6 +339,13 @@ pub(crate) fn restore_main_window(window: &mut gpui_kit::Window) {
     // `activate_window()` applies `initial_placement` (centered 1440x900 + `SW_SHOWNORMAL`)
     // and activates in one step without flashing an unpositioned window.
     window.activate_window();
+    #[cfg(windows)]
+    {
+        let hwnd = resolve_main_hwnd();
+        if hwnd != 0 {
+            let _ = win32::enforce_light_window_frame(hwnd);
+        }
+    }
     window.refresh();
 }
 
@@ -360,14 +398,23 @@ fn classify_window_class(name: &str) -> WindowClassRole {
 
 #[cfg(windows)]
 mod win32 {
-    use std::sync::{
-        atomic::Ordering,
-        mpsc::{Sender, SyncSender},
+    use std::{
+        ffi::c_void,
+        sync::{
+            atomic::Ordering,
+            mpsc::{Sender, SyncSender},
+            OnceLock,
+        },
     };
 
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
+        System::{
+            LibraryLoader::{
+                GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+            },
+            Threading::GetCurrentProcessId,
+        },
         UI::{
             Shell::{
                 Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -690,6 +737,69 @@ mod win32 {
         }
     }
 
+    type DwmSetWindowAttributeFn = unsafe extern "system" fn(
+        hwnd: HWND,
+        dw_attribute: u32,
+        pv_attribute: *const c_void,
+        cb_attribute: u32,
+    ) -> i32;
+
+    pub(super) fn resolve_dwm_set_window_attribute() -> Option<DwmSetWindowAttributeFn> {
+        static RESOLVED: OnceLock<Option<DwmSetWindowAttributeFn>> = OnceLock::new();
+        *RESOLVED.get_or_init(|| unsafe {
+            let dll_w = wide_nul("dwmapi.dll");
+            let mut module = GetModuleHandleW(dll_w.as_ptr());
+            if module.is_null() {
+                module = LoadLibraryExW(
+                    dll_w.as_ptr(),
+                    std::ptr::null_mut(),
+                    LOAD_LIBRARY_SEARCH_SYSTEM32,
+                );
+            }
+            if module.is_null() {
+                return None;
+            }
+            let proc = GetProcAddress(module, c"DwmSetWindowAttribute".as_ptr().cast::<u8>());
+            // SAFETY: `dwmapi.dll!DwmSetWindowAttribute` uses `extern "system"` ABI
+            // `(HWND, DWORD, LPCVOID, DWORD) -> HRESULT` (`i32`).
+            proc.map(|func| {
+                std::mem::transmute::<unsafe extern "system" fn() -> isize, DwmSetWindowAttributeFn>(
+                    func,
+                )
+            })
+        })
+    }
+
+    /// Force `DWMWA_USE_IMMERSIVE_DARK_MODE = 0` on `hwnd` so the native Win11 caption bar stays
+    /// light above DELTA's light-only (`ThemeMode::Light`) workbench even on a dark OS.
+    pub(super) fn enforce_light_window_frame(hwnd: isize) -> bool {
+        if !is_window(hwnd) {
+            return false;
+        }
+        let Some(set_attr) = resolve_dwm_set_window_attribute() else {
+            return false;
+        };
+        let value: i32 = super::DWM_LIGHT_CAPTION_VALUE;
+        let size = std::mem::size_of::<i32>() as u32;
+        unsafe {
+            let hr = set_attr(
+                hwnd as HWND,
+                super::DWMWA_USE_IMMERSIVE_DARK_MODE,
+                (&value as *const i32).cast::<c_void>(),
+                size,
+            );
+            if hr >= 0 {
+                return true;
+            }
+            set_attr(
+                hwnd as HWND,
+                super::DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
+                (&value as *const i32).cast::<c_void>(),
+                size,
+            ) >= 0
+        }
+    }
+
     pub(super) fn find_main_gpui_hwnd(exclude_hwnd: isize) -> isize {
         struct Search {
             pid: u32,
@@ -878,5 +988,16 @@ mod tests {
             classify_window_class("CustomWindow"),
             WindowClassRole::FallbackCandidate
         );
+    }
+
+    #[test]
+    fn dwm_light_frame_contract_and_dynamic_loader_guard_invalid_hwnd() {
+        assert_eq!(DWMWA_USE_IMMERSIVE_DARK_MODE, 20);
+        assert_eq!(DWM_LIGHT_CAPTION_VALUE, 0);
+        #[cfg(windows)]
+        {
+            assert!(win32::resolve_dwm_set_window_attribute().is_some());
+            assert!(!win32::enforce_light_window_frame(0));
+        }
     }
 }
