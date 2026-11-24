@@ -7,10 +7,12 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs only; every push to main finishes (and seeds the cache).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # Required by the main-protection ruleset; no path filters so every PR reports it.
-  # Runs the same checks as `python scripts/quick_gate.py --all`, on Windows like the product.
+  # Runs the same checks as `python scripts/quick_gate.py --all` (docs, whitespace, script unit
+  # tests, fmt, clippy, workspace tests), on Windows like the product.
   repository-quality:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -34,12 +36,15 @@ jobs:
           python --version
           python -B scripts/check_docs.py
           git diff --check
+      - name: Script unit tests
+        run: python -B -m unittest discover -s scripts -p "test_*.py"
       - name: Rust toolchain from rust-toolchain.toml
         run: |
           rustup toolchain install
           cargo --version
           cargo clippy --version
-      # Keyed on the lockfile and toolchain; main-branch runs seed the cache that PRs restore.
+      # Keyed on the toolchain and lockfile; fallbacks stay within the same toolchain so an
+      # upgrade starts clean instead of piling two toolchains' output into one cache entry.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -47,9 +52,9 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy
