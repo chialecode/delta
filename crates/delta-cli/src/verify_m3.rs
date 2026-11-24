@@ -741,12 +741,12 @@ pub(crate) fn run_verify_stage_m3(
         (
             "M3-M-01",
             "M3-W02,M3-W06",
-            "Manual check USER-ACTIONS H-03 (clean machine install of both channels, SmartScreen, coexistence, uninstall keeps data)",
+            "Manual check H-03, needs-user issue #19 (clean machine install of both channels, SmartScreen, coexistence, uninstall keeps data)",
         ),
         (
             "M3-M-02",
             "M3-W04",
-            "Manual check USER-ACTIONS H-04 (release update wording, timing, restart, automatic-check switch)",
+            "Manual check H-04, needs-user issue #20 (release update wording, timing, restart, automatic-check switch)",
         ),
     ] {
         gate.not_run(id, package, "manual", description);

@@ -1,57 +1,80 @@
-# Agent A / Agent B 连续开发与交接
+# 开发流程
 
-本流程适用于程序员与 AI。每轮目标是一个可运行的完整结果；不按小工作包反复征求继续。A/B 是职责分工，不自动创建会话或启动并行 Agent。
+适用于 DELTA 的需求管理、编码、验证、审查、合并与维护，程序员与 AI 同样适用。门禁见[质量门禁](quality-gates.md)，Git 与远端见 [Git 规则](git-workflow.md)，参考与未跟踪文件见[本地资料](local-files-and-references.md)。
 
-用户沟通与编号见 [沟通协议](communication-protocol.md)，参考及未跟踪文件见 [本地资料](local-files-and-references.md)。需要用户的事只维护 [USER-ACTIONS](../../USER-ACTIONS.md)，本流程的“集中事项”对用户事项仅作入口引用。
+<a id="issues"></a>
+## 1. 需求队列：GitHub Issues
 
-## 1. 角色与交接状态
+- 需求、缺陷与后续迭代项都在 [GitHub Issues](https://github.com/chialecode/delta/issues)；仓库只允许协作者建 issue 和 PR，外部反馈走 [Discussions](https://github.com/chialecode/delta/discussions)。
+- 标签：类型 `feature` / `bug` / `chore` / `security` / `dependencies`；状态 `ready`（可领取）/ `in-progress` / `blocked`；`needs-user`（等用户决定、实机检查或配置）；`risk:high`（PR 碰了[高风险清单](#high-risk)）。
+- 领取时加 `in-progress`；PR 正文写 `Closes #<号>`，合并即关闭。MVP 之外的迭代项建为 `feature` issue，不加 `ready`，正文写当前替代做法与触发条件。上游缺陷与开源适配缺口登记在[上游事项台账](../decisions/open-questions.md)的 `OSS-*`，需要动手时再建 issue。
 
-<a id="mvp-loop"></a>
-
-| 环节 | 责任 | 输出与结束条件 |
-| --- | --- | --- |
-| A 计划 | 核对基线/决定，先调研开源，比较技术与数据源栈，设计整合和失败边界 | 一份可执行长计划、验收映射、依赖分支、集中事项、A→B prompt |
-| B 实现 | 核对现场，连续实现全部可执行工作包、自检和修复，更新受影响正本 | 交付版本、一份结果报告、命令/样本/证据、B→A prompt |
-| A 审核 | 对照同一计划、实际 diff、代码和实证，复验高风险与变化部分；直接修局部确定问题 | 分列 B 实现、A 技术审核、产品验收结论；大缺口才整批返工，收敛后登记具体远端授权请求 |
-| 用户授权与远端集成 | 用户决定具体 push、PR、合并等动作；Agent 在已有授权范围内执行 | 推送版本、PR、CI/反馈和集成结果；每个动作按授权范围判断，不相互推导 |
-| 用户事项（独立路径） | 产品取舍、配置、人工/真实服务检查 | A 回写有效决定和结果；只暂停确实依赖缺失决定的动作，不把非阻塞事项排成 A/B 流水线的前置 |
-
-计划状态为 `planned → executing → ready-for-review → reviewed`；需要返工用 `changes-requested`；经授权完成阶段集成与收尾后为 `closed`。`reviewed` 表示 A 技术审核收敛，下一动作属于用户决定远端授权；不因等待授权而重新进入审核。工程状态、产品验收、文档 active 和远端授权分别记录，彼此不等价。当前值与首选下一步只在 [status](../delivery/status.md) 维护，授权范围只在 [USER-ACTIONS](../../USER-ACTIONS.md) 维护。
-
-## 2. 长计划必须包含
-
-同一业务闭环内尽量长：环境与基线、开源依据、确定方案/候选区别、模块契约、依赖顺序、每包正常/失败路径、验收 ID、输出和可执行检查、降级条件、不得缩减项、真正人工依赖、结束标准及审核后授权/收尾流程。技术 spike 通过后按既定分支继续本阶段目标，实现细节由 B 决定；不要求做完每个 spike 再回 A。
-
-按 D-20，全项目优先完成 **M1 金融数据来源与本地自动化数据底座**，再进入 M2 桌面应用与 AI 复盘、M4 训练、M6 策略。计划命令明确区分“已存在”和“B 待建立”。
-
-## 3. 连续执行与双通道非阻塞
-
+<a id="user-actions"></a>
+<a id="agent-user"></a>
 <a id="continuous-execution"></a>
+### 1.1 什么时候找用户
 
-已授权开发覆盖常规本地实现、已选依赖安装、自测修复、文档同步和明确归属的本地版本保存。工程流水线（A/B）与用户待办通道（`USER-ACTIONS.md`）并行推进：先做所有不依赖缺失决定的工作；配置/人工验证记 [用户待办](../../USER-ACTIONS.md)，开源和开发缺口记 [工程台账](../decisions/open-questions.md)。
+用户希望尽量少被打断。本地实现、调试、已选依赖安装、自测修复、文档同步、push、建 PR、低风险合并与开发版安装都由 Agent 连续完成，不逐项请示。
 
-只有会改变产品范围/金融语义/权限、覆盖他人工作或产生不可逆结果且无法隔离的缺失决定，才暂停受影响部分。私有行情 Key 未配置时先用免 Key 公共源与录制样本完成协议、日历、复权与对账验证，但真实私有 Key 在线验收保持 not-run。不得把开发缺代码交给用户人工测试。
+| 情况 | Agent 的处理 |
+| --- | --- |
+| 缺视觉细节或局部技术参数，但能做可逆实现 | 按推荐默认值实现，在 PR 里写明；值得用户回看的再建 `needs-user` issue，标题“决定：…”，写清默认值与可选项 |
+| 需要真人判断的实机体验（输入法、手感、真实工作流） | 建 `needs-user` issue，标题“检查：…”，写步骤与预期；没做就保持 `not-run`，不冒充通过 |
+| 真实私有账户、行情 Key 或模型配置 | 先用免 Key 公共源、录制样本与受控回环完成协议、日历、复权与对账验证；建可选的 `needs-user` issue 说明需要什么、放在哪里，真实在线验收保持 `not-run` |
+| 缺失决定会改变产品范围、金融语义、权限或造成不可逆结果，且无法可逆隔离 | 建 `needs-user` + `blocked` issue 并在对话里指出，只暂停受阻的部分 |
+| 改远端设置、规则集、签名密钥、发布正式版、改写远端历史 | 先做完本地部分，建 `needs-user` issue 写清具体动作，等用户授权该动作 |
 
-## 4. 仓库是沟通载体
+不得把开发缺代码交给用户人工测试。用户在 issue 里答复后，把结论回写[已确认决定](../decisions/confirmed-decisions.md)与对应正本，再关闭 issue。
 
+<a id="change-loop"></a>
 <a id="agent-handoff"></a>
+## 2. 每次改动的流程
 
-每轮一份计划（`docs/delivery/stage-plan.md`）、一份 B/A 阶段报告（B 实现时建立 `docs/delivery/stage-report.md`），复用 [交接模板](../templates/agent-handoff.md)。提示词仅给角色、入口、基线、范围、检查与交付要求，不复制另一套验收。
+1. **开工**：`git status --short --branch`；从最新 `main` 切分支 `<type>/<issue号>-<简短描述>`（`feat`、`fix`、`chore`、`docs`、`refactor`、`test`、`ci`、`build`、`perf`）。跨模块或改公共契约（统一能力接口、数据库 schema 与迁移、金融规则、模型客户端协议）的改动，先在 issue 里写清方案再动手。
+2. **实现**：完整实现正常流程与关键失败恢复路径；金额、数据来源质量、隔离、证据与恢复不因 MVP 放宽；同步更新受影响的需求、设计、验收与证据。
+3. **验证**：跑[快速门禁](quality-gates.md#gate-tiers) `python scripts/quick_gate.py`；发布前以及改到打包、安装、更新、签名或发布链路时跑整套 `verify-stage`。
+4. **提交**：Conventional Commits（`feat: …`、`fix(training): …`），每个提交 `git commit -s`。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
+5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 被测源码指纹 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
+6. **审查**：CI `repository-quality` 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
+7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](#dev-install-at-handoff)；在 issue 或对话里报告结果与一个首选下一步。
 
-push 前同一阶段从计划到实现/审核尽量一个 commit：A 建阶段计划提交，B 实现、A 局部修正与 B 返工直接 amend；已 push 后默认追加集中修复，规则见 [Git](git-workflow.md)。错误实现不单列历史，但审核问题与实际修复证据保留文档。交接含计划版本、阶段父提交、分支、测试基点/源码指纹、未提交变更归属、amend 后新的完整 commit、证据和待处理 ID。
+<a id="high-risk"></a>
+### 2.1 高风险清单
 
-## 5. 自审、指纹复用、审核与返工
+PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自行合并：
 
-B 交付前核实所有包：代码存在、完整流程和关键失败可运行、数据/权限/恢复有证据、文档同步、必要检查通过。按“任务/需求 → 实现位置 → 验证 → 状态/限制”报告，尚未实现的必须项保持 failed/blocked，不能宣称完成。
+- 安装包、安装与卸载行为、开发版自动安装（`package-build`、`install-dev`、安装器脚本、卸载项）；
+- 更新、签名、发布流程与密钥（应用内更新、签名校验、`release-build`、发布工作流、内置公钥）；
+- 数据库 schema 与迁移、备份与恢复、凭据存储、金融计算口径（FIFO、费用、汇率、复权、撮合）；
+- `.github/`（工作流、规则集与仓库设置镜像、Dependabot 配置）；
+- 删除或弱化测试、门禁与公开内容检查。
 
-<a id="gate-tiers"></a>**两级门禁（2026-11-14 用户决定）。** 整套 `verify-stage` 只在 B 把整个阶段交给 A 时跑一次；阶段内的修改、A 审查的修复、返工、按反馈的修复与阶段内追加，都只跑约 5 分钟内的 `python scripts/quick_gate.py`，不为这些再跑整套门禁（[质量门禁](quality-gates.md#gate-tiers)）。
+其余（功能、界面、修复、文档、依赖小版本、重构）都是低风险。拿不准就按高风险处理。
 
-<a id="dev-install-at-handoff"></a>**需要人工检查时自动安装开发版（2026-11-13 用户要求，11-14 纠正，11-22 托盘一致化）。** 每次下一步需要用户人工检查时（B 交付整个阶段、A 审查修复或返工后、按用户反馈修复后请用户复查；不是某个工作包或小功能做完时），交接的 Agent 先执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（运行中的先保存退出；装完不论原来是否在运行或窗口是否打开都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点，D-36 / D-37；从不碰正式版；回执 `in_job: true` 时请用户从开始菜单打开一次），版本与 `source_fingerprint` 写进交接说明与报告；本机还没装 `delta-dev` 时直接首次安装，同样仅常驻托盘启动；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变（先跑 `package-build` 生成新版本）。不让用户自己打包或安装；只为自动验证的打包与门禁都不安装。
+<a id="dev-install-at-handoff"></a>
+### 2.2 开发版自动安装
 
-A 检查实现时核对被测源码指纹（`git rev-parse HEAD` 与工作树状态）：源码未变且证据充分的检查直接复用，重点复验高风险金融不变量与本轮改动；局部确定问题由 A 直接修复并复验，跨模块编码缺口使用一次完整 `F-xx` 清单交回。工程自检、A 技术审核、产品验收分别判断。
-
-## 6. 按当前状态推荐一个下一步
+每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`：运行中的先保存退出；装完不论原来是否在运行或窗口是否打开，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）；从不碰正式版；回执 `in_job: true` 时请用户从开始菜单打开一次。本机还没装 `delta-dev` 时直接首次安装；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变。装好的版本与 `source_fingerprint` 写进 PR 或 issue 评论。只为自动验证的打包与门禁都不安装。迁移到 NSIS 与窗口开着时推迟安装见 [#22](https://github.com/chialecode/delta/issues/22)。
 
 <a id="next-step"></a>
+### 2.3 收尾报告
 
-每次结束说明角色结果、阶段判断、首选动作、责任人、推荐依据与执行条件。只在确有跨 Agent 工作（A→B、B→A 或返工）时附可复制 prompt；A 审查收敛后向用户请求具体远端动作授权。
+每次收尾如实说明：做了什么、验证证据（命令 / 被测源码指纹 / 结果 / 未运行项）、限制与未决事项，并给出一个首选下一步。实现完成、审查通过、产品验收（用户实机检查）是三件事，分开下结论；录制模拟与真实在线服务验证分开声明。交给另一个 Agent 继续时，交接内容写进 issue 或 PR，不只留在聊天里。
+
+<a id="mvp-loop"></a>
+## 3. MVP 优先与反馈循环
+
+先贯通基本功能的端到端闭环（范围见[路线与验收](../engineering/delivery-plan.md)），再按反馈迭代：不等单一模块的边缘打磨全部清零才推进下一核心能力，也不得把缺失的主流程包装成“后续优化”。按 D-20，项目先完成金融数据来源与本地自动化数据底座，再推进桌面复盘、训练与策略。
+
+<a id="lessons"></a>
+## 4. 教训循环（`LESSONS.md`）
+
+- 踩到值得记住的坑（返工、CI 失败的根因、环境陷阱、审查反复指出的问题）时，在根目录 [LESSONS](../../LESSONS.md) 加一条：**规则** → 原因 → 证据（PR 号或日期）→ 出现次数。已有同类条目就把次数加一。
+- 出现 3 次的教训提升进本目录的规则或 [AGENTS](../../AGENTS.md)，并从 LESSONS 删除。
+- 与本项目无关、对其他项目也适用的教训（工具链、平台陷阱、流程），在其他项目仓库里开 `chore` issue 分享，不在本仓库写其他项目的名字。
+
+<a id="weekly"></a>
+## 5. 每周维护
+
+每周（或开始一批较大改动前）做一次，结果写在维护 PR 里：[依赖盘点与漏洞审计](quality-gates.md#dependencies)；处理 Dependabot PR；按[文档治理](../governance/documentation-policy.md#stage-cleanup)整理无用文件与生成物。安全修复随时尽快处理，不等每周。

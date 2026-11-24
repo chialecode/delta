@@ -1,6 +1,6 @@
 # M1–M2 锁文件依赖许可盘点
 
-日期：2026-11-08；执行：Agent B；唯一计划：[M2 v1.0](../delivery/stage-plan.md)。原始命令为 `cargo metadata --locked --format-version 1`，metadata 与 stderr 保存在忽略目录 `.local/reports/m2/`。可公开的逐包清单、表达式、许可分支、许可文件哈希和来源仓库见 [JSON 清单](2026-11-08-dependency-licenses.json)，随安装包与便携包分发的第三方通知正文见仓库根 [THIRD-PARTY-NOTICES.txt](../../THIRD-PARTY-NOTICES.txt)。
+日期：2026-11-08；执行：Agent B；唯一计划：[M2 v1.0](https://github.com/chialecode/delta/blob/5f30f6e1ddf6383f25317d5c87acd21934e75ed9/docs/delivery/stage-plan.md)。原始命令为 `cargo metadata --locked --format-version 1`，metadata 与 stderr 保存在忽略目录 `.local/reports/m2/`。可公开的逐包清单、表达式、许可分支、许可文件哈希和来源仓库见 [JSON 清单](2026-11-08-dependency-licenses.json)，随安装包与便携包分发的第三方通知正文见仓库根 [THIRD-PARTY-NOTICES.txt](../../THIRD-PARTY-NOTICES.txt)。
 
 ## 1. 实际范围与结果
 

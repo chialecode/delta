@@ -1,0 +1,21 @@
+name: 需求
+description: 新功能或改进
+labels: ["feature"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 想要什么
+      description: 要解决的问题或想达到的效果，用你自己的话说。
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: 怎样算做好
+      description: 可选。能看到、能检查的结果。
+  - type: textarea
+    id: notes
+    attributes:
+      label: 补充
+      description: 可选。截图、参考、限制、优先级。

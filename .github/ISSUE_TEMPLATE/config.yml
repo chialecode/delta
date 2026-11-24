@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 讨论与建议
+    url: https://github.com/chialecode/delta/discussions
+    about: 外部反馈、问题交流与功能建议。
+  - name: 安全漏洞
+    url: https://github.com/chialecode/delta/security/advisories/new
+    about: 私密报告安全问题，不要公开发 issue。

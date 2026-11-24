@@ -1,6 +1,6 @@
 # M5 v1.0 阶段验证与交付报告
 
-更新：2026-11-22；角色：Agent B（实现与自检）、Agent A（集中技术审核）。唯一计划：[M5 计划](stage-plan.md) v1.0，用例见 [m5-stage-cases.json](m5-stage-cases.json)；用户口径见 [D-33、D-34、D-35、D-36、D-37](../decisions/confirmed-decisions.md)。分支 `codex/m5-training-workbench`；固定阶段父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`；B 交付时整套门禁的被测源码指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`，A 审核修正后的源码指纹 `9d51a55f4950522f5bfdbf25cba7629e94d3e899e210a14257036f976ec7f3e2`（差异与验证见 [A 集中技术审核](#a-review)），**2026-11-22 托盘与开发版常驻增补后的当前源码指纹 `2c21972c0c51118c5bee45b38612a69f438aee8c5a66376ad97042368213fc06`**（见 [D-36 / D-37 增补验证](#d36)）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准（B 交付时的 SHA 写在交接说明中）。未跟踪的 `workers/` 未读取、构建、修改或暂存；未 push、未操作 PR、未发布版本。
+更新：2026-11-22；角色：Agent B（实现与自检）、Agent A（集中技术审核）。唯一计划：[M5 计划](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/docs/delivery/stage-plan.md) v1.0，用例见 [m5-stage-cases.json](../delivery/m5-stage-cases.json)；用户口径见 [D-33、D-34、D-35、D-36、D-37](../decisions/confirmed-decisions.md)。分支 `codex/m5-training-workbench`；固定阶段父提交 `a44f86f4a168e7dd9c51d186cd9668a51d1f0ccd`；B 交付时整套门禁的被测源码指纹 `c97131fc40a746b5d0a475b7e0b79a9fb938d73b7c0e2831fe0a5c4793dcafe6`，A 审核修正后的源码指纹 `9d51a55f4950522f5bfdbf25cba7629e94d3e899e210a14257036f976ec7f3e2`（差异与验证见 [A 集中技术审核](#a-review)），**2026-11-22 托盘与开发版常驻增补后的当前源码指纹 `2c21972c0c51118c5bee45b38612a69f438aee8c5a66376ad97042368213fc06`**（见 [D-36 / D-37 增补验证](#d36)）；完整阶段提交 SHA 以 `git rev-parse HEAD` 为准（B 交付时的 SHA 写在交接说明中）。未跟踪的 `workers/` 未读取、构建、修改或暂存；未 push、未操作 PR、未发布版本。
 
 ## 当前判断
 
@@ -132,7 +132,7 @@ A 对照计划 v1.0、阶段 diff（父提交 `a44f86f` → B 交付提交 `708e
 
 ## 限制与集中待处理项
 
-- **H-06**（人工，`M5-M-01`）：训练工作台实机体验，步骤见 [USER-ACTIONS](../../USER-ACTIONS.md)；可顺延，不阻塞审核与远端动作。本机开发版已重装为包含 A-F01 修正及 D-36/D-37 系统托盘与外壳常驻启动的 `0.1.2-dev.20261121180402`（`2c21972c…`）。
+- **H-06**（人工，`M5-M-01`）：训练工作台实机体验，步骤见 [USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md)；可顺延，不阻塞审核与远端动作。本机开发版已重装为包含 A-F01 修正及 D-36/D-37 系统托盘与外壳常驻启动的 `0.1.2-dev.20261121180402`（`2c21972c…`）。
 - [LOOP-07](../decisions/open-questions.md)：画线撤销用 `Delete`、不进入 `Ctrl+Z` 栈；画线不能拖动编辑；聚合视图不画画线；停机缺口不跨源补齐。
 - [PERF-01](../decisions/open-questions.md)：首次准备 857～893 s，贴近 15 分钟上限（触发条件与做法已登记）。
 - [DEPS-01](../decisions/open-questions.md)：未满 7 天的新版本与工具链 1.100.0。
@@ -140,4 +140,4 @@ A 对照计划 v1.0、阶段 diff（父提交 `a44f86f` → B 交付提交 `708e
 
 ## 正本同步
 
-[数据模型](../design/data-model.md)（schema 6 三张表与新列、多级别 bar 行 ID、`idx_bar_training_port`）、[金融规则](../design/financial-engine.md)（§7.1 `m5-sim-2`、练习账户、`m5-account-report-1`）、[交互工作流](../design/interaction-and-workflows.md)（§6.1 训练工作台）、[设计规则](../design-rules/DESIGN.md)（训练图表覆盖物）、[系统架构](../design/system-architecture.md)（§9）、[统一接口](../design/integration-contracts.md)、[AI 设计](../design/ai-design.md)、[仓库地图](../dev-rules/repo-map.md)、[质量门禁](../dev-rules/quality-gates.md)、[追踪](traceability.json)（FR-TRN-07～09 → implemented）、[集中台账](../decisions/open-questions.md)、[USER-ACTIONS](../../USER-ACTIONS.md)（H-06 步骤）、[夹具来源](../../tests/fixtures/PROVENANCE.md)。
+[数据模型](../design/data-model.md)（schema 6 三张表与新列、多级别 bar 行 ID、`idx_bar_training_port`）、[金融规则](../design/financial-engine.md)（§7.1 `m5-sim-2`、练习账户、`m5-account-report-1`）、[交互工作流](../design/interaction-and-workflows.md)（§6.1 训练工作台）、[设计规则](../design-rules/DESIGN.md)（训练图表覆盖物）、[系统架构](../design/system-architecture.md)（§9）、[统一接口](../design/integration-contracts.md)、[AI 设计](../design/ai-design.md)、[仓库地图](../dev-rules/repo-map.md)、[质量门禁](../dev-rules/quality-gates.md)、[追踪](../delivery/traceability.json)（FR-TRN-07～09 → implemented）、[集中台账](../decisions/open-questions.md)、[USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md)（H-06 步骤）、[夹具来源](../../tests/fixtures/PROVENANCE.md)。

@@ -1,15 +1,19 @@
 {
+  "default_branch": "main",
   "allow_squash_merge": true,
   "allow_merge_commit": false,
   "allow_rebase_merge": false,
-  "allow_auto_merge": false,
+  "allow_auto_merge": true,
+  "allow_update_branch": true,
   "delete_branch_on_merge": true,
   "squash_merge_commit_title": "PR_TITLE",
   "squash_merge_commit_message": "PR_BODY",
-  "has_issues": false,
-  "has_pull_requests": true,
-  "pull_request_creation_policy": "collaborators_only",
-  "has_discussions": true,
+  "has_issues": true,
+  "issue_creation_policy": "collaborators_only",
   "has_wiki": false,
-  "has_projects": false
+  "has_projects": false,
+  "has_discussions": true,
+  "web_commit_signoff_required": true,
+  "has_pull_requests": true,
+  "pull_request_creation_policy": "collaborators_only"
 }

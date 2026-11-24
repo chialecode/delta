@@ -1,6 +1,6 @@
 # 验证与交付门禁
 
-只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁已建立（结论见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）；M4 的训练门禁已建立（结论见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）。当前阶段的运行结论和源码指纹只维护在当前阶段报告，本规范不预先宣称某版本通过。
+只声明实际执行结果。文档、Cargo、`cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6`（M1 实际结果见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）以及 M2 的 `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`、依赖边界检查与按用户打包验证均已建立（M2 结论见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）；M3 的安装程序与更新门禁已建立（结论见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）；M4 的训练门禁已建立（结论见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）。运行结论和源码指纹写在对应 PR 或 `docs/evidence/` 下带日期的报告，本规范不预先宣称某版本通过。
 
 ## 1. 当前已存在并可运行的检查
 
@@ -16,24 +16,24 @@
 - `cargo run -p delta-cli -- verify-stage --stage M1 --plan-version 2.6 [--live]`
 - `cargo run -p delta-cli -- verify-stage --stage M2 --plan-version 1.0 [--live] [--ui-smoke] [--ui-bench]`
 - `cargo run -p delta-cli -- verify-stage --stage M3 --plan-version 1.0 [--installer] [--ui-smoke]`（**已建立**，结果见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M3-G-01～05）、`.iss` 与身份契约（M3-G-06）和命名单元测试映射（M3-A-01/02/07）；`--installer` 需要 Inno Setup 7.1.x，构建四个测试身份安装包与一个测试签名发布，只真实静默安装/升级/卸载 `delta-test` / `delta-dev-test`（数据根在本次临时目录），全程采样可见与前台窗口，比对开发者 `delta` / `delta-dev` 安装文件哈希、HKCU 卸载键、开始菜单快捷方式与数据根目录树，并要求同一源码指纹下 M1 v2.6、M2 v1.0 报告已通过。缺 `--installer` 时安装/更新用例与 overall 保持 not-run；`DELTA_GATE_SKIP_MECHANICAL=1` 只用于调试安装用例，跳过的必需项使 overall 不可能为 passed
-- `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（`H-05`）与真实模型 `M4-L-01`（`ACT-01`）保持 not-run
-- `cargo run -p delta-cli -- verify-stage --stage M5 --plan-version 1.0 [--ui-smoke] [--ui-bench] [--live-data]`（**已建立**，结果见 [M5 阶段报告](../delivery/stage-report.md)）：默认执行文档、diff、格式、Clippy、全量测试、依赖漏洞审计与盘点（`deps.py --audit` 退出码 2 记为 not-run）、架构检查（`M5-G-01～07`），以门禁进程跨进程驱动 `delta-cli training` 在回环行情夹具上完成准备数据→练习账户开局→快捷成交/限价/改单/撤销→推进→CLI 与宿主四路重放哈希一致与 DTO 一致→放弃结算（`M5-K03`），并把 `M5-A-01～14、17` 映射到实际测试结果；`--ui-smoke` 跑 release 隐藏窗口冒烟，`--ui-bench` 跑 `M5-K02` 连续播放（每步 p95 ≤ 100 ms、实际间隔 p95 ≤ 200 ms，门禁按原始样本重算）；`--live-data` 在临时资料库对真实公开源跑一次比特币 `1d`/`4h`/`1h` 全量准备、增量与 `1h` 候选池计时（`M5-K01` / `M5-L-01`），结果与录制夹具分开声明，网络不可用记 not-run。`M5-A-16` 要求同指纹 M1～M4 回归报告。建议用 release 构建运行（`cargo run --release -p delta-cli -- verify-stage --stage M5 ...`），使真实数据准备耗时反映产品构建。
+- `cargo run -p delta-cli -- verify-stage --stage M4 --plan-version 1.0 [--ui-smoke] [--ui-bench]`（**已建立**，结果见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）：默认执行文档、diff、格式、Clippy、工作区测试（M4-G-01～05）、架构与训练端口静态边界核查（M4-G-06）及 `M4-A-01～16` 命名测试与端到端校验（未来哨兵截断、撮合与费用手算夹具、Schema 5 迁移备份与真实账本隔离、崩溃恢复与三路确定性重放、双协议 AI 回环、CLI 与无头 UI 一致性）；`--ui-smoke` 运行 release `delta.exe --m4-ui-smoke` 隐藏原生窗口冒烟；`--ui-bench` 运行 release `delta.exe --m4-ui-bench` 实测 1,000 根可见历史＋默认指标连续 300 步“下一根”交互延迟（独立重算 p50/p95/p99，要求 `execution_speed_opt_out`、0 可见窗口、焦点未变且 `p95 <= 100.0 ms`）；`M4-A-18` 校验同一源码指纹下 M1 v2.6、M2 v1.0（`--ui-smoke --ui-bench`）、M3 v1.0（`--installer --ui-smoke`）报告全部 passed。缺 `--ui-smoke` 与 `--ui-bench` 时 `M4-K03` / `M4-A-17` 与 overall 保持 not-run；人工 `M4-M-01`（[#21](https://github.com/chialecode/delta/issues/21)）与真实模型 `M4-L-01`（[#16](https://github.com/chialecode/delta/issues/16)）保持 not-run
+- `cargo run -p delta-cli -- verify-stage --stage M5 --plan-version 1.0 [--ui-smoke] [--ui-bench] [--live-data]`（**已建立**，结果见 [M5 阶段报告](../evidence/2026-11-15-m5-stage-report.md)）：默认执行文档、diff、格式、Clippy、全量测试、依赖漏洞审计与盘点（`deps.py --audit` 退出码 2 记为 not-run）、架构检查（`M5-G-01～07`），以门禁进程跨进程驱动 `delta-cli training` 在回环行情夹具上完成准备数据→练习账户开局→快捷成交/限价/改单/撤销→推进→CLI 与宿主四路重放哈希一致与 DTO 一致→放弃结算（`M5-K03`），并把 `M5-A-01～14、17` 映射到实际测试结果；`--ui-smoke` 跑 release 隐藏窗口冒烟，`--ui-bench` 跑 `M5-K02` 连续播放（每步 p95 ≤ 100 ms、实际间隔 p95 ≤ 200 ms，门禁按原始样本重算）；`--live-data` 在临时资料库对真实公开源跑一次比特币 `1d`/`4h`/`1h` 全量准备、增量与 `1h` 候选池计时（`M5-K01` / `M5-L-01`），结果与录制夹具分开声明，网络不可用记 not-run。`M5-A-16` 要求同指纹 M1～M4 回归报告。建议用 release 构建运行（`cargo run --release -p delta-cli -- verify-stage --stage M5 ...`），使真实数据准备耗时反映产品构建。
 
 <a id="gate-tiers"></a>**两级门禁（2026-11-14 用户决定）。** M1～M4 的 `verify-stage` 合起来约 20 分钟，所以不再在每次修改后跑：
 
-- **整套 `verify-stage`**：只在 B 把整个阶段交给 A 审查时，在同一源码指纹下跑一次。
-- **快速门禁 `python scripts/quick_gate.py`**：其余时候都用它，包括阶段内的修改、A 审查的修复、返工、按用户反馈的修复与阶段内追加。目标 5 分钟内，静默、低优先级执行，依次跑：
+- **整套 `verify-stage`**：发布正式版前，以及改到打包、安装、更新、签名或发布链路时，在同一源码指纹下跑一次（D-38）。
+- **快速门禁 `python scripts/quick_gate.py`**：其余时候都用它，包括每个 PR、审查后的修复与按用户反馈的修复。目标 5 分钟内，静默、低优先级执行，依次跑：
   - 文档检查、`git diff --check`、`cargo fmt --check`；
   - 对自上次提交以来改动过的 crate 跑 `clippy -D warnings` 与 `cargo test`。改了 `Cargo.toml`、`Cargo.lock`、工具链或夹具时，以及加 `--all` 时，覆盖整个工作区。
 - 快速门禁超过 300 秒会提示；它不写证据，不能代替整套 `verify-stage`。
-- 交付报告写清楚：整套门禁对应哪个源码指纹，之后的修改用快速门禁验证了什么。
+- PR 里写清楚：跑了哪一级门禁、对应哪个源码指纹；跑过整套门禁的，之后的修改用快速门禁验证了什么。
 
-<a id="dependencies"></a>**依赖盘点（D-35）。** 每个阶段开始时 A 的计划列出这一项，B 在本阶段完成，作为阶段提交的一部分：
+<a id="dependencies"></a>**依赖盘点（D-35、D-38）。** [每周维护](development-workflow.md#weekly)时做一次，结果写在维护 PR 里：
 
-1. **还开着的 Dependabot PR**：平时只开不合；阶段开始时逐个处理，内容并入本阶段提交，PR 合并后关闭，不采用的写明原因关闭。安全修复 PR 例外，有就尽快评审合并。
-2. **盘点** `python scripts/deps.py`：列出工作区直接依赖的 crates.io 包与 `rust-toolchain.toml` 满 7 天（与 Dependabot 冷却期相同）的新版本，分兼容（`cargo update -p` 可取）与不兼容（要改 `Cargo.toml`）。兼容的默认全部升级；不兼容的单独升级并跑回归，失败回退，在阶段报告写明尝试的版本、失败命令与复查条件。工具链升级同时核对 `clippy`。
-3. **漏洞** `python scripts/deps.py --audit`：用 OSV（含 RustSec 数据库）查 `Cargo.lock` 里的全部 crates.io 包。有修复版本的先升级；确实无法修复或不适用的登记到 `scripts/deps-exceptions.json`，写明原因和复查日期 `reviewBy`，同时写进阶段报告。RustSec 的“停止维护”“不健全”类告警只列出，不算失败。
-4. **交付前复跑**：B 交付整个阶段、跑整套 `verify-stage` 时一并复跑盘点和 `--audit`；`--audit` 退出码 1（有未登记的漏洞或过期例外）时不能交付。新版本没升只在报告里说明。
+1. **还开着的 Dependabot PR**：Cargo 兼容更新与 `rust-toolchain.toml` 小版本在 CI 通过后按低风险合并；含不兼容（主版本）变化的，或 GitHub Actions 的更新（改的是 `.github/workflows/`），按[高风险](development-workflow.md#high-risk)加 `risk:high` 等用户合并；不采用的写明原因关闭。安全修复随时尽快处理，风险分级不变。
+2. **盘点** `python scripts/deps.py`：列出工作区直接依赖的 crates.io 包与 `rust-toolchain.toml` 满 7 天（与 Dependabot 冷却期相同）的新版本，分兼容（`cargo update -p` 可取）与不兼容（要改 `Cargo.toml`）。兼容的默认全部升级；不兼容的单独升级并跑回归，失败回退，在维护 PR 写明尝试的版本、失败命令与复查条件。工具链升级同时核对 `clippy`。
+3. **漏洞** `python scripts/deps.py --audit`：用 OSV（含 RustSec 数据库）查 `Cargo.lock` 里的全部 crates.io 包。有修复版本的先升级；确实无法修复或不适用的登记到 `scripts/deps-exceptions.json`，写明原因和复查日期 `reviewBy`，同时写进维护 PR。RustSec 的“停止维护”“不健全”类告警只列出，不算失败。
+4. **发布前复跑**：发布正式版、跑整套 `verify-stage` 时一并复跑盘点和 `--audit`；`--audit` 退出码 1（有未登记的漏洞或过期例外）时不发布。新版本没升只在 PR 里说明。
 
 两个命令都要联网（crates.io 索引、GitHub 发行记录、OSV），跑不起来退出码 2，记为 not-run，不写成通过。快速门禁不包含这两项。
 
@@ -76,7 +76,7 @@ B 在 M1-W06 建立纯 Rust 统一验证入口 `cargo run -p delta-cli -- verify
 
 - 所有测试、HTTP 请求和后台作业必须设置显式超时与资源上限，严禁无界等待或无限重试。
 - 测试使用系统 TEMP 下的隔离目录；stage gate 把 `DELTA_DATA_DIR`、`DELTA_DOCUMENTS_DIR` 与 `LOCALAPPDATA` 指向本次临时根，结束检查门禁根与本次新建的已知测试目录是否残留。真实 `LOCALAPPDATA/delta[-dev]` 只观察目录元数据，不能读写个人金融数据；该观测不等于全系统文件追踪（D-26，见 [安装与数据位置](data-and-security.md#install-and-data-locations)）。
-- 机器可读验证报告与原始日志输出至忽略目录 `.local/reports/<阶段小写>/`（如 `m1`、`m2`），仅将脱敏摘要回写至当前阶段的 `docs/delivery/stage-report.md`。
+- 机器可读验证报告与原始日志输出至忽略目录 `.local/reports/<阶段小写>/`（如 `m1`、`m2`），仅将脱敏摘要写进 PR 或 `docs/evidence/` 下带日期的报告。
 - 每条 docs/diff/fmt/clippy/test 命令保存 stdout/stderr/退出码/是否超时；每条命令持有独立 Windows Job，直接子进程退出或超时后先收口后代进程，再回收输出管道。错误或 POC panic 也写 failed 报告，不能早退丢失证据。报告绑定 Rust/Cargo/工具链/夹具/检查器源码 SHA-256，执行后核对未变。命名测试映射的 elapsed_ms=0 表示未单独计时，实际套件耗时在 command 记录中；结果状态只用 passed/failed/blocked/not-run。POC-D06 独立历史实测在证据文档保存，本次 gate 未重跑则标 not-run；私有服务同样 not-run。
 
 <a id="foreground-quiet"></a>
@@ -99,12 +99,12 @@ M2 起的桌面测试沿用同一约束：界面逻辑测试使用 GPUI 测试�
 
 M2 门禁已建立。无 `--ui-smoke --ui-bench` 时 K02/K06/A20 与 overall 保持 not-run，退出 0 只表示已执行检查无失败；完整阶段自检使用两个显式开关。原生 HWND 必须有有效尺寸、实际图表/表格绘制计数与原始帧样本，门禁独立重算 p50/p95/p99 并拒绝 dev 构建或切片样本冒充 release 帧。首屏为 5 个新进程的 AC-02 工作台，常规交互 300 次，100k 表格/图表各 20 预热＋300 实测帧；报告说明隐藏窗口、OS loader/缓存与定时器口径。Windows 11 会对隐藏/后台窗口的进程施加执行速度节流（EcoQoS），使同一二进制的帧时间成倍波动（2026-11-09 同机实测图表 p95 约 39 ms 对 8.6 ms），因此测量进程在保持低优先级的同时退出执行速度节流，报告记录 `power_throttling`，门禁只接受 `execution_speed_opt_out` 下的样本；门槛本身不变。测试清理须先关闭窗口、join 宿主并断言成功，不能静默忽略锁导致的残留。
 
-M2-K04 用真实两通道静态 CRT 包执行包内 CLI 安装、外部 CLI 卸载及安装目录内自卸载拒绝，核对数据与未知文件保留。构建和安装有界解析普通/延迟 PE 导入，拒绝外部 MSVC 运行库；`binary-imports.json` 纳入文件哈希清单。开发机的成功启动不能代替该导入检查或 H-03 干净机器记录。
+M2-K04 用真实两通道静态 CRT 包执行包内 CLI 安装、外部 CLI 卸载及安装目录内自卸载拒绝，核对数据与未知文件保留。构建和安装有界解析普通/延迟 PE 导入，拒绝外部 MSVC 运行库；`binary-imports.json` 纳入文件哈希清单。开发机的成功启动不能代替该导入检查或干净机器检查（[#19](https://github.com/chialecode/delta/issues/19)）。
 
 ## 3. 阶段完成判断
 
 | 判断 | 必须满足的条件 |
 | --- | --- |
-| B 实现与自检完成 | 当前阶段计划的全部可执行工作包（M5 为 M5-W01～W08）与自动检查通过，无工程缺口转交用户 |
-| A 技术审核通过（Agent 侧阶段完成） | A 核对实际 diff、代码、测试与数据质量边界，工程阻断为零；按 D-18 转入 [USER-ACTIONS](../../USER-ACTIONS.md) 请求具体远端授权 |
-| 真实私有账户/Key 验收 | 用户按 `ACT-03` 提供真实配置后独立验证；未测前保持 not-run，不冒充已通过 |
+| 实现完成 | 阶段对应 issue 的全部可执行范围与自动检查通过，无工程缺口转交用户 |
+| 独立审查通过 | 非作者按 [REVIEW](../../REVIEW.md) 核对实际 diff、代码、测试与数据质量边界，阻断问题为零；高风险 PR 等用户合并（D-38） |
+| 真实私有账户/Key 验收 | 用户按 [#15](https://github.com/chialecode/delta/issues/15) 提供真实配置后独立验证；未测前保持 not-run，不冒充已通过 |

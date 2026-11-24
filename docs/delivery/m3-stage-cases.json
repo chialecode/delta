@@ -249,7 +249,7 @@
         "Uninstall DELTA Dev from Apps & features."
       ],
       "expected": "Both install and run side by side; SmartScreen behaviour recorded; uninstalling one channel keeps the other and both data roots.",
-      "evidence": "USER-ACTIONS.md#H-03"
+      "evidence": "needs-user issue #19 (H-03)"
     },
     {
       "id": "M3-M-02",
@@ -269,7 +269,7 @@
         "Observe the update-ready badge, the settings update page, the busy confirmation and the restart."
       ],
       "expected": "Wording, timing and the restart are clear; no data loss; the user can disable automatic checks.",
-      "evidence": "USER-ACTIONS.md#H-04"
+      "evidence": "needs-user issue #20 (H-04)"
     },
     {
       "id": "M3-L-01",
@@ -290,7 +290,7 @@
         "Let an installed release build check for updates against the real source."
       ],
       "expected": "The real source returns the signed release and the client verifies it; until authorized this case stays not-run.",
-      "evidence": "USER-ACTIONS.md#ACT-11"
+      "evidence": "ACT-11: v0.1.1 released (PR #5)"
     }
   ]
 }
