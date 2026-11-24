@@ -18,7 +18,7 @@
 - **一个 issue 一个小 PR**：分支 `<type>/<issue号>-<简短描述>`（如 `fix/42-tray-restore`），Conventional Commits + DCO（`git commit -s`）。
 - **自己完成到底**：实现 → 快速门禁 `python scripts/quick_gate.py` → push → 建 PR（按 PR 模板写验证证据）→ CI `repository-quality` 通过 → 独立审查（干净上下文的子代理或另一个 Agent，按 [REVIEW](REVIEW.md)）→ 合并 → 拉取 `main` 后[自动安装开发版](docs/dev-rules/development-workflow.md#dev-install-at-handoff)。push 与建 PR 长期授权。
 - **合并**：低风险 PR 审查通过后由 Agent 直接 squash 合并；碰到[高风险清单](docs/dev-rules/development-workflow.md#high-risk)的 PR 加 `risk:high` 标签，等用户合并。
-- **需要用户时**：只有会改变产品范围、金融语义、权限或造成不可逆结果的决定，必须真人判断的实机检查，以及真实私有账户、Key 或模型配置，才建 `needs-user` issue；其余按推荐的可逆默认值继续做，并在 PR 里写明。
+- **需要用户时**：会改变产品范围、金融语义、权限或造成不可逆结果的决定，必须真人判断的实机检查，真实私有账户、Key 或模型配置，以及要用户对具体动作授权的远端操作，才建 `needs-user` issue（完整列表见[什么时候找用户](docs/dev-rules/development-workflow.md#user-actions)）；其余按推荐的可逆默认值继续做，并在 PR 里写明。
 - **收尾**：如实说明结果、验证证据（命令 / 结果 / 未运行项）、限制与一个首选下一步；新教训写进 [LESSONS](LESSONS.md)。
 
 ## 按变更触发阅读

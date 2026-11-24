@@ -24,7 +24,7 @@ M1 彻底剥离桌面 GUI 且按 D-22 100% 纯 Rust 实现（不引入 Python �
 
 ## 3. M2：完整资产复盘桌面工作台与 AI 证据问答（已完成）
 
-M1 的实际验收限定为当前阶段计划与 [阶段报告](../evidence/2026-11-08-m1-stage-report.md) 的子集：整库 inception 报告、日频近似收益率、声明的账单模板和公共行情服务。schema 3 / `m1-ledger-3` 不表示完整 M2 组合配置、区间 UI、AI、训练或策略已完成；追踪表对整项需求保留 planned/in-progress。
+M1 的实际验收限定为 M1 计划 v2.6 与 [阶段报告](../evidence/2026-11-08-m1-stage-report.md) 的子集：整库 inception 报告、日频近似收益率、声明的账单模板和公共行情服务。schema 3 / `m1-ledger-3` 不表示完整 M2 组合配置、区间 UI、AI、训练或策略已完成；追踪表对整项需求保留 planned/in-progress。
 
 在 M1 数据底座稳固后，按 [D-21](../decisions/confirmed-decisions.md) 与 [ADR-0003](../decisions/0003-first-round-stack.md) 采用长桥最新 **GPUI Kit（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**构建桌面工作台（K 线面板配视口滑动窗口切片）与自研 Rust `ModelClient`（Responses / Chat Completions 双协议）：
 

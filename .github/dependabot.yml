@@ -1,7 +1,7 @@
 version: 2
 # Version updates wait 7 days after a release (cooldown), the same age as
-# `python scripts/deps.py`. Their PRs are not merged one by one: they are
-# handled together when a stage starts (docs/dev-rules/quality-gates.md#dependencies).
+# `python scripts/deps.py`. Their PRs are handled in the weekly maintenance;
+# risk tiers are in docs/dev-rules/quality-gates.md#dependencies.
 # Security updates are not delayed by the cooldown.
 updates:
   - package-ecosystem: cargo

@@ -40,7 +40,7 @@ ModelError
   code, retryable, safe_message, provider_request_id?, retry_after?
 ```
 
-类型是设计合同，具体 Rust trait/stream/cancellation token 由 B 落地。输入项保留消息、工具调用/结果及协议需要的 reasoning/opaque 项；不把结构化输出拍平成字符串。opaque 项限定连接、协议、模型和 scope，拒绝跨供应商复用；不把不可读内容当作授权或金融事实。
+类型是设计合同，具体 Rust trait/stream/cancellation token 以实现为准。输入项保留消息、工具调用/结果及协议需要的 reasoning/opaque 项；不把结构化输出拍平成字符串。opaque 项限定连接、协议、模型和 scope，拒绝跨供应商复用；不把不可读内容当作授权或金融事实。
 
 运行状态与 UI 事件使用 [统一接口](integration-contracts.md)的 run/generation。一个模型请求的 Completed 仅表示协议结束；工具回合、后续模型请求和报告校验完成后，整个分析 run 才能 succeeded。Usage 可能多次更新，按协议语义归并；缺失记 unknown，不写零费用。
 
