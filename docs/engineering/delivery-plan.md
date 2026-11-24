@@ -1,16 +1,16 @@
 # DELTA 实施路线与验收计划
 
-版本 1.6 · 2026-11-14 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 从文档治理基线重建项目，按 D-31 在 M2 之后插入安装与更新阶段，按 D-33 在 M4 之后插入训练工作台阶段，整体演进为 **“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用 → M3 Windows 安装包与更新 → M4 K 线训练 → M5 训练工作台 → M6 策略研究 → M7 扩展”**。当前执行状态见 [当前状态](../delivery/status.md)，当前唯一实施计划见 [M5 阶段计划](../delivery/stage-plan.md)（M4 已于 2026-11-14 集成，证据见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)；M3 已于 2026-11-12 集成并发布 v0.1.1，证据见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)；M1、M2 证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)、[M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）。
+版本 1.6 · 2026-11-14 · 按 [D-20 ～ D-23](../decisions/confirmed-decisions.md) 从文档治理基线重建项目，按 D-31 在 M2 之后插入安装与更新阶段，按 D-33 在 M4 之后插入训练工作台阶段，整体演进为 **“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用 → M3 Windows 安装包与更新 → M4 K 线训练 → M5 训练工作台 → M6 策略研究 → M7 扩展”**。进行中的工作见 [Issues](https://github.com/chialecode/delta/issues)；M5 已于 2026-11-22 经 PR #9 集成，证据见 [M5 阶段报告](../evidence/2026-11-15-m5-stage-report.md)（M4 已于 2026-11-14 集成，证据见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)；M3 已于 2026-11-12 集成并发布 v0.1.1，证据见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)；M1、M2 证据见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)、[M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）。
 
 ## 1. 交付方式与阶段重排原则
 
 1. **先解决金融数据来源，再构建上层应用**：没有可靠的美股/ETF、加密现货、汇率、拆股分红公司行动、交易日历与券商/交易所流水接入，任何桌面 UI 与 AI 分析都只是空壳演示。
-2. **A 完整阶段计划 → B 连续实现/自检 → A 集中审核 → 用户授权具体远端动作 → push / PR / 经授权合并**：技术验证通过后在同一阶段内连续完成闭环；同一阶段 push 前尽量保持一个 commit（直接 amend）。
-3. **工程完成、技术审核与产品验收分离**：Agent 侧阶段完成指可执行范围、必需自动证据通过且 A 审查收敛；真实个人账户或需私有 API Key 的在线验收在 [USER-ACTIONS](../../USER-ACTIONS.md) 独立推进，不阻塞免 Key 公共源与录制样本的工程收敛。
+2. **issue → 小 PR → CI 与独立审查 → 合并**（D-38）：阶段范围拆成 issue，每个 issue 一个小 PR；低风险由 Agent 合并，高风险等用户合并（[开发流程](../dev-rules/development-workflow.md#change-loop)）。
+3. **工程完成、技术审核与产品验收分离**：Agent 侧阶段完成指可执行范围、必需自动证据通过且独立审查收敛；真实个人账户或需私有 API Key 的在线验收在 [`needs-user` issue](https://github.com/chialecode/delta/issues?q=is%3Aissue+label%3Aneeds-user) 独立推进，不阻塞免 Key 公共源与录制样本的工程收敛。
 
 ## 2. M1：金融数据来源底座与账本核对核心（已完成，零 GUI 依赖）
 
-M1 彻底剥离桌面 GUI 且按 D-22 100% 纯 Rust 实现（不引入 Python 进程），通过 `delta-core`、`delta-data`、`delta-app`、`delta-cli` 解决“数据从哪来、怎么自动同步、怎么校验质量并入账对账”。连接器“必做/扩展”分层（按 D-23 优先覆盖用户主力 **富途牛牛 + 欧易 OKX**，兼顾老虎、IBKR、长桥、嘉信、东方财富、币安）、存储与异步边界等阶段定案以 [M1 计划 v2.6](../delivery/stage-plan.md) 为准：
+M1 彻底剥离桌面 GUI 且按 D-22 100% 纯 Rust 实现（不引入 Python 进程），通过 `delta-core`、`delta-data`、`delta-app`、`delta-cli` 解决“数据从哪来、怎么自动同步、怎么校验质量并入账对账”。连接器“必做/扩展”分层（按 D-23 优先覆盖用户主力 **富途牛牛 + 欧易 OKX**，兼顾老虎、IBKR、长桥、嘉信、东方财富、币安）、存储与异步边界等阶段定案以 [M1 计划 v2.6](https://github.com/chialecode/delta/blob/0370b7e9103d0172a7ab47613ea253949d6a9b8b/docs/delivery/stage-plan.md) 为准：
 
 | 工作包 | 产出 | 退出条件 |
 | --- | --- | --- |
@@ -20,11 +20,11 @@ M1 彻底剥离桌面 GUI 且按 D-22 100% 纯 Rust 实现（不引入 Python �
 | M1-W04 美股/ETF 数据源、公司行动与多源交叉核验 | 纯 Rust 零配置 Yahoo Chart v8 主 + 东方财富 `push2his` 核验；Tiingo Token 路由（Tiingo 主 + Yahoo 核验） | 拆股/分红与原始/复权日线口径一致；单源复权异常或缺失公司行动时自动检出并标记 `partial/warning`（AC-05、AC-06、AC-16） |
 | M1-W05 券商/交易所流水导入、FIFO 账本与对账引擎 | 富途牛牛 CSV + 欧易（OKX）现货 CSV + 通用 CSV + IBKR Flex XML + 币安现货成交/充提 CSV 映射、预览、幂等入账、冲销更正、FIFO 成本、转账配对、多币种估值与余额对账 | AC-01～AC-07、AC-22 全部手算样本与守恒性质测试通过 |
 | M1-W06 自动化数据平面编排、`delta-cli` 与阶段门禁 | 账本/自选驱动的自动订阅、水位线增量同步、不可变 `dataset_version` 快照、Rust 指标与截断测试、导出/删除/日志脱敏（AC-20 子集）与 `delta-cli verify-stage --stage M1 --plan-version 2.6` | 一条 CLI 流程完成“建库 → 账单导入 → 自动拉取所需美股/加密行情与汇率 → 生成对账与损益报告 → 备份恢复校验”（AC-11、AC-16、AC-20 子集） |
-| M1-EXT 扩展层 | 老虎证券 CSV、长桥 CSV、嘉信 Schwab CSV、东财交割单 CSV、IBKR Activity CSV、Alpaca REST、官方 Rust `ccxt` crate、扩展技术指标 | 已完成或逐项登记 `LOOP-03`，不阻塞 M1 收敛 |
+| M1-EXT 扩展层 | 老虎证券 CSV、长桥 CSV、嘉信 Schwab CSV、东财交割单 CSV、IBKR Activity CSV、Alpaca REST、官方 Rust `ccxt` crate、扩展技术指标 | 已完成或逐项登记在 [#26](https://github.com/chialecode/delta/issues/26)，不阻塞 M1 收敛 |
 
 ## 3. M2：完整资产复盘桌面工作台与 AI 证据问答（已完成）
 
-M1 的实际验收限定为当前阶段计划与 [阶段报告](../evidence/2026-11-08-m1-stage-report.md) 的子集：整库 inception 报告、日频近似收益率、声明的账单模板和公共行情服务。schema 3 / `m1-ledger-3` 不表示完整 M2 组合配置、区间 UI、AI、训练或策略已完成；追踪表对整项需求保留 planned/in-progress。
+M1 的实际验收限定为 M1 计划 v2.6 与 [阶段报告](../evidence/2026-11-08-m1-stage-report.md) 的子集：整库 inception 报告、日频近似收益率、声明的账单模板和公共行情服务。schema 3 / `m1-ledger-3` 不表示完整 M2 组合配置、区间 UI、AI、训练或策略已完成；追踪表对整项需求保留 planned/in-progress。
 
 在 M1 数据底座稳固后，按 [D-21](../decisions/confirmed-decisions.md) 与 [ADR-0003](../decisions/0003-first-round-stack.md) 采用长桥最新 **GPUI Kit（`0.8.x` / `0.9.x`）官方 `DockArea` + `DockSkin` + `Panel` + `DataTable` + `Card` 面板体系**构建桌面工作台（K 线面板配视口滑动窗口切片）与自研 Rust `ModelClient`（Responses / Chat Completions 双协议）：
 
@@ -48,9 +48,9 @@ M2 只交付了静态 CRT 便携 ZIP 与包内 `package-install`，没有标准�
 
 统一回放时钟（`visible_until`）→ 市价/限价/止损/OCO 订单与费用模型 → 逐步推进与资金预留 → 训练持久化与恢复 → 执行质量报告（含 MAE/MFE）→ 结束后 AI 复盘。
 
-M4 只覆盖日线、单标的、现货做多与整笔成交；撮合引擎（`delta-core::sim`）按多标的固定排序设计，供 M6 回测复用。部分成交、止损限价、做空/衍生品、多标的训练和分钟级回放登记在 `LOOP-06`。计划为 PR #6 版本的 `docs/delivery/stage-plan.md`（Git 历史归档），实现、审核结论与未测边界见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)。
+M4 只覆盖日线、单标的、现货做多与整笔成交；撮合引擎（`delta-core::sim`）按多标的固定排序设计，供 M6 回测复用。部分成交、止损限价、做空/衍生品、多标的训练和分钟级回放登记在 [#28](https://github.com/chialecode/delta/issues/28)。计划见 [PR #6 版本的 M4 计划](https://github.com/chialecode/delta/blob/0ba60104413135fe1da3dc034aea7b0dc8879a50/docs/delivery/stage-plan.md)，实现、审核结论与未测边界见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)。
 
-## 6. M5：训练工作台（当前阶段）
+## 6. M5：训练工作台（已完成，PR #9）
 
 按 D-33 / D-34，在 M4 训练内核之上做成可以日常使用的训练工作台，美股/ETF 与加密现货共用一套界面（不做期货、做空与保证金）：
 
@@ -59,7 +59,7 @@ M4 只覆盖日线、单标的、现货做多与整笔成交；撮合引擎（`d
 3. **跨局练习账户**：按报价币种分账（USD、USDT），资金划转、开局划拨、结束或放弃即结算；“训练历史”与“账户分析”汇总全部局。
 4. **图上交易**：连续播放与速度、买/卖/清仓标记与盈亏连线、成本线、挂单线拖动改价、画线下单、射线/水平线/两点线与测量、均线开关、快捷买卖（当前收盘价立即成交）与默认仓位比例、单次撤销（不越过已推进的 K 线）。
 
-不做：期货/做空/保证金、真实平台费率预设（按 D-33 后续按平台配置）、分钟级与美股盘中回放、多标的同局训练。工作包、定案与用例见 [M5 阶段计划](../delivery/stage-plan.md)。
+不做：期货/做空/保证金、真实平台费率预设（按 D-33 后续按平台配置）、分钟级与美股盘中回放、多标的同局训练。工作包、定案与用例见 [M5 阶段计划](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/docs/delivery/stage-plan.md)。
 
 ## 7. M6：策略研究
 

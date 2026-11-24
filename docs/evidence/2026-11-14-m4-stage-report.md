@@ -8,7 +8,7 @@
 
 **B 实现与自检：完成；A 集中技术审核：通过（2026-11-13，修正 1 项 P2，工程阻断 0，见 [A 集中技术审核](#a-集中技术审核2026-11-13)）；产品验收：未开始（`H-05`、`ACT-01` not-run）。** 以下 B 自检记录保留原指纹；A 在审核指纹 `96254d7d…` 下复跑的四阶段门禁见 A 审核一节，阶段内追加后在最终指纹 `02d0f1bd…` 下的复跑见[阶段内追加](#stage-additions)。B 自检指纹 `b104c94a39e258d8afa33502f4a11bc5a18f13baa9268197f745ddcdfd83f1aa` 下，`verify-stage --stage M4 --plan-version 1.0 --ui-smoke --ui-bench` overall **passed**（`M4-G-01～06`、`M4-A-01～18`、`M4-K01～K03` 全部 passed），同一源码指纹下 `M1 v2.6`、`M2 v1.0`（`--ui-smoke --ui-bench`）与 `M3 v1.0`（`--installer --ui-smoke`）三阶段回归全部 **passed**。
 
-模拟与训练持久化位于独立的 `schema 5` 八张模拟表，不写入真实账本与 `fill` 表，训练创建、推进、笔记归档与删除前后 `ledger_revision` 均保持不变。结束后 AI 复盘在门禁中针对本机 `127.0.0.1` 双协议（`openai-responses` 与 `openai-chat-completions`）SSE 回环服务验证（`M4-A-14`），**不是真实在线模型服务**；真实在线模型复盘（`M4-L-01`，依赖可选 `ACT-01`）与训练实机体验（`M4-M-01`，[USER-ACTIONS](../../USER-ACTIONS.md) `H-05`）保持 `not-run`。门禁全程按 [D-25](../decisions/confirmed-decisions.md) 低优先级静默运行，可感知窗口数 `0`、前台焦点未变化，开发者本机 `%LOCALAPPDATA%\delta` 与 `%LOCALAPPDATA%\delta-dev` 未被触碰（[D-26](../decisions/confirmed-decisions.md)）。
+模拟与训练持久化位于独立的 `schema 5` 八张模拟表，不写入真实账本与 `fill` 表，训练创建、推进、笔记归档与删除前后 `ledger_revision` 均保持不变。结束后 AI 复盘在门禁中针对本机 `127.0.0.1` 双协议（`openai-responses` 与 `openai-chat-completions`）SSE 回环服务验证（`M4-A-14`），**不是真实在线模型服务**；真实在线模型复盘（`M4-L-01`，依赖可选 `ACT-01`）与训练实机体验（`M4-M-01`，[USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md) `H-05`）保持 `not-run`。门禁全程按 [D-25](../decisions/confirmed-decisions.md) 低优先级静默运行，可感知窗口数 `0`、前台焦点未变化，开发者本机 `%LOCALAPPDATA%\delta` 与 `%LOCALAPPDATA%\delta-dev` 未被触碰（[D-26](../decisions/confirmed-decisions.md)）。
 
 ## Spike 结论（第 5 节）
 
@@ -92,8 +92,8 @@ M4 用例明细（报告 `.local/reports/m4/verify-stage-report.json`，日志�
 ## 验证边界与接续
 
 - **`not-run` 边界**：
-  - `M4-L-01`（真实在线模型 AI 复盘）：需用户按 [USER-ACTIONS](../../USER-ACTIONS.md) 可选 `ACT-01` 配置真实协议、端点、模型与密钥后独立验证；门禁 `M4-A-14` 为本机 `127.0.0.1` 双协议 SSE 回环演练，不宣称真实在线模型服务已测。
-  - `M4-M-01`（`H-05` 训练实机体验）：已在 [USER-ACTIONS](../../USER-ACTIONS.md) 补充 `H-05` 具体实机体验步骤，连同既有 `H-01～H-04`、`ACT-01`、`ACT-03`、`ACT-10` 私钥离线备份独立推进，不阻塞 A 技术审核。
+  - `M4-L-01`（真实在线模型 AI 复盘）：需用户按 [USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md) 可选 `ACT-01` 配置真实协议、端点、模型与密钥后独立验证；门禁 `M4-A-14` 为本机 `127.0.0.1` 双协议 SSE 回环演练，不宣称真实在线模型服务已测。
+  - `M4-M-01`（`H-05` 训练实机体验）：已在 [USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md) 补充 `H-05` 具体实机体验步骤，连同既有 `H-01～H-04`、`ACT-01`、`ACT-03`、`ACT-10` 私钥离线备份独立推进，不阻塞 A 技术审核。
 - **模型与范围假设（`LOOP-06`）**：M4 模拟引擎为日线、单标的训练界面、现货做多、整笔成交（不模拟盘口流动性与部分成交参与率）、固定 `O → L → H → C` 盘中路径、隐藏模式不变换价格水平、现金分红按除权日开盘前入账假设；部分成交、止损限价、做空/融资/衍生品、多标的同时训练、小时/分钟回放、训练中 AI 教练模式及富途美股/欧易现货真实平台费率预设保留在 [集中台账](../decisions/open-questions.md) `LOOP-06`，并在每份训练报告 `SampleLimitations` 中明示。
 - **首选下一步**：见下方 [接续](#接续)。
 
@@ -166,4 +166,4 @@ A 审核收敛后，用户在同一阶段内追加了与训练功能无关的要
 
 ## 接续
 
-A 技术审核已收敛，工程阻断为零。用户已于 2026-11-14 授权 `ACT-13`（[USER-ACTIONS](../../USER-ACTIONS.md)）：推送 `codex/m4-kline-training`、创建到 `main` 的 PR，检查通过后 squash 合并并清理分支。H-05 实机体验、可选 ACT-01 真实模型与是否发布 v0.1.2 独立推进，不是该授权的前提。
+A 技术审核已收敛，工程阻断为零。用户已于 2026-11-14 授权 `ACT-13`（[USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md)）：推送 `codex/m4-kline-training`、创建到 `main` 的 PR，检查通过后 squash 合并并清理分支。H-05 实机体验、可选 ACT-01 真实模型与是否发布 v0.1.2 独立推进，不是该授权的前提。

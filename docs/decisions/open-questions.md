@@ -1,12 +1,8 @@
-# 集中事项台账
+# 上游事项台账
 
-更新：2026-11-14；维护：A 汇总/审核，B 补实现与证据，用户处理真正产品/配置决定。此表为工程侧未决、开源和后续事项的唯一当前入口；用户决定、人工与授权只在 [USER-ACTIONS.md](../../USER-ACTIONS.md)，报告仅引用 ID。
+更新：2026-11-24；维护：维护者。本表只记开源上游与适配缺口（OSS）。需求、缺陷、返工与后续迭代都在 [Issues](https://github.com/chialecode/delta/issues)，需要用户处理的事项是 [`needs-user` issue](https://github.com/chialecode/delta/issues?q=is%3Aissue+label%3Aneeds-user)（[D-38](confirmed-decisions.md)）。
 
-状态：open、investigating、ready-for-decision、resolved、deferred。每项包含影响、推荐、负责人、截止/受阻动作和下一步；已确认项移入确认记录或补关闭依据，不反复询问。
-
-## 用户事项入口
-
-用户事项统一在根 [USER-ACTIONS.md](../../USER-ACTIONS.md) 维护（`Q-01` 已由 D-23 确认关闭、`Q-03` 已由 D-21 确认关闭、`ACT-07` 本机 Rust/MSVC 环境已复核关闭、`Q-02` 已由 D-24 确认 Apache-2.0 关闭；可选样本/Token `ACT-03`、模型连接 `ACT-01`、签名私钥备份 `ACT-10` 与人工检查 `H-01`～`H-05` 在用户待办，远端推送需另行授权）。本表只维护 Agent 工程任务。
+状态：open、investigating、resolved、deferred。新增项用稳定 `OSS-编号`，写清影响、当前处置或退出条件与触发条件；需要排期的工作另开 issue 并互相链接。有可逆替代时继续独立工作，开发缺口不伪装成用户任务。
 
 ## 开源风险与适配缺口
 
@@ -18,42 +14,27 @@
 | OSS-04 / resolved | `chrono-tz 0.10.4` / IANA 时区与美股（`XNYS`/`XNAS`）半日市、节假日、夏令时覆盖 | M1 纯 Rust 基于 `chrono` + `chrono-tz`（`America/New_York`）实现 NYSE/NASDAQ 法定节假日与半日市规则（1993 年前 14:00 ET、1993 年起 13:00 ET）+ 仓库内置版本化特殊闭市表 `calendar_special_xnys.json`，写入 SQLite `calendar_session` 并校验加密 `24×7` UTC 切分 | B 已在 M1-W02 完成实现并通过 `POC-D02` 实测：`1990-01-02`～`2027-12-31` 全量 13,878 个自然日（9,569 个交易日、80 个提前收盘日）与 `exchange_calendars` `xnys.csv` 及 NYSE 2023～2027 官方表逐日核对 `0` 差异，越界年份返回 `calendar_unknown`（见 [M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)） |
 | OSS-05 / resolved | 必做公共数据源的字段、复权、限流、版本与 Decimal 边界 | M1 原生 REST/ZIP 完成真实编排、核验和缺失诊断；实际结果只采用本轮阶段报告 | B；官方 ccxt =4.5.91 实测构建成功，默认 Windows 栈溢出，64MiB worker 后 OKX/Kraken 成功；typed f64 边界使通用 adapter 转 LOOP-03，见 [POC-D06](../evidence/2026-11-08-ccxt-rust-poc.md) |
 | OSS-06 / resolved | 锁文件传递依赖许可与数据来源条款 | 基于 Cargo.lock 的 metadata 清单重新核验；数量、表达式与选择的宽松许可分支见阶段报告 | B；不把代码许可当作行情再分发权；封存版本/导出使用 public_open / official_free_personal / unofficial_personal |
-| OSS-07 / open | 兼容端点工具/SSE/用量能力差异 | M2 已执行受控回环全套验证：`delta-model` 对 `openai-responses` 与 `openai-chat-completions` 独立通过 9 类回环用例（`M2-K03` / `M2-A-13`）；真实在线模型服务只对用户 `ACT-01` 配置的协议/模型声明（见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)） | A+B；缺 `ACT-01` 时真实服务保持 not-run，不阻塞工程收敛 |
+| OSS-07 / open | 兼容端点工具/SSE/用量能力差异 | M2 已执行受控回环全套验证：`delta-model` 对 `openai-responses` 与 `openai-chat-completions` 独立通过 9 类回环用例（`M2-K03` / `M2-A-13`）；真实在线模型服务只对用户按 [#16](https://github.com/chialecode/delta/issues/16) 配置的协议/模型声明（见 [M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)） | 缺真实配置时真实服务保持 not-run，不阻塞工程收敛 |
 | OSS-08 / resolved | 自研 Rust 模型客户端需持续维护双协议/SSE/工具配对、取消和上下文恢复 | 本轮修复 wire 名称、并行请求成组历史、reasoning、SSE/累计预算、显式证据/数字、连接与 journal 指纹和跨库 keyring；锁定 `reqwest 0.13.5` + `eventsource-stream 0.2.3`，M2-K03/A13～16 回环和权限/恢复回归通过 | B；2026-11-08 按 [阶段报告](../evidence/2026-11-09-m2-stage-report.md) 关闭 M2 工程适配，真实兼容端点仍归 OSS-07 |
 | OSS-09 / resolved | M2 GPUI 集成风险：`gpui-kit 0.9.0` 精确锁定 `gpui-pre =0.3.11`，升级伴随快照破坏；宿主后台边界、Windows 栈和真实性能 | 实际六页/表单/图表交互、隐藏原生 HWND 与 8 MiB 栈实跑；最终静态 CRT release 包完成 100k 图表/表格各 300 实测帧、5 次首屏和 300 次交互，p95 均满足门槛，原始分位数与限制见阶段报告 | B；2026-11-08 M2-K01/K02/K06 与 M2-A-20 通过关闭；后续升级重新验证锁定快照 |
-| OSS-10 / deferred | Parquet/DuckDB 行情仓 | M1–M2 只用 SQLite 单库，`dataset_partition.location_kind` 预留扩展；引入时保持上层查询契约并扩展一致性备份清单 | A+B；触发条件：M6 批量扫描需求，或 POC-D01/实测查询性能不达标 |
+| OSS-10 / deferred | Parquet/DuckDB 行情仓 | M1–M2 只用 SQLite 单库，`dataset_partition.location_kind` 预留扩展；引入时保持上层查询契约并扩展一致性备份清单 | [#31](https://github.com/chialecode/delta/issues/31)；触发条件：M6 批量扫描需求，或 POC-D01/实测查询性能不达标 |
 | OSS-11 / resolved | M2 MPL-2.0 与多许可分发；原收集漏掉 AND 义务且只核声明不足以支持分发 | 本轮收集 885/885、0 errors；完整保留 4 种 AND 义务、原始 notices/哈希；48 包明确标准正文＋完整锁定源码回退，SPDX 数据固定 commit，见 [逐包清单](../evidence/2026-11-08-dependency-licenses.md) | B；2026-11-08 M2-G-06、3 项收集回归与真实两通道 ZIP 全文件哈希/随附正文归档验证通过关闭；MPL 包零源码修改 |
 | OSS-12 / resolved | Inno Setup 为外部构建工具，不在 Cargo 锁定范围内；版本漂移会改变安装器行为 | B；2026-11-09 M3-W02 关闭 | 锁定 7.1.1（winget `JRSoftware.InnoSetup.7`，按用户范围）。`ISCC.exe` 无可读版本资源，改由 `.iss` 内 ISPP `Ver` 检查拒绝 7.1.x 以外的编译器，门禁核对已安装键 `Inno Setup: Setup Version` 以 `7.1.` 开头；安装包与 `ISCC.exe` 哈希见 [技术选型](../engineering/technology-selection.md)；缺失时 `package-build` / `--installer` 明确失败（`INNO_SETUP_MISSING`），不回退 ZIP；安装方式写入 README |
 
-## 后续循环
+## 原后续循环与用户事项的去向
 
-| ID / 状态 | 内容 | 负责人 / 触发条件 | 当前边界 |
-| --- | --- | --- | --- |
-| LOOP-01 / deferred | 在 M1 数据底座、M2 资产复盘应用与 M3 安装更新贯通后，推进 K 线训练（M4、M5）与 M6 策略研究 | A；M4 v1.0 已经 PR #6 集成（[M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）；按 D-33 当前为 M5 训练工作台（[M5 计划](../delivery/stage-plan.md)）；M6 在 M5 集成后按用户指示启动 | M1 数据版本、`dataset_partition` 存储抽象与回放截止时间（`visible_until`）为训练与回测的原生接口；`delta-core::sim` 纯 Decimal 撮合、多标的固定排序接口与费用口径供 M6 回测直接复用 |
-| LOOP-02 / deferred | MCP 对外适配、嵌入检索、多模型路由/长期记忆 | A；有真实第二消费者或检索不足证据时 | 统一能力接口可扩展，不作为 M1/M2 依赖 |
-| LOOP-03 / deferred | 扩展通用 ccxt 无损 adapter、Alpaca bars、Longport SDK、平台原生 CSV 差异与真实只读账户 API | A+B；通用 adapter 在第二真实消费者/新交易所需求触发；平台样本或私有 SDK/API 在 ACT-03 实际可用且有数据使用授权后触发 | M1 必做模板/资金语义/原生公共源已补齐；扩展平台当前只验证共享规范化模板，真实原生覆盖未完成；私有服务、真实个人账单 not-run。不得以本项延期当前金额/隔离/恢复缺陷 |
-| LOOP-04 / deferred | 每周 CI 自动构建并发布正式版（标签、Release 资产与签名） | A+B；仓库 Actions 白名单放开所需 action 且用户授权远端设置变更与签名私钥进入 CI 机密后 | M3 只做本地 `release-build` 与经 `ACT-11` 单次授权的手动发布；签名私钥不进入 CI 前不做自动发布 |
-| LOOP-06 / deferred | 训练之外的模拟能力：部分成交与参与率模型、止损限价、做空/融资/衍生品（D-33 明确不做期货）、多标的同时训练、美股盘中与分钟级回放（加密 4H/1H 由 M5 承接，D-34）、价格水平变换（防止价位提示标的）、训练中 AI 教练模式；以及平台费用预设（富途美股、欧易现货） | A+B；部分成交/多标的在 M6 回测需要时触发；分钟回放随 M7 多周期；平台费用预设按 D-33 在用户提出按平台配置手续费时、显式建模开户主体/套餐/VIP 等级参数并附官方费率页来源后补入 | B 于 2026-11-12 官方费率核查确认：富途美股随持牌主体、阶梯/固定按股套餐与卖出 SEC/FINRA 规费变化，欧易现货随普通/VIP 1～9/OKB 等级与日线不可区分的 Maker/Taker 变化，均无法无隐藏假设折叠为单一静态预设；M4 按 `S-41` 仅内置 3 个明示场景假设模板（`zero_cost`、`us_equity_per_share_example`、`crypto_rate_example`），引擎明示整笔成交、日线 `O→L→H→C`、单标的训练与现货做多假设（见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)）。不得以本项延期当前撮合、费用、隔离或恢复缺陷 |
-| LOOP-05 / deferred | 共享 Rust 构建缓存 `mbx`（[jdx/mr-boxington](https://github.com/jdx/mr-boxington)，MIT，2026-11-09 查证：最新 `v1.29.2` 发布于 2026-11-03，提供 Windows x64 发行包）：包装 cargo，按编译等价键从共享仓库恢复编译产物，跨 git worktree 共用，并按磁盘预算回收 `target/`；另有 GitHub Actions 缓存 action | A；触发条件：开始用多个 git worktree 并行开发（每个工作树各自约 3.5 GB 以上 `target/`），或 CI 加入 Rust 构建 | 当前单一检出不采用：主要膨胀来源（依赖调试信息、增量缓存、门禁重复包）已由 dev profile 与 `scripts/clean_artifacts.py` 处理（见[构建产物](../dev-rules/local-files-and-references.md#build-artifacts)）；`target/` 与打包用 `.local/target-packages/` 的 RUSTFLAGS/target 不同，缓存键本就不能共用；Windows 上恢复是复制字节而非链接，单检出时反而多一份存储；`mbx setup` 会改动全局 cargo 调用，引入前须先验证门禁静音（D-25）与源码指纹/`--locked` 行为，并经用户同意改动其全局开发环境。CI 侧还受 Actions 白名单限制（同 LOOP-04） |
-| LOOP-07 / deferred | M5 训练工作台的后续增强：画线的撤销目前用 `Delete`，不进入 `Ctrl+Z` 交易撤销栈；画线不能拖动编辑锚点；高一级别聚合视图不画画线；交易所停机造成的日内缺口（如币安 2018-02-08～11 的 1h 偏移 K 线被跳过）只按缺口排除候选窗口，不做跨源补齐；停机前不足一个周期的 K 线（如币安 2018-02-08 00:00 的 1h 只覆盖 28 分钟）按整周期保留，未标注为不完整 | A+B；用户在 H-06 实机体验中提出，或 M6 回测需要跨源补齐时触发 | M5 已保证：撤销只针对交易命令且不越过推进；任何画线操作都不成交；缺口不生成占位数据，含缺口的窗口不会被抽中（`M5-K01` 实测见 [M5 阶段报告](../delivery/stage-report.md)） |
-| DEPS-01 / deferred | D-35 依赖盘点中尚未满 7 天、本阶段未升级的新版本（`gpui-kit 0.9.1`、`rusqlite 0.42`、`uuid 1.29.2`、`zip 9.6.0`，工具链 `rust 1.100.0`） | B；下一阶段开始的依赖盘点（`python scripts/deps.py`）中满 7 天时处理 | M5 已升级 `zip =9.4.2`、`quick-xml 0.42`、`sha2 0.11`、`ed25519-dalek 3`、`getrandom 0.4`，`deps.py --audit` 0 个未处理漏洞；不兼容升级按 D-35 单独回归 |
-| PERF-01 / deferred | 默认比特币训练数据首次准备（真实公开源，release）实测 892.9 s，贴近 `M5-K01` 的 15 分钟上限；主要耗时为欧易 `1h` 历史分页（777 页约 351 s）与币安三个级别的 111 个月度归档，各批按顺序执行 | B；任一次实测超过 900 s、用户在 H-06 反馈等待过长或增加第二个默认标的时触发：按 `M5-K01` 失败分支并行下载归档（并发上限 4）、两个交易所批次并行，并在界面显示剩余时间估计 | 不降低完整性：批次原子发布、失败重试不重复的保证不变；欧易只用于核验；批次按日线→4h→1h 顺序发布，桌面在日线发布后（实测约 2 分钟）即可开日线局，不必等全部批次 |
-| LEDGER-01 / resolved | 买入稳定币/法币（如 USD→USDT 入金兑换）在 M1 形成持仓批次，之后不能作为报价腿结算；应建模为现金换汇，保留兑换成本与汇兑收益 | M2-W02 已在 `delta-core` 与 `delta-data::importers` 实现 `EconomicEventType::CashExchange`（`cash_exchange`）：源币种按现金 FIFO 处置并记录已实现汇兑损益，目标币种（含 USDT/USDC）进入现金 FIFO 账本并保留兑换手续费成本，后续买入加密资产（如 `USD → USDT → BTC`）只从报价现金结算一次 | B 已在 M2-W02 完成实现并通过 `M2-A-06` 与 M1 `M1-A-06` 回归关闭 |
-| TEST-01 / resolved | M2 测试 `test_m2_a14_…` 在全量并行中偶发 `CREDENTIAL_UNAVAILABLE`（Windows 凭据管理器瞬时失败，约 1/40） | A；2026-11-09 按 D-32 去掉凭据管理器、测试凭据改为临时数据目录里的加密文件后关闭 | 失败来源已不存在；若文件凭据再出现并发失败另立条目，见 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md#a-集中技术审核2026-11-09) |
-| TEST-02 / resolved | M1 门禁锁探针 `M1-A-15` 要求子进程在 2 s 内启动并持锁。M3 最终序列的第一次 M1 回归中出现一次 `lock_probe: holder did not acquire or exit cleanly`（刚重新构建的 debug 可执行文件冷启动），同指纹立即重跑通过（持锁 824 ms） | B；2026-11-12 M4-W07 关闭：在 `crates/delta-cli/src/verify.rs` 将父进程等待条件改为接收持锁子进程显式持锁就绪信号并放宽冷启动上限，确认持锁后再严格探测第二进程独占锁冲突拒绝，锁独占语义本身不变 | 已关闭；同指纹 M1 v2.6 回归通过，见 [M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md) |
-| TEST-03 / resolved | M2-A-20 / M2-K02 原生帧性能在 M3 自检中未达标（图表 p95 34～47 ms、表格 22～26 ms，归档 M2 包同样不达标） | A；2026-11-09 定位为 Windows 11 对隐藏窗口进程的执行速度节流（EcoQoS）：同一二进制退出节流后图表 p95 8.6 ms、表格 5.9 ms，提高优先级无效。测量进程改为退出该节流并在报告记录 `power_throttling`，门禁只接受退出节流的样本，门槛不变；最终指纹 M2 回归图表 p95 9.6 ms、表格 6.9 ms | 已关闭；见 [质量门禁](../dev-rules/quality-gates.md#foreground-quiet) 与 [M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md#a-集中技术审核2026-11-09) |
-| DOC-01 / resolved | 部分 M4+/AI 正文（`ai-design.md`、`interaction-and-workflows.md`、`financial-engine.md` 模拟章节、需求 P1/P2 行等）曾使用重建前的 `S0`–`S3`/`R1` 阶段名 | A；2026-11-07 已统一为 `M1`–`M6`（2026-11-14 按 D-33 扩为 `M1`–`M7`），并在 `scripts/check_docs.py` 增加旧阶段标签门禁防止回流 | 已完成，全仓 `active`/`draft` 文档无旧 `S0`–`S4` 或 `R1`–`R2` 阶段名 |
+2026-11-24 起改为 issue 驱动。原“后续循环”与“用户事项入口”两节的最后版本见[固定提交的集中事项台账](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/docs/decisions/open-questions.md)，原用户待办见[固定提交的 USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md)。
 
-### LOOP-03 分项接续
-
-M1 计划第 3.1 / 6 节允许未完成扩展项登记后收敛；本项不承接当前必做金额、数据隔离或恢复缺陷。负责人均为 A+B。
-
-| 分项 | 实际未完成部分 / 原因 | 接续触发 |
-| --- | --- | --- |
-| 通用 ccxt adapter | 官方 crate 的 typed OHLCV 为 f64，Windows 默认栈溢出；无损 Decimal adapter 和有界资源接入尚未实现，当前使用原生 REST | 第二真实消费者或新交易所需求；保留已实测 4.5.91 POC，重新验证具体兼容版本 |
-| Alpaca bars | 当前仅公司行动离线 parser / 回放，`/v2/stocks/bars` 连接器未实现；属于扩展范围 | ACT-03 对应配置与数据使用授权实际可用，或 A 在后续阶段指定离线扩展任务 |
-| Longport SDK | 计划中的 SDK 尚未接入产品，版本兼容与私有会话未测；当前必做公共源与 CSV 不依赖它 | ACT-03 对应配置/授权实际可用后，在后续阶段锁定兼容版本并验证 |
-| 平台原生 CSV 差异 | 目前验证已声明的规范化模板与资金语义；没有真实个人原生账单样本，不宣称覆盖所有导出格式 | ACT-03 对应去标识样本实际可用且允许使用后，补平台差异回归 |
-| 真实只读账户 API | 当前为 OKX/Binance 原生结构的合成回放实现，未接真实私有会话；M1 必做范围明确不要求真实 API 在线同步 | 实际只读配置与相应数据使用授权齐备后，先验证权限与范围，再接在线同步 |
-
-新增项使用稳定 ID，不新建另一张散落的审批列表。需要用户选择时提供推荐/备选、具体证据、批准后动作和阻塞范围；有可逆替代继续独立工作。开发缺口不伪装成用户任务。
+| 原 ID | 去向 |
+| --- | --- |
+| LOOP-01（M6 策略研究） | [#24](https://github.com/chialecode/delta/issues/24) |
+| LOOP-02 | [#25](https://github.com/chialecode/delta/issues/25) |
+| LOOP-03 及其分项 | [#26](https://github.com/chialecode/delta/issues/26) |
+| LOOP-04（每周自动发布） | [#23](https://github.com/chialecode/delta/issues/23) |
+| LOOP-05 | [#27](https://github.com/chialecode/delta/issues/27) |
+| LOOP-06 | [#28](https://github.com/chialecode/delta/issues/28) |
+| LOOP-07 | [#29](https://github.com/chialecode/delta/issues/29) |
+| PERF-01 | [#30](https://github.com/chialecode/delta/issues/30) |
+| DEPS-01 | [每周维护的依赖盘点](../dev-rules/quality-gates.md#dependencies) |
+| LEDGER-01、TEST-01～03、DOC-01 | 已解决，见固定提交 |
+| 用户事项 ACT-01、ACT-03、ACT-10、Q-04/Q-05、H-01～H-06 | [`needs-user` issue #14～#21](https://github.com/chialecode/delta/issues?q=is%3Aissue+label%3Aneeds-user) |

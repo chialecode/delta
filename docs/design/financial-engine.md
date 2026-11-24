@@ -185,7 +185,7 @@ M4 实现（`delta-data::m4_schema` 与 `delta-app::training::TrainingDataPort`�
 
 点差/滑点与手续费分开：滑点（`none` / `bps` / `ticks`）与半点差（`half_spread_bps`）独立配置，均按不利方向作用。以 OHLC 模拟无法可靠判断 maker/taker 时，使用明确假设或偏保守费率，不宣称还原真实撮合队列。
 
-费用版本在训练/实验创建并启动时冻结，被引用或内置的版本由 Rust 与 SQLite 触发器双重禁止原地修改或删除，编辑自动派生新版本号（`v2+`）。M4 内置 3 个明示为场景假设的模板：`zero_cost`（`FPV:BUILTIN:ZERO_COST:v1`）、`us_equity_per_share_example`（`FPV:BUILTIN:US_EQUITY_PER_SHARE_EXAMPLE:v1`）、`crypto_rate_example`（`FPV:BUILTIN:CRYPTO_RATE_EXAMPLE:v1`）；2026-11-12 官方费率核查确认富途美股（随开户主体、阶梯/固定套餐与卖出规费变动）及欧易现货（随 VIP 1～9/OKB 等级与日线不可区分的 Maker/Taker 变动）无法无隐藏假设折叠为单一静态预设，保留在 [集中台账](../decisions/open-questions.md) `LOOP-06`，且数据库与代码校验强制任何非场景假设内置预设必须携带官方 URL 与核查日期。
+费用版本在训练/实验创建并启动时冻结，被引用或内置的版本由 Rust 与 SQLite 触发器双重禁止原地修改或删除，编辑自动派生新版本号（`v2+`）。M4 内置 3 个明示为场景假设的模板：`zero_cost`（`FPV:BUILTIN:ZERO_COST:v1`）、`us_equity_per_share_example`（`FPV:BUILTIN:US_EQUITY_PER_SHARE_EXAMPLE:v1`）、`crypto_rate_example`（`FPV:BUILTIN:CRYPTO_RATE_EXAMPLE:v1`）；2026-11-12 官方费率核查确认富途美股（随开户主体、阶梯/固定套餐与卖出规费变动）及欧易现货（随 VIP 1～9/OKB 等级与日线不可区分的 Maker/Taker 变动）无法无隐藏假设折叠为单一静态预设，保留在 [#28](https://github.com/chialecode/delta/issues/28)（原 `LOOP-06`），且数据库与代码校验强制任何非场景假设内置预设必须携带官方 URL 与核查日期。
 
 ## 9. 结果可复现与对照
 

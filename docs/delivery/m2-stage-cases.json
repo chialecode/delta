@@ -509,7 +509,7 @@
         "Type Chinese in notes, search and import mapping fields with candidate selection; press Enter during composition."
       ],
       "expected": "Composition never commits or submits prematurely; text correct; recorded with IME name and version.",
-      "evidence": "USER-ACTIONS H-01"
+      "evidence": "needs-user issue #18 (H-01)"
     },
     {
       "id": "M2-M-02",
@@ -532,7 +532,7 @@
         "Navigate all pages, tables, chart controls and dialogs by keyboard; resize to a small window; switch the colour convention."
       ],
       "expected": "All in-scope actions reachable; focus visible and kept; Esc consistent; long numbers and key actions not clipped; up/down shown with sign and text.",
-      "evidence": "USER-ACTIONS H-02"
+      "evidence": "needs-user issue #18 (H-02)"
     },
     {
       "id": "M2-M-03",
@@ -553,7 +553,7 @@
         "Install release and dev packages without admin; run offline; uninstall one channel."
       ],
       "expected": "Installs under LOCALAPPDATA Programs as delta and delta-dev; both run side by side with separate data; the app works offline; uninstall keeps application data.",
-      "evidence": "USER-ACTIONS H-03"
+      "evidence": "needs-user issue #19 (H-03)"
     },
     {
       "id": "M2-L-01",

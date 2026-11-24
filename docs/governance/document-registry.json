@@ -6,25 +6,25 @@
       "path": ".github/PULL_REQUEST_TEMPLATE.md",
       "kind": "template",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "问题与结果",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～09、D-18、D-20；PR 检查与远端授权说明"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～09、D-18、D-20；PR 检查与远端授权说明；2026-11-24 D-38 流程统一"
     },
     {
       "path": "AGENTS.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA：Agent 与开发者工作入口",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；从文档治理基线重建、数据底座优先、UI 解耦与 A/B 协作规范"
+      "reviewed": "2026-11-24",
+      "basis": "D-38（2026-11-24 流程统一）；vendor-neutral 工作入口"
     },
     {
       "path": "CLAUDE.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "@AGENTS.md",
       "reviewed": "2026-09-26",
       "basis": "D-01～07；唯一引用 AGENTS.md"
@@ -33,16 +33,25 @@
       "path": "CONTRIBUTING.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 开发与贡献",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；从文档治理基线重建后的 M1 开发闭环与门禁说明"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；从文档治理基线重建后的 M1 开发闭环与门禁说明；2026-11-24 D-38 流程统一"
+    },
+    {
+      "path": "LESSONS.md",
+      "kind": "rule",
+      "status": "active",
+      "owner": "维护者",
+      "scope": "开发中踩过的坑与出现次数；3 次提升进开发规则",
+      "reviewed": "2026-11-24",
+      "basis": "D-38（2026-11-24 流程统一）"
     },
     {
       "path": "DESIGN.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 设计入口",
       "reviewed": "2026-11-07",
       "basis": "D-01～07、D-20；指向 UI 规则与交互工作流正本"
@@ -51,61 +60,52 @@
       "path": "README.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA",
-      "reviewed": "2026-11-08",
-      "basis": "M2 v1.0 B ready-for-review: final M2/M1 gates, real workflows, static-CRT packages and explicit product/manual limits"
+      "reviewed": "2026-11-24",
+      "basis": "M2 v1.0 B ready-for-review: final M2/M1 gates, real workflows, static-CRT packages and explicit product/manual limits；2026-11-24 D-38 流程统一"
     },
     {
       "path": "REVIEW.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 审核口径",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；增加金融数据源质量与水位线同步审核口径"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；增加金融数据源质量与水位线同步审核口径；2026-11-24 D-38 流程统一"
     },
     {
       "path": "SECURITY.md",
       "kind": "entry",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 数据与安全说明",
       "reviewed": "2026-11-07",
       "basis": "D-01～09；本地优先、凭据存储与日志脱敏边界"
     },
     {
-      "path": "USER-ACTIONS.md",
-      "kind": "status",
-      "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "用户决定、配置、人工检查和授权的唯一入口",
-      "reviewed": "2026-11-14",
-      "basis": "M4 v1.0 B delivery: H-05 status pending (M4) with step-by-step training hands-on verification instructions"
-    },
-    {
       "path": "docs/README.md",
       "kind": "index",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 文档导航",
-      "reviewed": "2026-11-14",
-      "basis": "D-01～20；专题正本与最短阅读路径"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；专题正本与最短阅读路径；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/decisions/0001-document-governance.md",
       "kind": "decision",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "ADR-0001：文档约束与 A/B 交付",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～04、D-07、D-18；文档分层与 A/B 协作决定"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～04、D-07、D-18；文档分层与 A/B 协作决定；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/decisions/0002-ai-integration.md",
       "kind": "decision",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "ADR-0002：参考 Codex 自研 Rust 模型客户端",
       "reviewed": "2026-11-07",
       "basis": "D-08；参考 Codex 官方固定源码实现窄 ModelClient"
@@ -114,7 +114,7 @@
       "path": "docs/decisions/0003-first-round-stack.md",
       "kind": "decision",
       "status": "active",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "ADR-0003：数据优先架构重排与桌面 UI 技术栈重评",
       "reviewed": "2026-11-07",
       "basis": "D-20；2026-11-07 GPUI 合理性复盘与金融数据底座调研证据"
@@ -123,99 +123,79 @@
       "path": "docs/decisions/README.md",
       "kind": "index",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "决策与待处理入口",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；ADR-0001～0003 与确认记录索引"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；ADR-0001～0003 与确认记录索引；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/decisions/confirmed-decisions.md",
       "kind": "decision",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "已确认决定与设计默认值",
-      "reviewed": "2026-11-14",
-      "basis": "D-01～D-23 用户确认决定及 A-01～A-07 可逆设计默认值"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～D-23 用户确认决定及 A-01～A-07 可逆设计默认值；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/decisions/open-questions.md",
       "kind": "decision",
       "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "集中事项台账",
-      "reviewed": "2026-11-14",
-      "basis": "M4 v1.0 B delivery: S-41 Futu/OKX fee verification recorded in LOOP-06, TEST-02 resolved via lock_probe ready handshake, LOOP-01 updated"
+      "owner": "维护者",
+      "scope": "上游事项台账（开源风险与适配缺口），以及原后续循环与用户事项的去向",
+      "reviewed": "2026-11-24",
+      "basis": "D-38：后续循环与用户事项转为 issue"
     },
     {
-      "path": "docs/delivery/stage-plan.md",
-      "kind": "plan",
-      "status": "active",
-      "owner": "Agent A",
-      "scope": "M5 v1.0 训练工作台实施计划（默认比特币训练数据与加密 4H/1H、跨局练习账户与账户分析、连续播放与图上交易、单次撤销）",
-      "reviewed": "2026-11-14",
-      "basis": "M5 v1.0: A plan after M4 merge (PR #6) and gate tiers (PR #7); user decisions D-33/D-34; live BTC data spike and chart/data source check dated 2026-11-14",
-      "retireAfter": "M5"
-    },
-    {
-      "path": "docs/delivery/stage-report.md",
+      "path": "docs/evidence/2026-11-15-m5-stage-report.md",
       "kind": "evidence",
-      "status": "active",
-      "owner": "Agent B / Agent A",
-      "scope": "M5 v1.0 阶段验证与交付报告（默认比特币训练数据、加密 4H/1H、m5-sim-2 快捷成交/改单/撤销、练习账户与分析、训练工作台、依赖升级）",
-      "reviewed": "2026-11-15",
-      "basis": "M5 v1.0 B 实现与自检：verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench --live-data 与 M1～M4 同指纹回归实跑结果",
-      "retireAfter": "M5"
+      "status": "reference",
+      "owner": "维护者",
+      "scope": "M5 v1.0 阶段验证与交付报告（已经 PR #9 集成；2026-11-24 改为 issue 驱动时自 docs/delivery/stage-report.md 迁入证据）",
+      "reviewed": "2026-11-24",
+      "basis": "M5 v1.0 B 实现与自检：verify-stage --stage M5 --plan-version 1.0 --ui-smoke --ui-bench --live-data 与 M1～M4 同指纹回归实跑结果"
     },
     {
       "path": "docs/evidence/2026-11-14-m4-stage-report.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B / Agent A",
+      "owner": "维护者",
       "scope": "M4 v1.0 阶段验证与交付报告（已经 PR #6 集成；M5 开始时自 docs/delivery/stage-report.md 迁入证据）",
-      "reviewed": "2026-11-14",
-      "basis": "M4 v1.0 B 实现与 A 审核，最终源码指纹 02d0f1bd；ACT-13 合并为 main 0ba6010；两级门禁 PR #7 合并为 main a44f86f"
+      "reviewed": "2026-11-24",
+      "basis": "M4 v1.0 B 实现与 A 审核，最终源码指纹 02d0f1bd；ACT-13 合并为 main 0ba6010；两级门禁 PR #7 合并为 main a44f86f；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/2026-11-12-m3-stage-report.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B / Agent A",
+      "owner": "维护者",
       "scope": "M3 v1.0 阶段验证与交付报告（已经 PR #3 集成并发布 v0.1.1；M4 开始时自 docs/delivery/stage-report.md 迁入证据）",
-      "reviewed": "2026-11-12",
-      "basis": "M3 v1.0 B 实现与 A 审核，最终源码指纹 77dd43c8；ACT-12 合并为 main 6f0aff3，ACT-11 发布 v0.1.1（main 3bb97e6）"
+      "reviewed": "2026-11-24",
+      "basis": "M3 v1.0 B 实现与 A 审核，最终源码指纹 77dd43c8；ACT-12 合并为 main 6f0aff3，ACT-11 发布 v0.1.1（main 3bb97e6）；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/2026-11-09-m2-stage-report.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B / Agent A",
+      "owner": "维护者",
       "scope": "M2 v1.0 阶段验证与交付报告（已经 PR #2 集成；M3 开始时自 docs/delivery/stage-report.md 迁入证据）",
-      "reviewed": "2026-11-09",
-      "basis": "M2 v1.0 B 修复 F-01～F-07、A 审核修复 F-08/F-09 与界面重设计；源码指纹 3c6a16dc；ACT-09 合并为 main 5f30f6e"
+      "reviewed": "2026-11-24",
+      "basis": "M2 v1.0 B 修复 F-01～F-07、A 审核修复 F-08/F-09 与界面重设计；源码指纹 3c6a16dc；ACT-09 合并为 main 5f30f6e；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/2026-11-08-m1-stage-report.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B / Agent A",
+      "owner": "维护者",
       "scope": "M1 v2.6 阶段验证与交付报告（已经 PR #1 集成；M2 开始时从 docs/delivery/stage-report.md 迁入证据）",
-      "reviewed": "2026-11-08",
-      "basis": "M1 v2.6 B 复查 F-01～F-13、A 集中复核 A-01～A-06、源码指纹 ae2f8960… 的离线与公共 live gate；ACT-08 合并为 main 0370b7e"
-    },
-    {
-      "path": "docs/delivery/status.md",
-      "kind": "status",
-      "status": "active",
-      "owner": "Agent A / Agent B",
-      "scope": "当前执行状态",
-      "reviewed": "2026-11-14",
-      "basis": "M5 v1.0 A plan; M4 merged as main 0ba6010"
+      "reviewed": "2026-11-24",
+      "basis": "M1 v2.6 B 复查 F-01～F-13、A 集中复核 A-01～A-06、源码指纹 ae2f8960… 的离线与公共 live gate；ACT-08 合并为 main 0370b7e；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/design-rules/DESIGN.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA UI 与交互约束",
       "reviewed": "2026-11-07",
       "basis": "D-20、ADR-0003；核心与桌面 UI 解耦及 M2+ 图表与交互约束"
@@ -224,7 +204,7 @@
       "path": "docs/design/ai-design.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA AI 分析设计",
       "reviewed": "2026-11-12",
       "basis": "M4 v1.0: ScopeTarget::TrainingRun finished-only gate, 5 training.* read-only tools, SIM-ORD/SIM-FILL/TRN-NOTE citation checks and separate self-evaluation"
@@ -233,7 +213,7 @@
       "path": "docs/design/context-state-management.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "AI 上下文、会话与运行状态",
       "reviewed": "2026-11-08",
       "basis": "M2 B review F-04: full connection/journal fingerprints, model/keyring isolation, cumulative budgets, history/compaction guards"
@@ -242,7 +222,7 @@
       "path": "docs/design/data-model.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 数据模型设计",
       "reviewed": "2026-11-12",
       "basis": "M4 v1.0: Schema 5 pre-migration backup, 8 isolated simulation/training tables, immutability/monotonicity triggers and simulation export/backup coverage"
@@ -251,16 +231,16 @@
       "path": "docs/design/financial-engine.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 金融计算与模拟规则",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0: m4-sim-1 / m4-report-1 pure Decimal matching, O->L->H->C path, reservations, composable fees, PIT split adjustment and training report"
+      "reviewed": "2026-11-24",
+      "basis": "M4 v1.0: m4-sim-1 / m4-report-1 pure Decimal matching, O->L->H->C path, reservations, composable fees, PIT split adjustment and training report；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/design/integration-contracts.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "统一能力与适配接口",
       "reviewed": "2026-11-12",
       "basis": "M4 v1.0: synchronous AppHost training contracts shared by UI/CLI, SQL-truncated TrainingDataPort and post-finish TrainingRun AI gateway"
@@ -269,7 +249,7 @@
       "path": "docs/design/interaction-and-workflows.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 交互与工作流设计",
       "reviewed": "2026-11-12",
       "basis": "M4 v1.0: 7th 训练 workspace page, 模拟训练 badge, N/→ vs Ctrl+Enter shortcut separation and post-finish report -> explicit 揭示 -> AI review"
@@ -278,7 +258,7 @@
       "path": "docs/design/rust-model-client.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "Rust 模型客户端、双协议、流式与自研边界",
       "reviewed": "2026-11-08",
       "basis": "M2 B review: actual delta-model/delta-app split, dual-protocol validation and correct AC-24/25 references"
@@ -287,7 +267,7 @@
       "path": "docs/design/system-architecture.md",
       "kind": "design",
       "status": "draft",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 系统架构设计",
       "reviewed": "2026-11-12",
       "basis": "M4 v1.0: delta-core::sim / sim_report, delta-data Schema 5 truncated port, delta-app training host/AI scope and desktop/CLI parity"
@@ -296,97 +276,88 @@
       "path": "docs/dev-rules/architecture-and-open-source.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "架构与开源复用规则",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；开源调研门槛、数据所有权与 UI 解耦约束"
-    },
-    {
-      "path": "docs/dev-rules/communication-protocol.md",
-      "kind": "rule",
-      "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "A/B 与用户两条沟通路径、编号与连续执行",
-      "reviewed": "2026-11-07",
-      "basis": "D-10、D-18、D-23；USER-ACTIONS 唯一入口、双通道非阻塞与阶段交接规范"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；开源调研门槛、数据所有权与 UI 解耦约束；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/dev-rules/data-and-security.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "数据、凭据与恢复规则",
-      "reviewed": "2026-11-08",
-      "basis": "M2 B review F-03/04/06/07: library credentials, deletion recovery, package ownership, static CRT and bounded PE inspection, metadata-only logging"
+      "reviewed": "2026-11-24",
+      "basis": "M2 B review F-03/04/06/07: library credentials, deletion recovery, package ownership, static CRT and bounded PE inspection, metadata-only logging；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/dev-rules/development-workflow.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "Agent A / Agent B 连续开发与交接",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；长计划、同阶段 amend、A 集中审核与远端授权衔接"
+      "owner": "维护者",
+      "scope": "issue 驱动的开发流程：需求队列、什么时候找用户、每次改动的流程与高风险清单、开发版自动安装、教训循环与每周维护",
+      "reviewed": "2026-11-24",
+      "basis": "D-38（2026-11-24 流程统一）；D-25、D-36、D-37"
     },
     {
       "path": "docs/dev-rules/git-workflow.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "阶段 Git、远端授权与分支保护",
-      "reviewed": "2026-11-08",
-      "basis": "D-09/D-27 and M2 v1.0: current-stage amend with fixed M1 squash parent, preserving the immutable first commit"
+      "owner": "维护者",
+      "scope": "分支与提交、DCO、远端授权、main 保护与仓库设置镜像",
+      "reviewed": "2026-11-24",
+      "basis": "D-27、D-38（2026-11-24 流程统一）"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "本地参考、未跟踪文件、公开边界与阶段整理",
-      "reviewed": "2026-11-07",
-      "basis": "D-10、D-18、D-20；DELTA_REFERENCE_DIR 发现、仓库外 reference 索引、忽略目录与四分类阶段清理"
+      "reviewed": "2026-11-24",
+      "basis": "D-10、D-18、D-20；DELTA_REFERENCE_DIR 发现、仓库外 reference 索引、忽略目录与四分类阶段清理；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/dev-rules/quality-gates.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "验证与交付门禁",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0: verify-stage --stage M4 (--ui-smoke --ui-bench) established with same-fingerprint M1/M2/M3 regressions and M4-W01..W07 completion table"
+      "reviewed": "2026-11-24",
+      "basis": "M4 v1.0: verify-stage --stage M4 (--ui-smoke --ui-bench) established with same-fingerprint M1/M2/M3 regressions and M4-W01..W07 completion table；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/dev-rules/repo-map.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "仓库地图",
-      "reviewed": "2026-11-12",
-      "basis": "M4 v1.0: sim/sim_report, m4_schema, training, training_ui, training_cmd and verify_m4 module ownership; Packager.toml removed"
+      "reviewed": "2026-11-24",
+      "basis": "M4 v1.0: sim/sim_report, m4_schema, training, training_ui, training_cmd and verify_m4 module ownership; Packager.toml removed；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/engineering/delivery-plan.md",
       "kind": "plan",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 实施路线与验收计划",
-      "reviewed": "2026-11-14",
-      "basis": "D-33 inserts M5 training workbench; strategy research M6, extension M7; AC-31..AC-33"
+      "reviewed": "2026-11-24",
+      "basis": "D-33 inserts M5 training workbench; strategy research M6, extension M7; AC-31..AC-33；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/engineering/technology-selection.md",
       "kind": "research",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 技术栈与通用能力比较",
-      "reviewed": "2026-11-08",
-      "basis": "M2 locked compatibility; S-23 ZIP/Rust installer fallback with explicit MSVC target, encoded static-CRT flags and PE dependency checks"
+      "reviewed": "2026-11-24",
+      "basis": "M2 locked compatibility; S-23 ZIP/Rust installer fallback with explicit MSVC target, encoded static-CRT flags and PE dependency checks；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/2026-09-26-codex-rust-research.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "Codex 官方固定源码、API、许可证参考核查",
       "reviewed": "2026-09-26",
       "basis": "D-08；官方固定提交与 API 文档核查记录"
@@ -395,7 +366,7 @@
       "path": "docs/evidence/2026-09-26-documentation-framework.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "文档框架实际检查和负向夹具结果",
       "reviewed": "2026-09-26",
       "basis": "D-01～09；初始文档框架验证记录"
@@ -404,7 +375,7 @@
       "path": "docs/evidence/2026-09-26-technology-research.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "2026-09-26：Agent A 技术调研证据",
       "reviewed": "2026-09-26",
       "basis": "D-01～09；首轮注册表与仓库调研历史对照"
@@ -413,34 +384,34 @@
       "path": "docs/evidence/2026-11-07-stack-and-data-research.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "2026-11-07：GPUI 合理性复盘与金融数据底座调研证据",
-      "reviewed": "2026-11-07",
-      "basis": "D-20；2026-11-07 crates.io/PyPI/npm 查询与本地 gpui-kit/akshare 源码核查"
+      "reviewed": "2026-11-24",
+      "basis": "D-20；2026-11-07 crates.io/PyPI/npm 查询与本地 gpui-kit/akshare 源码核查；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/README.md",
       "kind": "index",
       "status": "reference",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "证据索引",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；版本化调研与验证证据索引"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；版本化调研与验证证据索引；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/governance/documentation-policy.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "文档治理与约束管理",
-      "reviewed": "2026-11-07",
-      "basis": "D-01～20；文档分层、状态与机械门禁规则"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；文档分层、状态与机械门禁规则；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/product-rules/core-product-principles.md",
       "kind": "rule",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 产品不变量",
       "reviewed": "2026-09-26",
       "basis": "D-01～07；七项长期产品不变量"
@@ -449,43 +420,34 @@
       "path": "docs/project-baseline.md",
       "kind": "index",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "项目关键事实与接续入口",
-      "reviewed": "2026-11-14",
-      "basis": "D-01～20；从文档治理基线重建后的关键入口与接续规则"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～20；从文档治理基线重建后的关键入口与接续规则；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/requirements/product-requirements.md",
       "kind": "requirements",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "DELTA 产品需求文档",
-      "reviewed": "2026-11-14",
-      "basis": "M2 B review: autosave drafts/scope, period/cutoff search, per-library credentials, log privacy and standalone Windows package dependencies"
-    },
-    {
-      "path": "docs/templates/agent-handoff.md",
-      "kind": "template",
-      "status": "active",
-      "owner": "Agent A / 维护者",
-      "scope": "A/B 交接与审核后的用户授权入口",
-      "reviewed": "2026-10-08",
-      "basis": "D-01～09、D-18；A/B 交接与远端授权请求模板"
+      "reviewed": "2026-11-24",
+      "basis": "M2 B review: autosave drafts/scope, period/cutoff search, per-library credentials, log privacy and standalone Windows package dependencies；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/templates/change-proposal.md",
       "kind": "template",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "变更提案模板",
-      "reviewed": "2026-10-08",
-      "basis": "D-01～07、D-18；跨模块变更提案模板"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～07、D-18；跨模块变更提案模板；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/templates/decision-record.md",
       "kind": "template",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "ADR 模板",
       "reviewed": "2026-09-26",
       "basis": "D-01～07；架构决策记录模板"
@@ -494,7 +456,7 @@
       "path": "docs/templates/module-spec.md",
       "kind": "template",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "模块规格模板",
       "reviewed": "2026-09-26",
       "basis": "D-01～07；模块规格说明模板"
@@ -503,16 +465,16 @@
       "path": "docs/templates/validation-report.md",
       "kind": "template",
       "status": "active",
-      "owner": "Agent A / 维护者",
+      "owner": "维护者",
       "scope": "验证报告模板",
-      "reviewed": "2026-10-08",
-      "basis": "D-01～07、D-18；验证报告模板"
+      "reviewed": "2026-11-24",
+      "basis": "D-01～07、D-18；验证报告模板；2026-11-24 D-38 流程统一"
     },
     {
       "path": "tests/fixtures/PROVENANCE.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B",
+      "owner": "维护者",
       "scope": "M1 测试夹具来源、合成边界与许可证说明",
       "reviewed": "2026-11-08",
       "basis": "M1 v2.6 Agent B 复查：实际子集、schema 3、m1-ledger-3 与来源/验证边界；见阶段报告 F-01～F-13"
@@ -521,7 +483,7 @@
       "path": "docs/evidence/2026-11-08-ccxt-rust-poc.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B",
+      "owner": "维护者",
       "scope": "官方 Rust ccxt 4.5.91 隔离构建、栈与公共网络实测",
       "reviewed": "2026-11-08",
       "basis": "M1 v2.6 POC-D06；精度/栈边界与 LOOP-03"
@@ -530,19 +492,19 @@
       "path": "docs/evidence/2026-11-08-m2-gpui-kit-spike.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent A",
+      "owner": "维护者",
       "scope": "M2 计划开始时 gpui-kit 0.9.0 本机构建、官方无头 Dock UI 测试静音实测与依赖许可盘点（OSS-09）",
-      "reviewed": "2026-11-08",
-      "basis": "crates.io gpui-kit 0.9.0 / gpui-pre 0.3.11；Windows 11 MSVC Rust 1.99.1 隔离 spike；0 可见窗口、焦点不变"
+      "reviewed": "2026-11-24",
+      "basis": "crates.io gpui-kit 0.9.0 / gpui-pre 0.3.11；Windows 11 MSVC Rust 1.99.1 隔离 spike；0 可见窗口、焦点不变；2026-11-24 D-38 流程统一"
     },
     {
       "path": "docs/evidence/2026-11-08-dependency-licenses.md",
       "kind": "evidence",
       "status": "reference",
-      "owner": "Agent B",
+      "owner": "维护者",
       "scope": "M1–M2 锁文件 885 个第三方包的许可表达式、分支、MPL-2.0 通知与盘点边界",
-      "reviewed": "2026-11-08",
-      "basis": "M2 final 885-package coverage; complete AND obligations, 48 pinned-text/source fallbacks and both real package archive hashes verified"
+      "reviewed": "2026-11-24",
+      "basis": "M2 final 885-package coverage; complete AND obligations, 48 pinned-text/source fallbacks and both real package archive hashes verified；2026-11-24 D-38 流程统一"
     }
   ]
 }

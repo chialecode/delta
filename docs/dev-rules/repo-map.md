@@ -1,17 +1,17 @@
 # 仓库地图
 
-当前实际目录由 [执行状态](../delivery/status.md) 和现场文件共同确定。项目已按 [D-20](../decisions/confirmed-decisions.md) 从文档治理基线重建，已完成并集成 M1 v2.6 数据底座（[M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）、M2 v1.0 桌面复盘工作台（[M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）与 M3 v1.0 安装更新及 v0.1.1 发布（[M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）与 M4 v1.0 K 线训练（[M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)），当前为 M5 训练工作台（[计划](../delivery/stage-plan.md)、[阶段报告](../delivery/stage-report.md)）。
+当前实际目录以 `main` 上的现场文件为准。项目已按 [D-20](../decisions/confirmed-decisions.md) 从文档治理基线重建，已完成并集成 M1 v2.6 数据底座（[M1 阶段报告](../evidence/2026-11-08-m1-stage-report.md)）、M2 v1.0 桌面复盘工作台（[M2 阶段报告](../evidence/2026-11-09-m2-stage-report.md)）与 M3 v1.0 安装更新及 v0.1.1 发布（[M3 阶段报告](../evidence/2026-11-12-m3-stage-report.md)）与 M4 v1.0 K 线训练（[M4 阶段报告](../evidence/2026-11-14-m4-stage-report.md)），以及 M5 训练工作台（[M5 阶段报告](../evidence/2026-11-15-m5-stage-report.md)）；进行中的工作见 [Issues](https://github.com/chialecode/delta/issues)。
 
 | 已有路径 | 责任 |
 | --- | --- |
-| 根 Markdown（`README.md`、`AGENTS.md`、`USER-ACTIONS.md` 等） | 产品入口、开发/审核/安全/设计入口与用户待办唯一入口 |
+| 根 Markdown（`README.md`、`AGENTS.md`、`CONTRIBUTING.md`、`REVIEW.md`、`LESSONS.md` 等） | 产品入口、开发/审核/安全/设计入口与开发教训 |
 | `docs/requirements` | FR/NFR 需求正本 |
 | `docs/design` | 系统架构、自动化数据平面、数据模型、金融规则、交互、AI 与整合契约 |
 | `docs/engineering` | 技术栈重评、MVP 路线和 AC 定义 |
 | `docs/governance` | 文档权威与登记（`document-registry.json`） |
 | `docs/dev-rules`、`docs/design-rules`、`docs/product-rules` | 工程、UI、产品与本地参考约束 |
-| `docs/decisions` | 已确认决定（D-01～D-32）、ADR-0001～0003、工程事项台账 |
-| `docs/delivery`、`docs/evidence`、`docs/templates` | 当前计划（`stage-plan.md`）、阶段报告（`stage-report.md`）、状态（`status.md`）、需求追踪、调研证据与模板 |
+| `docs/decisions` | 已确认决定（D-01～D-38）、ADR-0001～0003、上游事项台账 |
+| `docs/delivery`、`docs/evidence`、`docs/templates` | 需求追踪（`traceability.json`）与各阶段用例（`m*-stage-cases.json`）、带日期的阶段报告与调研证据、模板 |
 | `scripts`、`.github` | 文档门禁（`check_docs.py`）、构建期逐包许可收集与回归（`collect_third_party_licenses.py`、`test_collect_third_party_licenses.py`）、CI/PR/分支保护配置 |
 
 ## M1～M5 实现结构与依赖边界（已建立）

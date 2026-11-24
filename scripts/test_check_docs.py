@@ -11,7 +11,9 @@ from pathlib import Path
 import check_docs
 
 
-def _build_minimal_repo(root: Path, extra_docs: dict[str, str] | None = None) -> None:
+def _build_minimal_repo(
+    root: Path, extra_docs: dict[str, str] | None = None, drop: tuple[str, ...] = ()
+) -> None:
     docs: dict[str, str] = {
         "AGENTS.md": "# Entry\n",
         "CLAUDE.md": "@AGENTS.md\n",
@@ -26,6 +28,8 @@ def _build_minimal_repo(root: Path, extra_docs: dict[str, str] | None = None) ->
     }
     if extra_docs:
         docs.update(extra_docs)
+    for rel in drop:
+        docs.pop(rel, None)
 
     registry_docs = []
     for rel, content in docs.items():
@@ -140,6 +144,46 @@ class CheckDocsTests(unittest.TestCase):
             self.assertTrue(
                 any("escape.txt: symlink escapes repository" in e for e in errors), errors
             )
+
+
+    def _write_cases(self, root: Path, packages: list[str]) -> None:
+        cases = {
+            "schemaVersion": 1,
+            "planVersion": "1.0",
+            "stage": "M1",
+            "cases": [
+                {
+                    "id": "M1-A-01",
+                    "precondition": "synthetic",
+                    "steps": ["run"],
+                    "expected": "ok",
+                    "evidence": "report",
+                    "mode": "automated",
+                    "requirements": ["FR-CORE-01"],
+                    "acceptance": ["AC-01"],
+                    "work_packages": packages,
+                }
+            ],
+        }
+        (root / "docs" / "delivery" / "m1-stage-cases.json").write_text(json.dumps(cases), encoding="utf-8")
+
+    def test_work_packages_checked_against_stage_plan_when_present(self):
+        with tempfile.TemporaryDirectory(prefix="delta-script-test-") as tmp:
+            root = Path(tmp)
+            _build_minimal_repo(root)
+            self._write_cases(root, ["M1-W09"])
+            errors, _, _ = check_docs.check(root)
+            self.assertIn("M1-A-01: unknown work package: M1-W09", errors)
+            self.assertIn("M1 package has no case: M1-W01", errors)
+
+    def test_work_packages_skipped_without_stage_plan(self):
+        with tempfile.TemporaryDirectory(prefix="delta-script-test-") as tmp:
+            root = Path(tmp)
+            _build_minimal_repo(root, drop=("docs/delivery/stage-plan.md",))
+            self._write_cases(root, ["M1-W09"])
+            errors, _, _ = check_docs.check(root)
+            self.assertFalse([e for e in errors if "work package" in e or "package has no case" in e], errors)
+            self.assertFalse([e for e in errors if "M1-A-01" in e], errors)
 
 
 if __name__ == "__main__":

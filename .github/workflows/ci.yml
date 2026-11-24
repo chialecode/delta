@@ -1,4 +1,4 @@
-name: Documentation
+name: CI
 on:
   pull_request:
   push:
@@ -6,10 +6,11 @@ on:
 permissions:
   contents: read
 jobs:
-  docs:
+  # Required by the main-protection ruleset; no path filters so every PR reports it.
+  repository-quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Repository Actions allowlist only permits actions/checkout and actions/setup-node;
+      # Repository Actions allowlist only permits actions/checkout (.github/actions-policy.json);
       # check_docs.py is dependency-free, so use the runner's preinstalled python3.
       - run: python3 --version && python3 scripts/check_docs.py

@@ -1,6 +1,6 @@
 # DELTA 产品需求文档
 
-版本 0.3 · 2026-11-07 · 保留原需求编号；按 [D-20](../decisions/confirmed-decisions.md) 将项目阶段重心调整为“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用”。已确认和默认值见 [决定记录](../decisions/confirmed-decisions.md)，实际交付见 [当前状态](../delivery/status.md)。
+版本 0.3 · 2026-11-07 · 保留原需求编号；按 [D-20](../decisions/confirmed-decisions.md) 将项目阶段重心调整为“M1 金融数据来源与本地自动化数据底座优先 → M2 完整资产复盘应用”。已确认和默认值见 [决定记录](../decisions/confirmed-decisions.md)，实际交付见 [逐需求追踪](../delivery/traceability.json)。
 
 ## 1. 产品定位
 

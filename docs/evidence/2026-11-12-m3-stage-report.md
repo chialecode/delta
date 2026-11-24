@@ -135,4 +135,4 @@ M3 用例（报告 `.local/reports/m3/verify-stage-report.json`，日志在同�
 
 ## 接续
 
-A 审核收敛，工程阻断为零。首选下一步：用户按 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-12` 授权推送本阶段分支并创建 PR。ACT-10（生成并备份签名密钥文件）、ACT-11（v0.1.1 发布）与 H-03、H-04 人工检查独立推进，不是推送/PR 的前提。
+A 审核收敛，工程阻断为零。首选下一步：用户按 [USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md) `ACT-12` 授权推送本阶段分支并创建 PR。ACT-10（生成并备份签名密钥文件）、ACT-11（v0.1.1 发布）与 H-03、H-04 人工检查独立推进，不是推送/PR 的前提。

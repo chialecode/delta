@@ -1399,7 +1399,7 @@ pub(crate) fn run_verify_stage_m5(
         tier: "manual".into(),
         status: "not-run".into(),
         elapsed_ms: 0,
-        evidence: "Manual check USER-ACTIONS H-06 (hands-on training workbench on the installed dev build)".into(),
+        evidence: "Manual check H-06, needs-user issue #21 (hands-on training workbench on the installed dev build)".into(),
     });
 
     let failed = !report.errors.is_empty()

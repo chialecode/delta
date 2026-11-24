@@ -87,7 +87,7 @@
 - crates.io `gpui-kit 0.9.0` 发布于 2026-11-02 13:43:39 UTC，依赖 `gpui-pre =0.3.11`、`gpui-pre-platform =0.3.11` 等精确快照；`0.8.1` 发布于 2026-10-26（本地参考副本为其源码，锁定 `=0.3.10`）。
 - Alpaca 历史公司行动的稳定端点为 Market Data `GET /v1/corporate-actions`；`v1beta1` 仅用于部分流式/预览路径，旧 Trading API `/v2/corporate_actions/announcements` 已弃用。
 
-自审结论与修订：按用户 **D-22** 全项目彻底采用 **100% 纯 Rust 实现**（移除 `workers/python` 与运行期 Python 依赖，关闭 `OSS-03`）；按用户 **D-23**（关闭 `Q-01`）将最高频主力 **富途牛牛 CSV** 与 **欧易 OKX 公开现货 REST（`bar=1Dutc`）+ 现货账单 CSV** 提升为 M1 必做（兼顾老虎、IBKR、长桥、嘉信、东方财富、币安）；本机 MSVC + `rustup` 环境复核通过（关闭 `ACT-07`）；M1 存储收敛为 SQLite 单库（Parquet/DuckDB 转 `OSS-10`）；`delta-app` 对外采用同步命令/作业句柄以兼容 M2 GPUI 执行器（`OSS-09`）；连接器按“必做/扩展”分层；补齐凭据、数据条款、汇率非发布日规则（A-07）与 AC-20 子集交付；清理 D-21 后残留的 Tauri 推荐表述。详见 [M1 计划 v2.3](../delivery/stage-plan.md)。
+自审结论与修订：按用户 **D-22** 全项目彻底采用 **100% 纯 Rust 实现**（移除 `workers/python` 与运行期 Python 依赖，关闭 `OSS-03`）；按用户 **D-23**（关闭 `Q-01`）将最高频主力 **富途牛牛 CSV** 与 **欧易 OKX 公开现货 REST（`bar=1Dutc`）+ 现货账单 CSV** 提升为 M1 必做（兼顾老虎、IBKR、长桥、嘉信、东方财富、币安）；本机 MSVC + `rustup` 环境复核通过（关闭 `ACT-07`）；M1 存储收敛为 SQLite 单库（Parquet/DuckDB 转 `OSS-10`）；`delta-app` 对外采用同步命令/作业句柄以兼容 M2 GPUI 执行器（`OSS-09`）；连接器按“必做/扩展”分层；补齐凭据、数据条款、汇率非发布日规则（A-07）与 AC-20 子集交付；清理 D-21 后残留的 Tauri 推荐表述。详见 [M1 计划 v2.3](https://github.com/chialecode/delta/blob/0370b7e9103d0172a7ab47613ea253949d6a9b8b/docs/delivery/stage-plan.md)。
 
 ## 5. A 计划复审实测（2026-11-07 v2.4）
 

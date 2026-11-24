@@ -914,22 +914,22 @@ pub(super) fn run_verify_stage_m2(
             });
         }
 
-        // Manual cases (`M2-M-01`..`M2-M-03`): tracked in USER-ACTIONS H-01..H-03, never fabricated as passed
+        // Manual cases (`M2-M-01`..`M2-M-03`): tracked in needs-user issues #18 (H-01, H-02) and #19 (H-03), never fabricated as passed
         for (mid, pkg, desc) in [
             (
                 "M2-M-01",
                 "M2-W03,M2-W06",
-                "Manual check USER-ACTIONS H-01 (Chinese IME composition in notes, search, and import fields)",
+                "Manual check H-01, needs-user issue #18 (Chinese IME composition in notes, search, and import fields)",
             ),
             (
                 "M2-M-02",
                 "M2-W03,M2-W04,M2-W05",
-                "Manual check USER-ACTIONS H-02 (Keyboard navigation, focus, Esc, 125%/150% scaling, and color convention)",
+                "Manual check H-02, needs-user issue #18 (Keyboard navigation, focus, Esc, 125%/150% scaling, and color convention)",
             ),
             (
                 "M2-M-03",
                 "M2-W08",
-                "Manual check USER-ACTIONS H-03 (Clean-machine Windows Sandbox per-user install, coexistence, and uninstall)",
+                "Manual check H-03, needs-user issue #19 (Clean-machine Windows Sandbox per-user install, coexistence, and uninstall)",
             ),
         ] {
             report.case_results.push(CaseResultRecord {
@@ -1019,7 +1019,7 @@ pub(super) fn run_verify_stage_m2(
             tier: "live".into(),
             status: "not-run".into(),
             elapsed_ms: 0,
-            evidence: "USER-ACTIONS ACT-01 real model endpoint/credential not configured; dual-protocol loopback verified in M2-A-13 / M2-K03".into(),
+            evidence: "needs-user issue #16 (ACT-01): real model endpoint/credential not configured; dual-protocol loopback verified in M2-A-13 / M2-K03".into(),
         });
 
         if report.case_results.iter().any(|c| c.status == "failed") {

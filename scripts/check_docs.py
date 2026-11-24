@@ -286,7 +286,8 @@ def check(root: Path) -> tuple[list[str], int, int]:
         if cases.get("stage") != stage_prefix:
             errors.append(f"{stage_prefix} cases: mismatched stage field")
         covered, case_ids, packages = set(), Counter(), set()
-        plan_text = documents.get("docs/delivery/stage-plan.md", "")
+        # Since D-38 stage plans live in issues; work packages are cross-checked only while a plan file exists.
+        plan_text = documents.get("docs/delivery/stage-plan.md")
         for case in cases.get("cases", []):
             cid = case.get("id", "")
             case_ids[cid] += 1
@@ -304,12 +305,12 @@ def check(root: Path) -> tuple[list[str], int, int]:
                     errors.append(f"{cid}: unknown AC: {aid}")
             for package in case.get("work_packages", []):
                 packages.add(package)
-                if not re.search(rf"\b{re.escape(package)}\b", plan_text):
+                if plan_text is not None and not re.search(rf"\b{re.escape(package)}\b", plan_text):
                     errors.append(f"{cid}: unknown work package: {package}")
         for cid, count in case_ids.items():
             if not re.fullmatch(rf"{stage_prefix}-[AML]-\d{{2}}", cid) or count != 1:
                 errors.append(f"invalid or duplicate case ID: {cid}")
-        for package in set(re.findall(rf"{stage_prefix}-W\d{{2}}", plan_text)) - packages:
+        for package in set(re.findall(rf"{stage_prefix}-W\d{{2}}", plan_text or "")) - packages:
             errors.append(f"{stage_prefix} package has no case: {package}")
         if not case_ids:
             errors.append(f"{stage_prefix} has no executable case definitions")

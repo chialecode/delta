@@ -450,13 +450,13 @@
         "AC-31",
         "AC-33"
       ],
-      "precondition": "Latest delta-dev build installed by B at handoff; USER-ACTIONS H-06 steps.",
+      "precondition": "Latest delta-dev build installed after the merge to main; steps in needs-user issue #21 (H-06).",
       "steps": [
         "Start the default BTC game, play continuously, trade with quick buttons and line orders, drag-modify, undo, draw, finish and reveal.",
         "Transfer funds, open training history and account analysis."
       ],
       "expected": "The person records whether any misclick filled an order, whether playback and markers are readable, and whether account numbers make sense, with the build source_fingerprint.",
-      "evidence": "USER-ACTIONS.md (H-06)"
+      "evidence": "needs-user issue #21 (H-06)"
     }
   ]
 }

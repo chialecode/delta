@@ -433,7 +433,7 @@
         "Use keyboard shortcuts, place each order type, pause and resume, read the report and reveal."
       ],
       "expected": "No accidental order submission; hidden mode stays readable; report and reveal are understandable; issues recorded with build fingerprint.",
-      "evidence": "USER-ACTIONS.md H-05"
+      "evidence": "needs-user issue #21 (H-05)"
     },
     {
       "id": "M4-L-01",

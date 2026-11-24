@@ -1,6 +1,6 @@
 # M2 GPUI Kit 0.9.0 构建与无头 UI 测试 spike
 
-记录与实测：2026-11-08；执行者：Agent A；作用域：M2 计划开始时的 `OSS-09` 首个技术验证（只构建、只跑无头测试，不打开真实窗口）。结论供 [M2 计划](../delivery/stage-plan.md) 定案；具体兼容版本由 B 在产品工作区再次锁定并提供运行证据。
+记录与实测：2026-11-08；执行者：Agent A；作用域：M2 计划开始时的 `OSS-09` 首个技术验证（只构建、只跑无头测试，不打开真实窗口）。结论供 [M2 计划](https://github.com/chialecode/delta/blob/5f30f6e1ddf6383f25317d5c87acd21934e75ed9/docs/delivery/stage-plan.md) 定案；具体兼容版本由 B 在产品工作区再次锁定并提供运行证据。
 
 ## 1. 官方来源与上游事实
 

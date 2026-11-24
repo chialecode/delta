@@ -1312,7 +1312,7 @@ pub(crate) fn run_verify_stage_m4(
         tier: "manual".into(),
         status: "not-run".into(),
         elapsed_ms: 0,
-        evidence: "Manual check USER-ACTIONS H-05 (hands-on hidden US equity and crypto sessions, keyboard shortcuts, order types, pause/resume, report and reveal)".into(),
+        evidence: "Manual check H-05, needs-user issue #21 (hands-on hidden US equity and crypto sessions, keyboard shortcuts, order types, pause/resume, report and reveal)".into(),
     });
     report.case_results.push(CaseResultRecord {
         case_id: "M4-L-01".into(),
@@ -1320,7 +1320,7 @@ pub(crate) fn run_verify_stage_m4(
         tier: "live".into(),
         status: "not-run".into(),
         elapsed_ms: 0,
-        evidence: "USER-ACTIONS ACT-01 real model endpoint/credential not configured; dual-protocol loopback AI review verified in M4-A-14".into(),
+        evidence: "needs-user issue #16 (ACT-01): real model endpoint/credential not configured; dual-protocol loopback AI review verified in M4-A-14".into(),
     });
 
     let failed = !report.errors.is_empty()

@@ -2,7 +2,7 @@
 
 更新：2026-11-08；角色：Agent B（第 1～5 节）/ Agent A 集中复核（第 6 节）；唯一计划：M1 v2.6（`docs/delivery/stage-plan.md` 在 PR #1 中的版本，Git 历史归档）。分支 `codex/m1-data-foundation`；固定父提交 `8329f638536e4f303764045a2f10a2c1ab31fcd3`。交付完整 SHA 在 amend 后的交接消息给出，报告用父提交与源码指纹避免自引用。既有未跟踪 `workers/agent/` 保持原样，未读取、修改或暂存；没有远端动作。
 
-> 2026-11-08 归档说明（Agent A，M2 开始时阶段清理）：本报告原位于 `docs/delivery/stage-report.md`，M1 已经 PR #1 squash 合并为 `main` 提交 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`（父提交 `8329f63`，CI `docs` 与 DCO 通过）。内容保持 M1 交付时的事实，作为 M1 验收证据保留；第 5～6 节的“首选下一步”与 prompt 是当时交接，已由 `ACT-08` 执行完毕，当前状态以 [执行状态](../delivery/status.md) 为准。
+> 2026-11-08 归档说明（Agent A，M2 开始时阶段清理）：本报告原位于 `docs/delivery/stage-report.md`，M1 已经 PR #1 squash 合并为 `main` 提交 `0370b7e9103d0172a7ab47613ea253949d6a9b8b`（父提交 `8329f63`，CI `docs` 与 DCO 通过）。内容保持 M1 交付时的事实，作为 M1 验收证据保留；第 5～6 节的“首选下一步”与 prompt 是当时交接，已由 `ACT-08` 执行完毕，当前状态以 [执行状态](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/docs/delivery/status.md) 为准。
 
 本报告替代此前缺少实际断言支撑的“全部通过”表述。B 自检、A 技术审核和产品真实样本验收分别判断。测试夹具的真实性见 [PROVENANCE](../../tests/fixtures/PROVENANCE.md)，官方 ccxt 的实际观察见 [POC-D06](2026-11-08-ccxt-rust-poc.md)。
 
@@ -172,4 +172,4 @@ gate 内 G-01 运行于文档回写前；文档回写不改变源码指纹，回
 - **A 技术审核**：**passed with A fixes**。A-01～A-06 已修复并通过上述实跑；无剩余 M1 必做工程阻断。非阻塞项：`LEDGER-01`、`LOOP-03`。
 - **产品验收**：未完成。自动证据与公共服务证据如上；`ACT-03` 真实去标识样本与 Tiingo / Alpaca / Longport 私有服务 not-run；M2 FR/AC 未验收。人工/私有项可独立推进，不阻塞远端授权请求。
 - 修正按 D-09 amend 进同一阶段提交（带 `Signed-off-by`，D-27），实跑在提交内容上执行。完整 SHA 见交接消息与 `git rev-parse HEAD`。
-- **首选下一步**：用户按 [USER-ACTIONS](../../USER-ACTIONS.md) `ACT-08` 授权具体远端动作。未执行 push / PR，未创建其他 Agent 会话。
+- **首选下一步**：用户按 [USER-ACTIONS](https://github.com/chialecode/delta/blob/805d5aa011a25c92b399237543fd50e1b5fdde68/USER-ACTIONS.md) `ACT-08` 授权具体远端动作。未执行 push / PR，未创建其他 Agent 会话。
