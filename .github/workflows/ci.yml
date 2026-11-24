@@ -20,6 +20,10 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
       CARGO_TERM_COLOR: never
       PYTHONIOENCODING: utf-8
+    # pwsh only reports the last command of a multi-line step; bash runs with -eo pipefail.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
