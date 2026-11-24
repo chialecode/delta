@@ -6,10 +6,11 @@
 # the remote `main-protection` ruleset and its required `repository-quality` check.
 set -eu
 root=$(git rev-parse --show-toplevel)
-# Pick an interpreter that really runs (the Windows Store "python" alias exists but fails).
+# Pick an interpreter that really runs and is new enough for the gate (3.12+, it imports
+# tomllib); the Windows Store "python" alias exists but fails.
 py=
 for candidate in python python3 py; do
-  if "$candidate" -c "import sys" >/dev/null 2>&1; then py=$candidate; break; fi
+  if "$candidate" -c "import sys; sys.exit(sys.version_info < (3, 12))" >/dev/null 2>&1; then py=$candidate; break; fi
 done
-if [ -z "$py" ]; then echo "pre-push: Python 3 not found; install it or push with --no-verify and say why in the PR" >&2; exit 1; fi
+if [ -z "$py" ]; then echo "pre-push: Python 3.12+ not found; install it or push with --no-verify and say why in the PR" >&2; exit 1; fi
 "$py" -B "$root/scripts/quick_gate.py" --all

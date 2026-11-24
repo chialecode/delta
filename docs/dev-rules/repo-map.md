@@ -12,7 +12,7 @@
 | `docs/dev-rules`、`docs/design-rules`、`docs/product-rules` | 工程、UI、产品与本地参考约束 |
 | `docs/decisions` | 已确认决定（D-01～D-38）、ADR-0001～0003、上游事项台账 |
 | `docs/delivery`、`docs/evidence`、`docs/templates` | 需求追踪（`traceability.json`）与各阶段用例（`m*-stage-cases.json`）、带日期的阶段报告与调研证据、模板 |
-| `scripts`、`.github` | 文档门禁（`check_docs.py`）、构建期逐包许可收集与回归（`collect_third_party_licenses.py`、`test_collect_third_party_licenses.py`）、CI/PR/分支保护配置 |
+| `scripts`、`.github`、`.githooks` | 本地 `pre-push` 门禁（`.githooks/pre-push`，跑 `quick_gate.py --all`）、文档门禁（`check_docs.py`）、构建期逐包许可收集与回归（`collect_third_party_licenses.py`、`test_collect_third_party_licenses.py`）、CI/PR/分支保护配置 |
 
 ## M1～M5 实现结构与依赖边界（已建立）
 
