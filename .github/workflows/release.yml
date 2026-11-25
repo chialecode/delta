@@ -195,12 +195,13 @@ jobs:
       - name: Fetch pinned NSIS 3.13
         run: python -B scripts/fetch_nsis.py
 
-      # Compile delta-cli and static-CRT workspace dependencies before the signing secret exists.
-      - name: Pre-build delta-cli and static-CRT dependencies
+      # Compile delta-cli and static-CRT desktop/cli crates (including build.rs) before the
+      # signing secret exists so the temporary key file lifetime is minimized.
+      - name: Pre-build delta-cli and static-CRT binaries
         run: |
           cargo build --release --locked -p delta-cli
           CARGO_ENCODED_RUSTFLAGS=$'-C\x1ftarget-feature=+crt-static' \
-            cargo build --release --locked --target x86_64-pc-windows-msvc -p delta-app --target-dir .local/target-packages
+            cargo build --release --locked --target x86_64-pc-windows-msvc -p delta-desktop -p delta-cli --target-dir .local/target-packages
 
       - name: Build and sign release installer
         shell: pwsh

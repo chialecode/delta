@@ -1446,8 +1446,16 @@ pub(crate) fn release_build(
         )
     })?;
     let is_release = identity == InstallIdentity::Release;
-    // Test rehearsals use their own throw-away key; the release key never signs them.
-    if !is_release {
+    if is_release {
+        if let Some(path) = key_file {
+            if inside_repository(path, root) {
+                return Err(failure(
+                    "RELEASE_KEY_STORE",
+                    "refusing to read a release signing key inside the repository",
+                ));
+            }
+        }
+    } else {
         let Some(path) = key_file else {
             return Err(failure(
                 "RELEASE_KEY_FILE",
@@ -2686,6 +2694,18 @@ mod tests {
             load_signing_key(Some(&hex_path), false).unwrap().to_bytes(),
             generated.to_bytes()
         );
+        // `release_build` rejects an explicit release signing key located inside a git repository.
+        let in_repo_key = fake_repo.join("release.key");
+        fs::write(&in_repo_key, hex::encode(generated.to_bytes())).unwrap();
+        let in_repo_err = release_build(
+            &fake_repo,
+            &root.join("out"),
+            InstallIdentity::Release,
+            "0.1.2",
+            Some(&in_repo_key),
+        )
+        .unwrap_err();
+        assert_eq!(in_repo_err.code, "RELEASE_KEY_STORE");
         // Release verify rejects missing files cleanly.
         let missing_dir = root.join("empty-release");
         fs::create_dir_all(&missing_dir).unwrap();

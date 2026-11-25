@@ -9,9 +9,7 @@
     "verified_allowed": false,
     "patterns_allowed": [
       "actions/cache@*",
-      "actions/checkout@*",
-      "actions/download-artifact@*",
-      "actions/upload-artifact@*"
+      "actions/checkout@*"
     ]
   },
   "workflowPermissions": {

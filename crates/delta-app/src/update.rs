@@ -136,7 +136,7 @@ const PKCS8_ED25519_V1_PREFIX: [u8; 16] = [
     0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
 ];
 const PKCS8_ED25519_V2_PREFIX: [u8; 16] = [
-    0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+    0x30, 0x51, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
 ];
 const PKCS8_ED25519_V2_PUB_PREFIX: [u8; 3] = [0x81, 0x21, 0x00];
 const PEM_PRIVATE_BEGIN: &str = concat!("-----BEGIN ", "PRIVATE KEY-----");
@@ -1625,6 +1625,31 @@ mod tests {
             parse_signing_key(&pem_v2).unwrap().to_bytes(),
             key.to_bytes()
         );
+
+        // Independent RFC 8410 Section 10.3 Ed25519 test vectors (not built from production
+        // prefix constants): verify both PKCS#8 v1 (48-byte DER) and v2 OneAsymmetricKey
+        // (83-byte DER, SEQUENCE length 0x51 = 81).
+        let rfc_seed = "d4ee72dbf913584ad5b6d8f1f769f8ad3afe7c28cbf1d4fbe097a88f44755842";
+        let rfc_pub = "19bf44096984cdfe8541bac167dc3b96c85086aa30b6b6cb0c5c38ad703166e1";
+        let rfc_v1_pem = format!(
+            "{PEM_PRIVATE_BEGIN}\nMC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC\n{PEM_PRIVATE_END}\n"
+        );
+        let rfc_v1 = parse_signing_key(&rfc_v1_pem).unwrap();
+        assert_eq!(hex::encode(rfc_v1.to_bytes()), rfc_seed);
+        assert_eq!(hex::encode(rfc_v1.verifying_key().to_bytes()), rfc_pub);
+
+        let rfc_v2_pem = format!(
+            "{PEM_PRIVATE_BEGIN}\nMFECAQEwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhCgSEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n{PEM_PRIVATE_END}\n"
+        );
+        let rfc_v2 = parse_signing_key(&rfc_v2_pem).unwrap();
+        assert_eq!(hex::encode(rfc_v2.to_bytes()), rfc_seed);
+        assert_eq!(hex::encode(rfc_v2.verifying_key().to_bytes()), rfc_pub);
+
+        // Wrong SEQUENCE length (0x53 instead of 0x51) in v2 DER must be rejected.
+        let bad_len_v2_pem = format!(
+            "{PEM_PRIVATE_BEGIN}\nMFMCAQEwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhCgSEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\n{PEM_PRIVATE_END}\n"
+        );
+        assert!(parse_signing_key(&bad_len_v2_pem).is_err());
 
         // Mismatched public key in v2 DER must be rejected.
         let mut bad_v2 = der_v2.clone();
