@@ -116,6 +116,19 @@ class ReleaseBundleTests(unittest.TestCase):
     def test_bundle_validates_writes_lf_checksums_and_d39_migration_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
+            fake_repo = tmp_path / "repo"
+            fake_repo.mkdir()
+            _git(fake_repo, "init")
+            key_rel = Path("crates/delta-app/src/release-signing-key.json")
+            (fake_repo / key_rel).parent.mkdir(parents=True, exist_ok=True)
+            (fake_repo / key_rel).write_bytes((REPO_ROOT / key_rel).read_bytes())
+            _git(fake_repo, "add", ".")
+            _git(fake_repo, "commit", "-m", "feat: v0.1.1 baseline")
+            _git(fake_repo, "tag", "v0.1.1")
+            (fake_repo / "CHANGELOG.txt").write_text("v0.1.2 change\n", encoding="utf-8")
+            _git(fake_repo, "add", "CHANGELOG.txt")
+            _git(fake_repo, "commit", "-m", "feat(installer): switch to NSIS")
+
             rel_dir, sha = self._make_fake_release(tmp_path, "0.1.2", b"fake-nsis-installer")
             out_dir = tmp_path / "dist-release"
             result = release.build_bundle(
@@ -123,7 +136,7 @@ class ReleaseBundleTests(unittest.TestCase):
                 rel_dir,
                 out_dir,
                 previous_tag="v0.1.1",
-                root=REPO_ROOT,
+                root=fake_repo,
             )
             self.assertEqual(result["status"], "bundled")
             self.assertEqual(result["sha256"], sha)
@@ -135,6 +148,7 @@ class ReleaseBundleTests(unittest.TestCase):
             )
             notes = (out_dir / "notes.md").read_text(encoding="utf-8")
             self.assertIn("从 v0.1.1 升级说明", notes)
+            self.assertIn("feat(installer): switch to NSIS", notes)
             self.assertIn(sha, notes)
             sums = (out_dir / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
             self.assertEqual(len(sums), 3)
