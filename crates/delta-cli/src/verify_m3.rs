@@ -1815,12 +1815,13 @@ fn case_a09(gate: &mut Gate, packages: &Packages) -> Result<(String, TestRelease
     )?;
     let missing_output = gate.temp.join("release-missing-key");
     let keys = gate.temp.join("release-keys");
+    let missing_key = keys.join(format!("missing-{run}.key"));
     let missing = installer::release_build(
         &gate.root,
         &missing_output,
         InstallIdentity::Test,
         &version,
-        &keys.join(format!("missing-{run}.key")),
+        Some(&missing_key),
     );
     ensure(
         matches!(&missing, Err(error) if error.code == "RELEASE_KEY_MISSING"),
@@ -1858,7 +1859,7 @@ fn case_a09(gate: &mut Gate, packages: &Packages) -> Result<(String, TestRelease
             &gate.temp.join("release"),
             InstallIdentity::Test,
             &version,
-            &key_file,
+            Some(&key_file),
         )?,
     };
     let artifacts = &release.artifacts;
@@ -1902,7 +1903,7 @@ fn case_a09(gate: &mut Gate, packages: &Packages) -> Result<(String, TestRelease
         )?;
     }
     // The private key must not appear in any gate log, report or artifact text.
-    let secret = hex::encode(installer::load_signing_key(&key_file, false)?.to_bytes());
+    let secret = hex::encode(installer::load_signing_key(Some(&key_file), false)?.to_bytes());
     let mut scanned = 0;
     for directory in [
         gate.logs.clone(),

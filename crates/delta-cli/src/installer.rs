@@ -1341,28 +1341,43 @@ fn inside_repository(path: &Path, repository: &Path) -> bool {
         .any(|ancestor| ancestor.join(".git").exists())
 }
 
-/// Load the signing key. The release identity also accepts `DELTA_RELEASE_SIGNING_KEY` (CI);
-/// otherwise the key file is read. The key never reaches logs or artifacts.
+/// Load the signing key. When `allow_environment` is true (release builds without an explicit
+/// `--key-file`), accepts `UPDATE_SIGNING_KEY_PEM` or `DELTA_RELEASE_SIGNING_KEY`; otherwise reads
+/// `key_file`. Supports both 32-byte hex and PKCS#8 Ed25519 PEM. The key never reaches logs or
+/// artifacts.
 pub(crate) fn load_signing_key(
-    key_file: &Path,
+    key_file: Option<&Path>,
     allow_environment: bool,
 ) -> Result<ed25519_dalek::SigningKey, ErrorEnvelope> {
-    let hex_key = match std::env::var("DELTA_RELEASE_SIGNING_KEY") {
-        Ok(value) if allow_environment && !value.trim().is_empty() => value,
-        _ => fs::read_to_string(key_file).map_err(|_| {
-            failure(
-                "RELEASE_KEY_MISSING",
-                format!(
-                    "no signing key at {}; nothing was built or published",
-                    key_file.display()
-                ),
-            )
-        })?,
+    let env_key = if allow_environment {
+        ["UPDATE_SIGNING_KEY_PEM", "DELTA_RELEASE_SIGNING_KEY"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty()))
+    } else {
+        None
     };
-    update::parse_signing_key(hex_key.trim()).map_err(|_| {
+    let raw_key = match env_key {
+        Some(value) => value,
+        None => {
+            let path = match key_file {
+                Some(path) => path.to_path_buf(),
+                None => default_release_key_file()?,
+            };
+            fs::read_to_string(&path).map_err(|_| {
+                failure(
+                    "RELEASE_KEY_MISSING",
+                    format!(
+                        "no signing key at {}; nothing was built or published",
+                        path.display()
+                    ),
+                )
+            })?
+        }
+    };
+    update::parse_signing_key(raw_key.trim()).map_err(|_| {
         failure(
             "RELEASE_KEY_INVALID",
-            "the signing key file is not a valid key",
+            "the signing key is not a valid Ed25519 hex or PKCS#8 PEM key",
         )
     })
 }
@@ -1422,7 +1437,7 @@ pub(crate) fn release_build(
     output: &Path,
     identity: InstallIdentity,
     version: &str,
-    key_file: &Path,
+    key_file: Option<&Path>,
 ) -> Result<ReleaseArtifacts, ErrorEnvelope> {
     let channel = identity.update_channel().ok_or_else(|| {
         failure(
@@ -1431,16 +1446,30 @@ pub(crate) fn release_build(
         )
     })?;
     let is_release = identity == InstallIdentity::Release;
-    // Test rehearsals use their own throw-away key; the release key never signs them.
-    if !is_release
-        && default_release_key_file().is_ok_and(|default| same_path_normalized(&default, key_file))
-    {
-        return Err(failure(
-            "RELEASE_KEY_FILE",
-            "test releases must use a separate --key-file, never the release signing key",
-        ));
+    if is_release {
+        if let Some(path) = key_file {
+            if inside_repository(path, root) {
+                return Err(failure(
+                    "RELEASE_KEY_STORE",
+                    "refusing to read a release signing key inside the repository",
+                ));
+            }
+        }
+    } else {
+        let Some(path) = key_file else {
+            return Err(failure(
+                "RELEASE_KEY_FILE",
+                "test releases must pass an explicit --key-file, never the release signing key",
+            ));
+        };
+        if default_release_key_file().is_ok_and(|default| same_path_normalized(&default, path)) {
+            return Err(failure(
+                "RELEASE_KEY_FILE",
+                "test releases must use a separate --key-file, never the release signing key",
+            ));
+        }
     }
-    let key = load_signing_key(key_file, is_release)?;
+    let key = load_signing_key(key_file, is_release && key_file.is_none())?;
     if identity == InstallIdentity::Release {
         let embedded = update::embedded_release_public_key().ok_or_else(|| {
             failure(
@@ -1565,6 +1594,535 @@ pub(crate) fn serve_test_release(
     }));
     std::thread::sleep(duration);
     Ok(())
+}
+
+/// Verify a signed release directory using only the embedded release public key (never a private
+/// key): checks manifest metadata, Ed25519 signature, installer size/SHA-256, tamper rejection,
+/// and `SHA256SUMS` (when present).
+pub(crate) fn release_verify(
+    directory: &Path,
+    expected_version: &str,
+) -> Result<Value, ErrorEnvelope> {
+    let embedded = update::embedded_release_public_key().ok_or_else(|| {
+        failure(
+            "RELEASE_PUBLIC_KEY_NOT_EMBEDDED",
+            "release-signing-key.json has no public key",
+        )
+    })?;
+    let manifest: UpdateManifest = serde_json::from_slice(
+        &fs::read(directory.join(update::MANIFEST_FILE))
+            .map_err(|e| failure("RELEASE_VERIFY", e))?,
+    )
+    .map_err(|e| failure("RELEASE_VERIFY", e))?;
+    if manifest.version != expected_version {
+        return Err(failure(
+            "RELEASE_VERIFY",
+            format!(
+                "manifest version '{}' does not match expected '{expected_version}'",
+                manifest.version
+            ),
+        ));
+    }
+    let safe_file = plain_file_name(&manifest.file)?;
+    let installer = directory.join(safe_file);
+    let sig_name = format!("{safe_file}.sig");
+    let signature = fs::read_to_string(directory.join(&sig_name))
+        .map_err(|e| failure("RELEASE_VERIFY", e))?
+        .trim()
+        .to_string();
+    let policy = update::UpdatePolicy::release(Some(embedded));
+    let offer = update::UpdateOffer {
+        manifest: manifest.clone(),
+        signature_hex: signature.clone(),
+        installer_url: format!(
+            "https://github.com/chialecode/delta/releases/download/v{expected_version}/{safe_file}"
+        ),
+    };
+    update::verify_installer(&policy, &offer, &installer).map_err(|e| failure(e.code(), e))?;
+
+    // Tamper-rejection checks against the verified release manifest & signature.
+    let mut bad_hash = manifest.clone();
+    bad_hash.sha256 = if bad_hash.sha256.starts_with('0') {
+        format!("1{}", &bad_hash.sha256[1..])
+    } else {
+        format!("0{}", &bad_hash.sha256[1..])
+    };
+    if update::verify_manifest_signature(&embedded, &bad_hash, &signature).is_ok() {
+        return Err(failure(
+            "RELEASE_VERIFY_TAMPER",
+            "tampered sha256 was not rejected",
+        ));
+    }
+    let mut bad_version = manifest.clone();
+    bad_version.version = format!("{expected_version}.9");
+    if update::verify_manifest_signature(&embedded, &bad_version, &signature).is_ok() {
+        return Err(failure(
+            "RELEASE_VERIFY_TAMPER",
+            "tampered version was not rejected",
+        ));
+    }
+    let mut bad_channel = manifest.clone();
+    bad_channel.channel = "test".into();
+    let bad_channel_offer = update::UpdateOffer {
+        manifest: bad_channel,
+        signature_hex: signature.clone(),
+        installer_url: offer.installer_url.clone(),
+    };
+    if !matches!(
+        update::verify_installer(&policy, &bad_channel_offer, &installer),
+        Err(update::UpdateError::ChannelMismatch { .. })
+    ) {
+        return Err(failure(
+            "RELEASE_VERIFY_TAMPER",
+            "cross-channel manifest was not rejected",
+        ));
+    }
+    let missing_sig_offer = update::UpdateOffer {
+        manifest: manifest.clone(),
+        signature_hex: String::new(),
+        installer_url: offer.installer_url.clone(),
+    };
+    if !matches!(
+        update::verify_installer(&policy, &missing_sig_offer, &installer),
+        Err(update::UpdateError::SignatureMissing)
+    ) {
+        return Err(failure(
+            "RELEASE_VERIFY_TAMPER",
+            "missing signature was not rejected",
+        ));
+    }
+    let wrong_key = update::generate_signing_key().map_err(|e| failure(e.code(), e))?;
+    if update::verify_manifest_signature(&wrong_key.verifying_key(), &manifest, &signature).is_ok()
+    {
+        return Err(failure(
+            "RELEASE_VERIFY_TAMPER",
+            "wrong public key was not rejected",
+        ));
+    }
+
+    let sums_path = directory.join("SHA256SUMS");
+    let mut sha256sums_checked = 0usize;
+    if sums_path.is_file() {
+        let content = fs::read_to_string(&sums_path).map_err(|e| failure("RELEASE_VERIFY", e))?;
+        let mut seen = BTreeMap::new();
+        for line in content.lines().filter(|l| !l.trim().is_empty()) {
+            let Some((expected_hash, name)) = line.split_once("  ") else {
+                return Err(failure(
+                    "RELEASE_VERIFY_SUMS",
+                    format!("malformed SHA256SUMS line: {line}"),
+                ));
+            };
+            let safe_name = plain_file_name(name)?;
+            let actual = sha256_file(&directory.join(safe_name))
+                .map_err(|e| failure("RELEASE_VERIFY_SUMS", e))?;
+            if actual != expected_hash {
+                return Err(failure(
+                    "RELEASE_VERIFY_SUMS",
+                    format!("SHA256SUMS mismatch for {safe_name}"),
+                ));
+            }
+            seen.insert(safe_name.to_string(), actual);
+        }
+        for required in [safe_file, sig_name.as_str(), update::MANIFEST_FILE] {
+            if !seen.contains_key(required) {
+                return Err(failure(
+                    "RELEASE_VERIFY_SUMS",
+                    format!("SHA256SUMS does not cover {required}"),
+                ));
+            }
+        }
+        sha256sums_checked = seen.len();
+    }
+
+    Ok(json!({
+        "status": "verified",
+        "version": manifest.version,
+        "channel": manifest.channel,
+        "file": manifest.file,
+        "size": manifest.size,
+        "sha256": manifest.sha256,
+        "tamper_checks_passed": 5,
+        "sha256sums_checked": sha256sums_checked,
+    }))
+}
+
+fn test_shortcuts(identity: InstallIdentity) -> Vec<PathBuf> {
+    let mut links = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        links.push(
+            PathBuf::from(appdata)
+                .join("Microsoft/Windows/Start Menu/Programs")
+                .join(format!("{}.lnk", identity.display_name())),
+        );
+    }
+    if let Some(desktop) = delta_app::user_desktop_dir() {
+        links.push(desktop.join(format!("{}.lnk", identity.display_name())));
+    }
+    links
+}
+
+/// CI release rehearsal: using only `delta-test` and a throw-away key in `%TEMP%`, builds v1 and
+/// signed test-release v2, proves tamper rejection (missing sig, wrong key, tampered manifest,
+/// cross-channel, tampered installer bytes, downgrade), then silently installs v1, downloads v2
+/// with Range resume, upgrades v1 -> v2, verifies data preservation, and uninstalls cleanly.
+pub(crate) fn release_rehearse(root: &Path) -> Result<Value, ErrorEnvelope> {
+    let identity = InstallIdentity::Test;
+    let started = Instant::now();
+    find_makensis(root)?;
+    if delta_app::identity_is_running(identity) {
+        return Err(failure(
+            "REHEARSE_RUNNING",
+            "delta-test is running; close it before running release-rehearse",
+        ));
+    }
+
+    let run_id = format!("{}-{}", std::process::id(), Utc::now().timestamp_millis());
+    let temp = std::env::temp_dir().join(format!("delta_release_rehearse_{run_id}"));
+    fs::create_dir_all(&temp).map_err(|e| failure("REHEARSE_TEMP", e))?;
+
+    struct RehearsalCleanup {
+        identity: InstallIdentity,
+        temp: PathBuf,
+    }
+    impl Drop for RehearsalCleanup {
+        fn drop(&mut self) {
+            if installed_version(self.identity).is_some() {
+                let log = self.temp.join("cleanup-uninstall.log");
+                let _ = run_uninstall_silently(self.identity, &log);
+            }
+            if let Some(dir) = install_dir(self.identity).filter(|d| d.exists()) {
+                let _ = fs::remove_dir_all(&dir);
+            }
+            for link in test_shortcuts(self.identity) {
+                if link.exists() {
+                    let _ = fs::remove_file(&link);
+                }
+            }
+            let _ = fs::remove_dir_all(&self.temp);
+        }
+    }
+    let _cleanup = RehearsalCleanup {
+        identity,
+        temp: temp.clone(),
+    };
+
+    // Clean any leftover delta-test install before starting.
+    if installed_version(identity).is_some() {
+        let log = temp.join("preflight-uninstall.log");
+        let run = run_uninstall_silently(identity, &log)?;
+        if run.exit_code != Some(0) || run.timed_out {
+            return Err(failure(
+                "REHEARSE_PREFLIGHT",
+                format!("preflight uninstall failed: exit {:?}", run.exit_code),
+            ));
+        }
+    }
+    if let Some(dir) = install_dir(identity).filter(|d| d.exists()) {
+        fs::remove_dir_all(&dir).map_err(|e| failure("REHEARSE_PREFLIGHT", e))?;
+    }
+
+    let now = Utc::now();
+    let v1 = default_dev_version(root, now)?;
+    let v2 = default_dev_version(root, now + chrono::Duration::seconds(61))?;
+    let pkg_dir = temp.join("packages");
+    let context = PackagingContext::prepare(root, &pkg_dir)?;
+    let pkg_v1 = context.build(identity, &v1, &pkg_dir)?;
+
+    let key_file = temp.join("rehearsal-signing.key");
+    let keygen = release_keygen(&key_file, root)?;
+    let public_hex = keygen["public_key_hex"]
+        .as_str()
+        .ok_or_else(|| failure("REHEARSE_KEY", "missing public_key_hex"))?
+        .to_string();
+    let public_key = update::parse_public_key(&public_hex).map_err(|e| failure(e.code(), e))?;
+
+    let release_out = temp.join("release");
+    let rel_v2 = release_build(root, &release_out, identity, &v2, Some(&key_file))?;
+    for part in ["desktop", "cli"] {
+        let imports = rel_v2.binary_imports[part].to_string().to_ascii_lowercase();
+        if imports.contains("vcruntime")
+            || imports.contains("msvcp")
+            || imports.contains("ucrtbase")
+        {
+            return Err(failure(
+                "REHEARSE_IMPORTS",
+                format!("{part} imports an external MSVC runtime"),
+            ));
+        }
+    }
+
+    let installer_bytes = fs::read(&rel_v2.setup).map_err(|e| failure("REHEARSE_IO", e))?;
+    let signature = fs::read_to_string(&rel_v2.signature_file)
+        .map_err(|e| failure("REHEARSE_IO", e))?
+        .trim()
+        .to_string();
+    let v1_semver = semver::Version::parse(&v1).map_err(|e| failure("REHEARSE_VERSION", e))?;
+    let v2_semver = semver::Version::parse(&v2).map_err(|e| failure("REHEARSE_VERSION", e))?;
+
+    let server = update::UpdateLoopbackServer::start().map_err(|e| failure(e.code(), e))?;
+    let policy = update::UpdatePolicy::test(server.latest_url(), Some(public_key));
+    let client = update::UpdateClient::new(policy.clone()).map_err(|e| failure(e.code(), e))?;
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+
+    // 1. Missing signature rejected before download.
+    server.publish(&rel_v2.manifest, installer_bytes.clone(), None);
+    let err = client
+        .check(&v1_semver)
+        .expect_err("missing signature must fail");
+    if err.code() != "UPDATE_SIGNATURE_MISSING" {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            format!("expected UPDATE_SIGNATURE_MISSING, got {}", err.code()),
+        ));
+    }
+
+    // 2. Wrong signing key rejected.
+    let wrong_key = update::generate_signing_key().map_err(|e| failure(e.code(), e))?;
+    let wrong_sig = update::sign_manifest(&wrong_key, &rel_v2.manifest);
+    server.publish(&rel_v2.manifest, installer_bytes.clone(), Some(wrong_sig));
+    let err = client.check(&v1_semver).expect_err("wrong key must fail");
+    if err.code() != "UPDATE_SIGNATURE_INVALID" {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            format!("expected UPDATE_SIGNATURE_INVALID, got {}", err.code()),
+        ));
+    }
+
+    // 3. Tampered manifest hash rejected.
+    let mut bad_manifest = rel_v2.manifest.clone();
+    bad_manifest.sha256 = if bad_manifest.sha256.starts_with('0') {
+        format!("1{}", &bad_manifest.sha256[1..])
+    } else {
+        format!("0{}", &bad_manifest.sha256[1..])
+    };
+    server.publish(
+        &bad_manifest,
+        installer_bytes.clone(),
+        Some(signature.clone()),
+    );
+    let err = client
+        .check(&v1_semver)
+        .expect_err("tampered manifest must fail");
+    if err.code() != "UPDATE_SIGNATURE_INVALID" {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            format!("expected UPDATE_SIGNATURE_INVALID, got {}", err.code()),
+        ));
+    }
+
+    // 4. Cross-channel manifest rejected.
+    let mut cross_channel = rel_v2.manifest.clone();
+    cross_channel.channel = "release".into();
+    server.publish(
+        &cross_channel,
+        installer_bytes.clone(),
+        Some(signature.clone()),
+    );
+    let err = client
+        .check(&v1_semver)
+        .expect_err("cross-channel manifest must fail");
+    if err.code() != "UPDATE_CHANNEL_MISMATCH" {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            format!("expected UPDATE_CHANNEL_MISMATCH, got {}", err.code()),
+        ));
+    }
+
+    // 5. Tampered installer bytes rejected with UPDATE_HASH_MISMATCH and .partial removed.
+    let mut tampered_bytes = installer_bytes.clone();
+    let mid = tampered_bytes.len() / 2;
+    tampered_bytes[mid] ^= 0xff;
+    server.publish(&rel_v2.manifest, tampered_bytes, Some(signature.clone()));
+    let offer = client
+        .check(&v1_semver)
+        .map_err(|e| failure(e.code(), e))?
+        .ok_or_else(|| failure("REHEARSE_UPDATE", "expected offer for v2"))?;
+    let dl_tamper_dir = temp.join("dl-tamper");
+    let err = client
+        .download(&offer, &dl_tamper_dir, &cancel)
+        .expect_err("tampered installer bytes must fail");
+    if err.code() != "UPDATE_HASH_MISMATCH" {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            format!("expected UPDATE_HASH_MISMATCH, got {}", err.code()),
+        ));
+    }
+    if dl_tamper_dir
+        .join(format!("{}.partial", rel_v2.manifest.file))
+        .exists()
+    {
+        return Err(failure(
+            "REHEARSE_TAMPER",
+            "partial file remained after hash mismatch",
+        ));
+    }
+
+    // 6. Genuine release: check(v2) returns None (no re-offer), downgrade rejected.
+    server.publish(
+        &rel_v2.manifest,
+        installer_bytes.clone(),
+        Some(signature.clone()),
+    );
+    if client
+        .check(&v2_semver)
+        .map_err(|e| failure(e.code(), e))?
+        .is_some()
+    {
+        return Err(failure("REHEARSE_DOWNGRADE", "same version was offered"));
+    }
+    let key = load_signing_key(Some(&key_file), false)?;
+    let v1_manifest = UpdateManifest {
+        schema_version: 1,
+        channel: "test".into(),
+        version: v1.clone(),
+        file: identity.setup_file_name(&v1),
+        size: pkg_v1.size,
+        sha256: pkg_v1.setup_sha256.clone(),
+        published_at: Utc::now().to_rfc3339(),
+    };
+    let v1_sig = update::sign_manifest(&key, &v1_manifest);
+    if !matches!(
+        policy.evaluate(&v2_semver, &v1_manifest, Some(&v1_sig)),
+        Err(update::UpdateError::NotNewer { .. })
+    ) {
+        return Err(failure("REHEARSE_DOWNGRADE", "downgrade was not rejected"));
+    }
+
+    // 7. Real silent install v1 -> Range-resumed download v2 -> silent upgrade v1 -> v2 -> uninstall.
+    let v1_log = temp.join("install-v1.log");
+    let run_v1 = run_setup_silently(&pkg_v1.setup_path, &v1_log)?;
+    if run_v1.exit_code != Some(0) || run_v1.timed_out {
+        return Err(failure(
+            "REHEARSE_INSTALL_V1",
+            format!("v1 silent install failed: exit {:?}", run_v1.exit_code),
+        ));
+    }
+    if installed_version(identity).as_deref() != Some(v1.as_str()) {
+        return Err(failure(
+            "REHEARSE_INSTALL_V1",
+            "DisplayVersion mismatch after v1 install",
+        ));
+    }
+    let dir = install_dir(identity).ok_or_else(|| failure("REHEARSE_DIR", "no LOCALAPPDATA"))?;
+    verify_identity_binary(
+        &dir.join(identity.desktop_exe()),
+        "delta-desktop",
+        identity,
+        &v1,
+    )?;
+
+    // Isolated data sentinel must survive upgrade and uninstall.
+    let data_dir = temp.join("data");
+    fs::create_dir_all(&data_dir).map_err(|e| failure("REHEARSE_DATA", e))?;
+    let sentinel = data_dir.join("sentinel.txt");
+    fs::write(&sentinel, b"must survive upgrade and uninstall")
+        .map_err(|e| failure("REHEARSE_DATA", e))?;
+
+    // Download v2 with a forced 1/3 interruption to verify Range resume.
+    server.interrupt_next_download_after(installer_bytes.len() / 3);
+    let dl_dir = temp.join("dl-v2");
+    let first_err = client
+        .download(&offer, &dl_dir, &cancel)
+        .expect_err("interrupted first download must fail cleanly");
+    if first_err.code() != "UPDATE_NETWORK" {
+        return Err(failure(
+            "REHEARSE_RESUME",
+            format!("expected UPDATE_NETWORK, got {}", first_err.code()),
+        ));
+    }
+    let downloaded_v2 = client
+        .download(&offer, &dl_dir, &cancel)
+        .map_err(|e| failure(e.code(), e))?;
+    update::verify_installer(&policy, &offer, &downloaded_v2).map_err(|e| failure(e.code(), e))?;
+    let ranges = server
+        .ranges_seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !ranges.iter().any(|r| r.ends_with('-')) {
+        return Err(failure(
+            "REHEARSE_RESUME",
+            format!("download did not resume with HTTP Range: {ranges:?}"),
+        ));
+    }
+
+    let v2_log = temp.join("upgrade-v2.log");
+    let run_v2 = run_setup_silently(&downloaded_v2, &v2_log)?;
+    if run_v2.exit_code != Some(0) || run_v2.timed_out {
+        return Err(failure(
+            "REHEARSE_UPGRADE_V2",
+            format!("v2 silent upgrade failed: exit {:?}", run_v2.exit_code),
+        ));
+    }
+    if installed_version(identity).as_deref() != Some(v2.as_str()) {
+        return Err(failure(
+            "REHEARSE_UPGRADE_V2",
+            "DisplayVersion mismatch after v2 upgrade",
+        ));
+    }
+    verify_identity_binary(
+        &dir.join(identity.desktop_exe()),
+        "delta-desktop",
+        identity,
+        &v2,
+    )?;
+    if fs::read(&sentinel).ok().as_deref() != Some(b"must survive upgrade and uninstall".as_slice())
+    {
+        return Err(failure(
+            "REHEARSE_DATA",
+            "sentinel data changed during upgrade",
+        ));
+    }
+
+    let uninst_log = temp.join("uninstall.log");
+    let run_uninst = run_uninstall_silently(identity, &uninst_log)?;
+    if run_uninst.exit_code != Some(0)
+        || run_uninst.timed_out
+        || installed_version(identity).is_some()
+        || dir.exists()
+    {
+        return Err(failure(
+            "REHEARSE_UNINSTALL",
+            "silent uninstall left registry key or install directory",
+        ));
+    }
+    if fs::read(&sentinel).ok().as_deref() != Some(b"must survive upgrade and uninstall".as_slice())
+    {
+        return Err(failure(
+            "REHEARSE_DATA",
+            "sentinel data changed during uninstall",
+        ));
+    }
+
+    // Confirm the ephemeral private key hex never leaked into logs or release outputs.
+    let secret_hex = hex::encode(key.to_bytes());
+    let mut files = Vec::new();
+    collect_paths(&release_out, &release_out, &mut files)?;
+    for rel in files {
+        let full = release_out.join(&rel);
+        if full.extension().is_some_and(|e| e == "exe") {
+            continue;
+        }
+        if fs::read_to_string(&full)
+            .map(|text| text.contains(&secret_hex))
+            .unwrap_or(false)
+        {
+            return Err(failure(
+                "REHEARSE_KEY_LEAK",
+                format!("ephemeral private key leaked into {rel}"),
+            ));
+        }
+    }
+
+    Ok(json!({
+        "status": "passed",
+        "identity": identity.name(),
+        "v1": v1,
+        "v2": v2,
+        "tamper_checks_passed": 6,
+        "range_resume_headers": ranges,
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -2127,6 +2685,31 @@ mod tests {
         let non_pe = root.join("not-a-pe.bin");
         fs::write(&non_pe, b"hello").unwrap();
         assert!(file_version_info(&non_pe).is_none());
+
+        // `load_signing_key` reads explicit key files in both hex and PKCS#8 Ed25519 PEM formats.
+        let generated = update::generate_signing_key().unwrap();
+        let hex_path = key_dir.join("explicit-hex.key");
+        fs::write(&hex_path, hex::encode(generated.to_bytes())).unwrap();
+        assert_eq!(
+            load_signing_key(Some(&hex_path), false).unwrap().to_bytes(),
+            generated.to_bytes()
+        );
+        // `release_build` rejects an explicit release signing key located inside a git repository.
+        let in_repo_key = fake_repo.join("release.key");
+        fs::write(&in_repo_key, hex::encode(generated.to_bytes())).unwrap();
+        let in_repo_err = release_build(
+            &fake_repo,
+            &root.join("out"),
+            InstallIdentity::Release,
+            "0.1.2",
+            Some(&in_repo_key),
+        )
+        .unwrap_err();
+        assert_eq!(in_repo_err.code, "RELEASE_KEY_STORE");
+        // Release verify rejects missing files cleanly.
+        let missing_dir = root.join("empty-release");
+        fs::create_dir_all(&missing_dir).unwrap();
+        assert!(release_verify(&missing_dir, "0.1.2").is_err());
 
         fs::remove_dir_all(&root).unwrap();
     }

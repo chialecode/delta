@@ -117,6 +117,8 @@ fn print_usage() {
          - package-build [--identity delta-dev|delta-test|delta-dev-test] [--version <v>] [--out-dir <dir>] (installer in dist/; older ones of that identity removed)\n\
          - install-dev [--package <setup.exe>] (default: newest delta-dev installer in dist/; always starts the app again with --background)\n\
          - release-build --version 0.1.N [--key-file <file>] [--out-dir <dir>] | release-build --test-identity --key-file <throw-away key> (test rehearsal)\n\
+         - release-verify --dir <release dir> --version 0.1.N (verify signed release bundle & tamper rejection with embedded public key)\n\
+         - release-rehearse (isolated delta-test upgrade + tamper-rejection rehearsal with throw-away key)\n\
          - update-test-source --release-dir <test release dir> [--seconds <n>] (loopback source for H-04)\n\
          - release-keygen [--key-file <file>] (default %APPDATA%/delta-release/update-signing.key; back up that file)\n\
          - control focus|quit-for-update [--identity <id>] [--timeout-secs <n>]\n\
@@ -177,8 +179,9 @@ fn dispatch_cli(args: &[String]) -> Result<ExitCode, ErrorEnvelope> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        "package-build" | "install-dev" | "release-build" | "release-keygen" | "control"
-        | "update-test-source" | "__migrate-portable" => installer_command(sub, &sub_args),
+        "package-build" | "install-dev" | "release-build" | "release-verify"
+        | "release-rehearse" | "release-keygen" | "control" | "update-test-source"
+        | "__migrate-portable" => installer_command(sub, &sub_args),
         "package-portable-build" => {
             let flags = ParsedFlags::parse(
                 "package-portable-build",
@@ -857,8 +860,8 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                 InstallIdentity::Release
             };
             let key_file = match (flags.one("--key-file"), identity) {
-                (Some(path), _) => PathBuf::from(path),
-                (None, InstallIdentity::Release) => installer::default_release_key_file()?,
+                (Some(path), _) => Some(PathBuf::from(path)),
+                (None, InstallIdentity::Release) => None,
                 (None, _) => {
                     return Err(ErrorEnvelope::new(
                         "missing_arg",
@@ -883,8 +886,28 @@ fn installer_command(sub: &str, sub_args: &[String]) -> Result<ExitCode, ErrorEn
                 .map(PathBuf::from)
                 .unwrap_or_else(|| root.join(".local/reports/m3/release"));
             let artifacts =
-                installer::release_build(&root, &output, identity, &version, &key_file)?;
+                installer::release_build(&root, &output, identity, &version, key_file.as_deref())?;
             print_json(&artifacts);
+            Ok(ExitCode::SUCCESS)
+        }
+        "release-verify" => {
+            let flags = ParsedFlags::parse(
+                "release-verify",
+                sub_args,
+                FlagSpec {
+                    value_flags: &["--dir", "--version"],
+                    ..Default::default()
+                },
+            )?;
+            let dir = PathBuf::from(flags.required("release-verify", "--dir")?);
+            let version = flags.required("release-verify", "--version")?;
+            print_json(&installer::release_verify(&dir, &version)?);
+            Ok(ExitCode::SUCCESS)
+        }
+        "release-rehearse" => {
+            ensure_no_extra_args("release-rehearse", sub_args)?;
+            let root = root()?;
+            print_json(&installer::release_rehearse(&root)?);
             Ok(ExitCode::SUCCESS)
         }
         "release-keygen" => {
