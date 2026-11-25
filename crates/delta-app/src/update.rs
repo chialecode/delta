@@ -725,10 +725,14 @@ pub fn decode_relaunch_args(encoded: &str) -> Option<Vec<String>> {
 /// Silent installer arguments shared by the updater, `install-dev` and the gates: `/S`, the
 /// `/LOG=` file the installer appends to, and after an update `/RELAUNCH` with the app's
 /// previous arguments (`/DELTAARGS=`, handed back through `--restore-args`).
+/// The `/LOG=` option of DELTA's installer and uninstaller. NSIS's GetOptions ends an option
+/// value at the next "/", so the path gets backslashes only.
+pub fn installer_log_arg(log: &Path) -> String {
+    format!("/LOG={}", log.display().to_string().replace('/', "\\"))
+}
+
 pub fn silent_installer_args(log: &Path, restart_args: Option<&[String]>) -> Vec<String> {
-    // NSIS's GetOptions ends an option value at the next "/", so the path gets backslashes only.
-    let log = log.display().to_string().replace('/', "\\");
-    let mut args = vec!["/S".to_string(), format!("/LOG={log}")];
+    let mut args = vec!["/S".to_string(), installer_log_arg(log)];
     if let Some(restart) = restart_args {
         args.push("/RELAUNCH".into());
         args.push(format!("/DELTAARGS={}", encode_relaunch_args(restart)));

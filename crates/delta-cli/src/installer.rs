@@ -710,7 +710,7 @@ pub(crate) fn run_uninstall_silently(
     // started outside the job and the wait is for its own completion line in the log.
     delta_app::spawn_detached_app(
         uninstaller.as_os_str(),
-        ["/S".to_string(), format!("/LOG={}", log.display())],
+        ["/S".to_string(), delta_app::update::installer_log_arg(log)],
         &BTreeMap::new(),
         false,
     )

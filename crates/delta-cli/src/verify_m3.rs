@@ -892,8 +892,17 @@ fn offline_contracts(gate: &mut Gate) {
             )?;
         }
         // Never delete application data or documents, never force-close, never LZMA (CPL-1.0).
-        // NSIS keywords are case-insensitive, so the check is too.
-        let lowered = template.to_ascii_lowercase();
+        // NSIS keywords are case-insensitive, so the check is too; comment lines (which explain
+        // why LZMA is not used) are left out.
+        let lowered = template
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                !line.starts_with(';') && !line.starts_with('#')
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_ascii_lowercase();
         for forbidden in [
             "$APPDATA",
             "$DOCUMENTS",
