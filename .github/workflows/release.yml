@@ -1,0 +1,341 @@
+name: Release
+
+# Weekly release workflow for DELTA (Issue #23).
+# - Triggers ONLY on Monday 00:00 UTC (08:00 Beijing time) schedule and manual workflow_dispatch
+#   (publish input defaults to false). Never runs on push, pull_request, or fork events.
+# - Restricted to refs/heads/main (`plan` and `publish` assert github.ref; the remote `release`
+#   environment restricts deployment branches to `main`).
+# - Top-level permissions are empty; only `publish` holds `contents: write`, is gated on repository
+#   variable `RELEASE_PUBLISH == '1'`, and executes NO repository code (no checkout).
+# - Signing secret `UPDATE_SIGNING_KEY_PEM` lives in the `release` environment and is read ONLY in
+#   the signing step of `build`, written to a random RUNNER_TEMP file, removed from the environment
+#   before invoking `delta-cli`, and deleted in `finally`.
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "构建后发布 GitHub Release（还需要仓库变量 RELEASE_PUBLISH=1）"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      previous_tag: ${{ steps.plan.outputs.previous_tag }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Compute release plan
+        id: plan
+        run: python3 -B scripts/release.py --plan
+
+  check:
+    name: check
+    needs: [plan]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Documentation and whitespace
+        run: |
+          python --version
+          python -B scripts/check_docs.py
+          git diff --check
+
+      - name: Script unit tests
+        run: python -B -m unittest discover -s scripts -p "test_*.py"
+
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          cargo --version
+          cargo clippy --version
+
+      - name: Cache Cargo dependencies and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+      - name: Dependency vulnerability audit
+        run: |
+          set +e
+          python -B scripts/deps.py --audit
+          rc=$?
+          set -e
+          if [ "$rc" -eq 1 ]; then
+            echo "Unaccepted vulnerability or expired exception; blocking release." >&2
+            exit 1
+          elif [ "$rc" -eq 2 ]; then
+            echo "::warning::deps.py --audit could not reach OSV (exit 2, not-run)"
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+
+      - name: Cache pinned NSIS 3.13
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/tools/nsis-3.13
+          key: nsis-${{ runner.os }}-${{ hashFiles('scripts/fetch_nsis.py') }}
+
+      - name: Fetch pinned NSIS 3.13
+        run: python -B scripts/fetch_nsis.py
+
+      - name: Rehearse upgrade and tamper rejection (isolated delta-test)
+        run: cargo run --release --locked -p delta-cli -- release-rehearse
+
+  build:
+    name: build
+    needs: [plan, check]
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.release == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Rust toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          cargo --version
+
+      - name: Cache Cargo dependencies and package target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+            .local/target-packages
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Cache pinned NSIS 3.13
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/tools/nsis-3.13
+          key: nsis-${{ runner.os }}-${{ hashFiles('scripts/fetch_nsis.py') }}
+
+      - name: Fetch pinned NSIS 3.13
+        run: python -B scripts/fetch_nsis.py
+
+      # Compile delta-cli and static-CRT workspace dependencies before the signing secret exists.
+      - name: Pre-build delta-cli and static-CRT dependencies
+        run: |
+          cargo build --release --locked -p delta-cli
+          CARGO_ENCODED_RUSTFLAGS=$'-C\x1ftarget-feature=+crt-static' \
+            cargo build --release --locked --target x86_64-pc-windows-msvc -p delta-app --target-dir .local/target-packages
+
+      - name: Build and sign release installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          UPDATE_SIGNING_KEY_PEM: ${{ secrets.UPDATE_SIGNING_KEY_PEM }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:UPDATE_SIGNING_KEY_PEM)) {
+            throw "Missing required release environment secret UPDATE_SIGNING_KEY_PEM."
+          }
+          $keyFile = Join-Path $env:RUNNER_TEMP ("delta-signing-" + [guid]::NewGuid().ToString("N") + ".key")
+          try {
+            $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::WriteAllText($keyFile, $env:UPDATE_SIGNING_KEY_PEM, $utf8NoBom)
+            Remove-Item Env:UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
+            & target/release/delta-cli.exe release-build --version $env:RELEASE_VERSION --key-file $keyFile --out-dir ".local/reports/m3/release"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item Env:UPDATE_SIGNING_KEY_PEM -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $keyFile) {
+              Remove-Item -LiteralPath $keyFile -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Assemble release bundle and verify signature and tamper rejection
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS_TAG: ${{ needs.plan.outputs.previous_tag }}
+        run: |
+          python -B scripts/release.py --bundle \
+            --version "$RELEASE_VERSION" \
+            --previous-tag "$PREVIOUS_TAG" \
+            --release-dir ".local/reports/m3/release/delta-${RELEASE_VERSION}" \
+            --out-dir "dist/release"
+          target/release/delta-cli.exe release-verify --dir "dist/release" --version "$RELEASE_VERSION"
+
+      - name: Upload signed release artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: delta-release-${{ needs.plan.outputs.version }}
+          path: |
+            dist/release/delta-setup-${{ needs.plan.outputs.version }}-x64.exe
+            dist/release/delta-setup-${{ needs.plan.outputs.version }}-x64.exe.sig
+            dist/release/latest.json
+            dist/release/SHA256SUMS
+            dist/release/VERSION.txt
+            dist/release/notes.md
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    name: publish
+    needs: [plan, build]
+    if: ${{ github.ref == 'refs/heads/main' && needs.plan.outputs.release == 'true' && vars.RELEASE_PUBLISH == '1' && (github.event_name == 'schedule' || inputs.publish == true) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download signed release artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: delta-release-${{ needs.plan.outputs.version }}
+          path: release
+
+      - name: Verify bundle, create draft GitHub Release, and promote to latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          installer="delta-setup-${VERSION}-x64.exe"
+          sig="${installer}.sig"
+
+          for f in "$installer" "$sig" latest.json SHA256SUMS VERSION.txt notes.md; do
+            if [[ ! -s "release/${f}" ]]; then
+              echo "Missing or empty release artifact: ${f}" >&2
+              exit 1
+            fi
+          done
+
+          (cd release && sha256sum -c SHA256SUMS)
+          for f in "$installer" "$sig" latest.json; do
+            grep -Eq "^[0-9a-f]{64}  ${f}$" release/SHA256SUMS || {
+              echo "SHA256SUMS does not cover ${f}" >&2
+              exit 1
+            }
+          done
+
+          version_clean="$(tr -d '\r' < release/VERSION.txt)"
+          grep -Fx "version=${VERSION}" <<< "$version_clean" >/dev/null
+          grep -Fx "channel=release" <<< "$version_clean" >/dev/null
+
+          actual_sha="$(sha256sum "release/${installer}" | awk '{print $1}')"
+          actual_size="$(wc -c < "release/${installer}" | tr -d '[:space:]')"
+          jq -e \
+            --arg ver "$VERSION" \
+            --arg file "$installer" \
+            --arg sha "$actual_sha" \
+            --arg size "$actual_size" \
+            '.schema_version == 1 and .channel == "release" and .version == $ver and .file == $file and .sha256 == $sha and .size == ($size | tonumber)' \
+            release/latest.json >/dev/null
+
+          sig_clean="$(tr -d '\r\n' < "release/${sig}")"
+          grep -Eq '^[0-9a-f]{128}$' <<< "$sig_clean"
+
+          if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; refusing to overwrite." >&2
+            exit 1
+          fi
+
+          gh release create "$tag" \
+            "release/${installer}" \
+            "release/${sig}" \
+            "release/SHA256SUMS" \
+            --repo "$GH_REPO" \
+            --draft \
+            --target "$TARGET" \
+            --title "DELTA ${VERSION}" \
+            --notes-file "release/notes.md"
+
+          gh release upload "$tag" "release/latest.json" --repo "$GH_REPO"
+
+          uploaded="$(gh release view "$tag" --repo "$GH_REPO" --json assets --jq '.assets[] | select(.size > 0) | .name')"
+          for asset in "$installer" "$sig" latest.json SHA256SUMS; do
+            if ! grep -Fx "$asset" <<< "$uploaded" >/dev/null; then
+              echo "Draft release ${tag} is missing verified non-empty asset: ${asset}" >&2
+              exit 1
+            fi
+          done
+
+          gh release edit "$tag" --repo "$GH_REPO" --draft=false --latest

@@ -132,11 +132,111 @@ pub fn parse_public_key(hex_key: &str) -> Result<VerifyingKey, UpdateError> {
         .map_err(|_| UpdateError::NotConfigured("public key is not a valid Ed25519 point".into()))
 }
 
-pub fn parse_signing_key(hex_key: &str) -> Result<SigningKey, UpdateError> {
-    let bytes: [u8; 32] = hex::decode(hex_key.trim())
+const PKCS8_ED25519_V1_PREFIX: [u8; 16] = [
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+];
+const PKCS8_ED25519_V2_PREFIX: [u8; 16] = [
+    0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+];
+const PKCS8_ED25519_V2_PUB_PREFIX: [u8; 3] = [0x81, 0x21, 0x00];
+const PEM_PRIVATE_BEGIN: &str = concat!("-----BEGIN ", "PRIVATE KEY-----");
+const PEM_PRIVATE_END: &str = concat!("-----END ", "PRIVATE KEY-----");
+
+fn decode_base64_strict(input: &str) -> Result<Vec<u8>, UpdateError> {
+    let invalid = || UpdateError::NotConfigured("invalid base64 in signing key PEM".into());
+    let chars: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if chars.is_empty() || !chars.len().is_multiple_of(4) {
+        return Err(invalid());
+    }
+    let val = |b: u8| -> Option<u8> {
+        match b {
+            b'A'..=b'Z' => Some(b - b'A'),
+            b'a'..=b'z' => Some(b - b'a' + 26),
+            b'0'..=b'9' => Some(b - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    };
+    let mut out = Vec::with_capacity((chars.len() / 4) * 3);
+    for (idx, chunk) in chars.as_chunks::<4>().0.iter().enumerate() {
+        let is_last = (idx + 1) * 4 == chars.len();
+        let a = val(chunk[0]).ok_or_else(invalid)?;
+        let b = val(chunk[1]).ok_or_else(invalid)?;
+        if chunk[2] == b'=' {
+            if !is_last || chunk[3] != b'=' || (b & 0x0f) != 0 {
+                return Err(invalid());
+            }
+            out.push((a << 2) | (b >> 4));
+        } else if chunk[3] == b'=' {
+            if !is_last {
+                return Err(invalid());
+            }
+            let c = val(chunk[2]).ok_or_else(invalid)?;
+            if (c & 0x03) != 0 {
+                return Err(invalid());
+            }
+            out.push((a << 2) | (b >> 4));
+            out.push((b << 4) | (c >> 2));
+        } else {
+            let c = val(chunk[2]).ok_or_else(invalid)?;
+            let d = val(chunk[3]).ok_or_else(invalid)?;
+            out.push((a << 2) | (b >> 4));
+            out.push((b << 4) | (c >> 2));
+            out.push((c << 6) | d);
+        }
+    }
+    Ok(out)
+}
+
+fn parse_signing_key_pem(pem: &str) -> Result<SigningKey, UpdateError> {
+    let invalid = || {
+        UpdateError::NotConfigured(
+            "signing key PEM must be an unencrypted PKCS#8 Ed25519 private key".into(),
+        )
+    };
+    let trimmed = pem.trim();
+    let rest = trimmed
+        .strip_prefix(PEM_PRIVATE_BEGIN)
+        .ok_or_else(invalid)?;
+    let body = rest.strip_suffix(PEM_PRIVATE_END).ok_or_else(invalid)?;
+    if body.contains("-----") {
+        return Err(invalid());
+    }
+    let der = decode_base64_strict(body)?;
+    if der.len() == 48 && der.starts_with(&PKCS8_ED25519_V1_PREFIX) {
+        let seed: [u8; 32] = der[16..48].try_into().map_err(|_| invalid())?;
+        return Ok(SigningKey::from_bytes(&seed));
+    }
+    if der.len() == 83
+        && der.starts_with(&PKCS8_ED25519_V2_PREFIX)
+        && der[48..51] == PKCS8_ED25519_V2_PUB_PREFIX
+    {
+        let seed: [u8; 32] = der[16..48].try_into().map_err(|_| invalid())?;
+        let key = SigningKey::from_bytes(&seed);
+        if key.verifying_key().to_bytes() != der[51..83] {
+            return Err(invalid());
+        }
+        return Ok(key);
+    }
+    Err(invalid())
+}
+
+/// Parse an Ed25519 signing key from either 32-byte hex (local key file) or PKCS#8 Ed25519 PEM
+/// (`UPDATE_SIGNING_KEY_PEM` in CI).
+pub fn parse_signing_key(raw: &str) -> Result<SigningKey, UpdateError> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with(PEM_PRIVATE_BEGIN) {
+        return parse_signing_key_pem(trimmed);
+    }
+    let bytes: [u8; 32] = hex::decode(trimmed)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| UpdateError::NotConfigured("signing key must be 32 bytes of hex".into()))?;
+        .ok_or_else(|| {
+            UpdateError::NotConfigured(
+                "signing key must be 32 bytes of hex or PKCS#8 Ed25519 PEM".into(),
+            )
+        })?;
     Ok(SigningKey::from_bytes(&bytes))
 }
 
@@ -1463,5 +1563,98 @@ mod tests {
         release_server.store(true, Ordering::SeqCst);
         let _ = server_handle.join();
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn encode_base64_for_test(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+            let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+            out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[((n >> 6) & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[(n & 0x3f) as usize] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    #[test]
+    fn parse_signing_key_accepts_hex_and_pkcs8_ed25519_pem() {
+        let key = generate_signing_key().unwrap();
+        let hex_key = hex::encode(key.to_bytes());
+        assert_eq!(
+            parse_signing_key(&hex_key).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+
+        // RFC 8410 PKCS#8 v1 Ed25519 PEM (48-byte DER).
+        let mut der_v1 = Vec::with_capacity(48);
+        der_v1.extend_from_slice(&PKCS8_ED25519_V1_PREFIX);
+        der_v1.extend_from_slice(&key.to_bytes());
+        let pem_v1 = format!(
+            "{PEM_PRIVATE_BEGIN}\n{}\n{PEM_PRIVATE_END}\n",
+            encode_base64_for_test(&der_v1)
+        );
+        let parsed_v1 = parse_signing_key(&pem_v1).unwrap();
+        assert_eq!(parsed_v1.to_bytes(), key.to_bytes());
+        assert_eq!(parsed_v1.verifying_key(), key.verifying_key());
+
+        // RFC 8410 PKCS#8 v2 Ed25519 PEM with matching public key (83-byte DER).
+        let mut der_v2 = Vec::with_capacity(83);
+        der_v2.extend_from_slice(&PKCS8_ED25519_V2_PREFIX);
+        der_v2.extend_from_slice(&key.to_bytes());
+        der_v2.extend_from_slice(&PKCS8_ED25519_V2_PUB_PREFIX);
+        der_v2.extend_from_slice(&key.verifying_key().to_bytes());
+        let pem_v2 = format!(
+            "{PEM_PRIVATE_BEGIN}\r\n{}\r\n{PEM_PRIVATE_END}",
+            encode_base64_for_test(&der_v2)
+        );
+        assert_eq!(
+            parse_signing_key(&pem_v2).unwrap().to_bytes(),
+            key.to_bytes()
+        );
+
+        // Mismatched public key in v2 DER must be rejected.
+        let mut bad_v2 = der_v2.clone();
+        bad_v2[82] ^= 0x01;
+        let bad_pem_v2 = format!(
+            "{PEM_PRIVATE_BEGIN}\n{}\n{PEM_PRIVATE_END}",
+            encode_base64_for_test(&bad_v2)
+        );
+        assert!(parse_signing_key(&bad_pem_v2).is_err());
+
+        // Wrong OID or truncated DER or trailing garbage must be rejected.
+        let mut bad_oid = der_v1.clone();
+        bad_oid[11] = 0x71;
+        for bad in [
+            "".to_string(),
+            "not-a-key".to_string(),
+            format!(
+                "{PEM_PRIVATE_BEGIN}\n{}\n{PEM_PRIVATE_END}",
+                encode_base64_for_test(&bad_oid)
+            ),
+            format!(
+                "{PEM_PRIVATE_BEGIN}\n{}\n{PEM_PRIVATE_END}extra",
+                encode_base64_for_test(&der_v1)
+            ),
+            format!(
+                "{PEM_PRIVATE_BEGIN}\n{}\n{PEM_PRIVATE_END}",
+                encode_base64_for_test(&der_v1[..47])
+            ),
+        ] {
+            assert!(parse_signing_key(&bad).is_err(), "accepted {bad:?}");
+        }
     }
 }
