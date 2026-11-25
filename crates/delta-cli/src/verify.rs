@@ -68,10 +68,10 @@ pub(super) fn source_fingerprint(root: &Path) -> Result<String, ErrorEnvelope> {
         .map_err(|e| failure("fingerprint", e))?;
     files.retain(|p| {
         p.extension().is_some_and(|e| {
-            // `isl`: the installer's own wizard messages next to `delta.iss`.
+            // `nsi`: the installer template (`installer/delta.nsi`).
             // `zip`/`sig`: recorded archive fixtures and the published v0.1.1 signature (M5).
             [
-                "rs", "toml", "json", "csv", "xml", "iss", "isl", "ico", "svg", "zip", "sig",
+                "rs", "toml", "json", "csv", "xml", "nsi", "ico", "svg", "zip", "sig",
             ]
             .contains(&e.to_str().unwrap_or_default())
         })

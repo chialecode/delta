@@ -14,7 +14,7 @@
 
 所有路径、目录名、文件名、可执行文件名、凭据命名空间与应用标识一律使用小写 `delta`；产品显示名仍为 “DELTA”。正式版与开发版两个通道完全隔离，可以同时安装、同时存在数据。
 
-| 通道 | 安装目录（M3 Inno 按用户安装，固定） | 应用数据根（资料库） | 用户文件根（默认，可改） | 可执行文件 / 凭据命名空间 / 应用标识 |
+| 通道 | 安装目录（NSIS 按用户安装，固定；D-39） | 应用数据根（资料库） | 用户文件根（默认，可改） | 可执行文件 / 凭据命名空间 / 应用标识 |
 | --- | --- | --- | --- | --- |
 | `release` | `%LOCALAPPDATA%\Programs\delta` | `%LOCALAPPDATA%\delta` | `<文档>\delta` | `delta.exe` / `delta` / `io.github.chialecode.delta` |
 | `dev` | `%LOCALAPPDATA%\Programs\delta-dev` | `%LOCALAPPDATA%\delta-dev` | `<文档>\delta-dev` | `delta-dev.exe` / `delta-dev` / `io.github.chialecode.delta-dev` |
@@ -42,7 +42,7 @@ M2 删除预览显示资料库 ID、绝对目标、账户/笔记/附件/会话�
 
 **更新签名私钥（D-32）**：正式版私钥是仓库外的密钥文件 `%APPDATA%\delta-release\update-signing.key`（十六进制 Ed25519 私钥，由 `release-keygen` 生成；拒绝覆盖已有文件、拒绝写进仓库）。`release-build` 只读这个文件（或 `--key-file` 指定的文件）或 CI 的 `DELTA_RELEASE_SIGNING_KEY`，私钥不进命令行、日志、报告与产物；测试身份发布必须用 `--key-file` 指定另一份一次性密钥，正式密钥文件被拒绝。备份就是把该文件离线保存（[#14](https://github.com/chialecode/delta/issues/14)）。
 
-**安装、升级与更新（M3，S-25～S-34）**：安装器只写安装目录、开始菜单/桌面快捷方式（静默安装（无人参与）首次安装时创建开始菜单与桌面快捷方式；覆盖安装或自动更新时保留已有的快捷方式、不新建（开发版例外：每次都重新创建桌面快捷方式，提示有新版本，但不新建开始菜单快捷方式）；交互式安装时两者都在向导里可选；`delta.iss` 的 `WantStartMenuIcon` / `WantDesktopIcon`，开发类身份由 `package-build` 传 `DesktopOnUpdate=1`；门禁 M3-A-03/04/06 实测）与 HKCU 卸载键，没有 `[UninstallDelete]`；卸载与升级从不删除应用数据根、用户文件根或 M2 迁移保留的文件。应用运行时，安装器经已安装 CLI 的 `control quit-for-update` 请求保存退出并按互斥量等待；应用忙碌、保存失败或无响应时安装中止且保持原版本，任何路径都不强杀进程。正式版更新下载到 `<应用数据根>\updates`（`.partial` 续传，上限 512 MiB），校验通过前不改名；应用前重新验签并在 `<用户文件根>\backups\pre-update-<版本>-<时间>` 做一致性备份，备份失败即不安装。更新签名私钥按上段 D-32 只在仓库外的密钥文件（或发布机的 `DELTA_RELEASE_SIGNING_KEY` 环境变量）中；`release-keygen` 拒绝覆盖与写入仓库、只打印路径与公钥；私钥不入库、不进日志与产物，门禁扫描日志与报告确认。门禁的测试密钥是本次运行临时目录里的一次性密钥文件，随临时目录删除。
+**安装、升级与更新（M3，S-25～S-34）**：安装器只写安装目录、开始菜单/桌面快捷方式（静默安装（无人参与）首次安装时创建开始菜单与桌面快捷方式；覆盖安装或自动更新时保留已有的快捷方式、不新建（开发版例外：每次都重新创建桌面快捷方式，提示有新版本，但不新建开始菜单快捷方式）；交互式安装时两者都在向导的组件页里可选；`delta.nsi` 的两个快捷方式区段，开发类身份由 `package-build` 传 `DELTA_DESKTOP_ON_UPDATE=1`；快捷方式带应用自己的 AppUserModelID；门禁 M3-A-03/04/06 实测）与 HKCU 卸载键 `...\Uninstall\io.github.chialecode.<身份>`（D-39）。卸载器只删本版本安装的文件（构建时生成的清单），目录空了才删目录；覆盖安装先以 `/S /UPDATE` 原地运行旧版本的卸载器，所以新版本不再带的文件不会留下；卸载与升级从不删除应用数据根、用户文件根、用户放进安装目录的文件或 M2 迁移保留的文件。应用运行时，安装器经已安装 CLI 的 `control quit-for-update` 请求保存退出并按互斥量等待；应用忙碌、保存失败或无响应时安装中止且保持原版本，任何路径都不强杀进程。正式版更新下载到 `<应用数据根>\updates`（`.partial` 续传，上限 512 MiB），校验通过前不改名；应用前重新验签并在 `<用户文件根>\backups\pre-update-<版本>-<时间>` 做一致性备份，备份失败即不安装。更新签名私钥按上段 D-32 只在仓库外的密钥文件（或发布机的 `DELTA_RELEASE_SIGNING_KEY` 环境变量）中；`release-keygen` 拒绝覆盖与写入仓库、只打印路径与公钥；私钥不入库、不进日志与产物，门禁扫描日志与报告确认。门禁的测试密钥是本次运行临时目录里的一次性密钥文件，随临时目录删除。
 
 Windows 包由独立 `release`/`dev` 构建产生，显式目标为 `x86_64-pc-windows-msvc` 并静态链接 CRT，覆盖 Cargo 编码 flags 的继承优先级；清单记录全部文件哈希与源码指纹。构建和安装均有界解析普通及延迟 PE 导入，拒绝依赖外部 MSVC 运行库，包内 `binary-imports.json` 保存 DLL 名称。安装校验 product/channel/version，随机 staging 验证完成后切换。卸载先验证全部安装身份、路径和哈希及 Windows 文件写入 lease，再删除受管文件；未知文件和资料库保留。正在运行的安装目录内 CLI 不能自卸载，使用解压包中的外部 CLI。
 

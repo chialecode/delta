@@ -10,7 +10,7 @@ everything else under .local/ is listed with its size for a human decision
   4. .local/reports/m2/packages       M2 portable packages: latest run + fingerprints cited
                                       in tracked docs (archived stage results)
   5. licenses-<uuid>/, stage-*/       packaging scratch directories
-  6. .local/reports/m3/packages       build/ISCC logs: newest per identity
+  6. .local/reports/m3/packages       build/makensis logs: newest per identity
   7. .local/tmp/*                     temporary files
   --cargo                             also the whole target/ and .local/target-packages/
 
@@ -264,7 +264,7 @@ def collect(
             for path in m3_packages.glob("*-log.json"):
                 if is_link_or_junction(path):
                     continue
-                match = re.match(r"(build|iscc)-(delta(?:-dev)?(?:-test)?)-", path.name)
+                match = re.match(r"(build|makensis)-(delta(?:-dev)?(?:-test)?)-", path.name)
                 if match:
                     log_groups.setdefault(match.groups(), []).append(path)
             for paths in log_groups.values():
@@ -287,6 +287,8 @@ def collect(
                 "reports",
                 "tmp",
                 "target-packages",
+                # The pinned NSIS build (scripts/fetch_nsis.py); package-build needs it.
+                "tools",
             ):
                 review.append(path)
     return removals, review

@@ -84,20 +84,20 @@ impl InstallIdentity {
         matches!(self, Self::Dev | Self::DevTest)
     }
 
-    /// Inno Setup `AppId` (without the doubled leading brace used inside `.iss`).
+    /// Application id: the name of the identity's uninstall entry (`io.github.chialecode.<name>`).
     pub fn app_id(self) -> &'static str {
         match self {
-            Self::Release => "{3FDAF65D-1E1C-4BF6-B4A2-31CFD914D9BD}",
-            Self::Dev => "{5D1A489B-D102-4087-B17B-3FFD99D3D824}",
-            Self::Test => "{827E62F1-5E62-4C0B-8B68-6DE09193CE70}",
-            Self::DevTest => "{339B764E-FCA4-4E02-86EE-D52B4427542C}",
+            Self::Release => "io.github.chialecode.delta",
+            Self::Dev => "io.github.chialecode.delta-dev",
+            Self::Test => "io.github.chialecode.delta-test",
+            Self::DevTest => "io.github.chialecode.delta-dev-test",
         }
     }
 
-    /// HKCU uninstall key written by Inno Setup for this identity.
+    /// HKCU uninstall key the installer writes for this identity.
     pub fn uninstall_key(self) -> String {
         format!(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{}_is1",
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{}",
             self.app_id()
         )
     }
@@ -120,7 +120,7 @@ impl InstallIdentity {
         }
     }
 
-    /// Named mutex held by the running desktop app; also the installer `AppMutex`.
+    /// Named mutex held by the running desktop app; the installer checks it to see the app running.
     pub fn mutex_name(self) -> String {
         format!("{}-instance", self.name())
     }

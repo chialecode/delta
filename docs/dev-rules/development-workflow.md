@@ -55,7 +55,15 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 <a id="dev-install-at-handoff"></a>
 ### 2.2 开发版自动安装
 
-每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`：运行中的先保存退出；装完不论原来是否在运行或窗口是否打开，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）；从不碰正式版；回执 `in_job: true` 时请用户从开始菜单打开一次。本机还没装 `delta-dev` 时直接首次安装；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变。装好的版本与 `source_fingerprint` 写进 PR 或 issue 评论。只为自动验证的打包与门禁都不安装。迁移到 NSIS 与窗口开着时推迟安装见 [#22](https://github.com/chialecode/delta/issues/22)。
+每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（NSIS 安装包，[D-39](../decisions/confirmed-decisions.md#d-39)）：
+
+1. **首次安装也自动完成**：本机没有 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.delta-dev` 就直接首次安装；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变；从不碰正式版。`DELTA_DEV_AUTO_INSTALL=0` 时跳过（`reason=disabled`），只影响 `delta-dev`，不影响门禁的 `delta-dev-test`。
+2. **窗口开着时推迟**：`delta-dev` 在运行且已安装的 `delta-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时，说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败，退出码 0），回执记 `reason=window_open` 并提示关窗后重新运行 `install-dev`。窗口按已安装的 `delta-dev.exe` 路径匹配，`cargo run` 从源码运行的副本不算。
+3. **请托盘中的实例保存后退出**：经控制管道 `quit-for-update`，最多等 30 秒，从不强杀；忙碌或保存失败时放弃本次安装（`INSTALL_DEV_APP_BUSY`），本机不变。
+4. **静默安装并核对**：以 `/S /LOG=<日志>` 安装，从卸载项与已安装程序的 `--build-info` 双重核对版本等于安装包；装完不论原来是否在运行，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）。
+5. **回执**：打印到标准输出并写 `.local/reports/m3/install-dev/install-dev.json`（失败时也写，带已知的旧版本、是否在运行与安装日志；门禁的测试身份写 `install-dev-delta-dev-test.json`，不覆盖它），字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`restartProcessId`、`launchMethod`、`guidance`、`setup`。`inJob: true` 时请用户从开始菜单打开一次。
+
+装好的版本与 `source_fingerprint` 写进 PR 或 issue 评论。只为自动验证的打包与门禁都不安装。
 
 <a id="next-step"></a>
 ### 2.3 收尾报告

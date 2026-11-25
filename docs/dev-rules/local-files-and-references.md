@@ -30,7 +30,7 @@
 
 ## 构建产物与清理
 
-- **安装包只在 `dist/`**：`delta-cli package-build` 把 `setup.exe` 与同名 `.package.json` 写到仓库根 `dist/`，成功后删除同一身份的旧安装包，每个身份只留最新一个；`install-dev` 默认取这里最新的 `delta-dev` 包。构建日志、`cargo metadata` 和许可收集等过程文件放 `.local/reports/m3/packages/`，许可暂存目录在构建结束后删除。正式版 `release-build` 按版本输出到 `.local/reports/m3/release/<身份>-<版本>/`，不自动删除。
+- **安装包只在 `dist/`**：`delta-cli package-build` 把 `setup.exe` 与同名 `.package.json` 写到仓库根 `dist/`，成功后删除同一身份的旧安装包，每个身份只留最新一个；`install-dev` 默认取这里最新的 `delta-dev` 包。构建日志、`cargo metadata` 和许可收集等过程文件放 `.local/reports/m3/packages/`，许可暂存目录在构建结束后删除；`install-dev` 的安装日志与回执 `install-dev.json` 放 `.local/reports/m3/install-dev/`。打包用的固定版本 NSIS 由 `python -B scripts/fetch_nsis.py` 放在 `.local/tools/nsis-3.13/`，`clean_artifacts.py` 不删它。正式版 `release-build` 按版本输出到 `.local/reports/m3/release/<身份>-<版本>/`，不自动删除。
 - **编译缓存**：`[profile.dev]` 对工作区代码只保留行号表（`debug = "line-tables-only"`），依赖不带调试信息（`[profile.dev.package."*"] debug = false`），以减小 `target/` 并缩短 PDB 链接时间；需要逐变量调试依赖时在本机临时覆盖，不提交。打包使用独立的 `.local/target-packages/`（静态 CRT 与身份环境不同，不能与 `target/` 共用产物）。
 - **清理命令**：`python scripts/clean_artifacts.py` 先列出可删项与大小（默认只看不删），`--apply` 执行，`--cargo` 另外删除整个 `target/` 与 `.local/target-packages/`。只处理可重建或已被取代的类别：增量编译缓存、`dist/` 旧安装包、每阶段最新一次以外且未被跟踪文档引用的门禁日志、打包暂存目录、M2 门禁重复生成的便携包（保留最新一次及跟踪文档引用的源码指纹）、`.local/tmp/`。其余 `.local/` 内容只列出大小，由人按上文阶段整理规则决定；不触碰跟踪文件与 `workers/`。门禁运行期间不要执行 `--apply`。
 
