@@ -548,6 +548,7 @@ fn open_report_into_state(
     };
     stop_playback(&mut state.training);
     state.training.active_run_id = Some(run_id.to_string());
+    state.training.workspace = None;
     state.training.report = Some(rep);
     state.training.training_ai_report = None;
     state.training.training_ai_error = None;

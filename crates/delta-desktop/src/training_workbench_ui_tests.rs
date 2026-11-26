@@ -172,6 +172,9 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
     assert_eq!(snapshot(&state).fills.len(), 1);
 
     // 4. Draw-to-order: a chart click opens a draft; nothing is submitted until confirm.
+    // Pick a click point strictly inside the price plot with enough vertical room below it
+    // for both the unlocked (+12 px) and locked (+20 px) downward drags regardless of where
+    // the randomly sampled window's last close sits inside `[min, max]`.
     click_id(cx, "trn-wb-draw-order");
     let chart_bounds = cx.update(|window, cx| {
         window.render_frame(cx);
@@ -182,16 +185,30 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
             .unwrap()
             .unwrap()
     });
-    let below = close * Decimal::new(995, 3);
-    let y_below = cx.update(|_, cx| center.read(cx).price_to_y(below.to_f64().unwrap()).unwrap());
-    let click_at = gpui_kit::point(chart_bounds.center().x, px(y_below));
+    let y_close = cx.update(|_, cx| center.read(cx).price_to_y(close.to_f64().unwrap()).unwrap());
+    let plot_bottom = f32::from(chart_bounds.origin.y + chart_bounds.size.height);
+    let place_below_close = plot_bottom - y_close >= 36.;
+    let (y_click, draft_option_id) = if place_below_close {
+        (y_close + 8., "trn-wb-draft-BuyLimit")
+    } else {
+        (y_close - 36., "trn-wb-draft-SellLimit")
+    };
+    let click_at = gpui_kit::point(chart_bounds.center().x, px(y_click));
+    assert!(
+        chart_bounds.contains(&click_at),
+        "draw-to-order click must lie inside the price plot"
+    );
     cx.simulate_click(click_at, gpui_kit::Modifiers::default());
     cx.run_until_parked();
     {
         let g = state.lock().unwrap();
         let draft = g.training.wb.draft.as_ref().expect("draft opened");
         assert_eq!(draft.options.len(), 2);
-        assert!(draft.price < close);
+        if place_below_close {
+            assert!(draft.price < close);
+        } else {
+            assert!(draft.price > close);
+        }
         assert_eq!(g.training.workspace.as_ref().unwrap().open_orders.len(), 0);
     }
     // Ctrl+Enter without a chosen option does nothing — even when focus is inside the order ticket (`UI-B03`).
@@ -214,7 +231,7 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
         snapshot(&state).open_orders.is_empty(),
         "UI-B03: open draft with no option must block order-ticket Ctrl+Enter submit"
     );
-    click_id(cx, "trn-wb-draft-BuyLimit");
+    click_id(cx, draft_option_id);
     cx.simulate_keystrokes("ctrl-enter");
     idle!();
     let ws3 = snapshot(&state);
@@ -231,26 +248,31 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
     assert!(!state.lock().unwrap().training.wb.draw_order_enabled);
 
     // 5. Drag the order line: release = ModifyOrder (never a fill), locked lines don't move.
-    let y_line = cx.update(|window, cx| {
+    let (chart_bounds, y_line) = cx.update(|window, cx| {
         window.render_frame(cx);
-        center
-            .read(cx)
-            .price_to_y(limit_price.to_f64().unwrap())
-            .unwrap()
+        let panel = center.read(cx);
+        let bounds = panel.training_plot_bounds.lock().unwrap().unwrap();
+        let y = panel.price_to_y(limit_price.to_f64().unwrap()).unwrap();
+        (bounds, y)
     });
     let x = chart_bounds.center().x;
+    let drag_target = gpui_kit::point(x, px(y_line + 12.));
+    assert!(
+        chart_bounds.contains(&drag_target),
+        "unlocked drag target must lie inside the price plot"
+    );
     cx.simulate_mouse_down(
         gpui_kit::point(x, px(y_line)),
         gpui_kit::MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.simulate_mouse_move(
-        gpui_kit::point(x, px(y_line + 12.)),
+        drag_target,
         Some(gpui_kit::MouseButton::Left),
         gpui_kit::Modifiers::default(),
     );
     cx.simulate_mouse_up(
-        gpui_kit::point(x, px(y_line + 12.)),
+        drag_target,
         gpui_kit::MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
@@ -272,15 +294,20 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
         panic!()
     };
     assert_eq!(restored, limit_price);
-    // Lock: a drag does nothing.
+    // Lock: a drag inside the price plot does nothing.
     click_id(cx, &format!("trn-wb-lock-{}", order.order_id));
+    let lock_drag_target = gpui_kit::point(x, px(y_line + 20.));
+    assert!(
+        chart_bounds.contains(&lock_drag_target),
+        "locked drag target must lie inside the price plot"
+    );
     cx.simulate_mouse_down(
         gpui_kit::point(x, px(y_line)),
         gpui_kit::MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
     cx.simulate_mouse_up(
-        gpui_kit::point(x, px(y_line + 20.)),
+        lock_drag_target,
         gpui_kit::MouseButton::Left,
         gpui_kit::Modifiers::default(),
     );
@@ -363,62 +390,8 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
     assert!(has_rendered_id(cx, "trn-wb-measure"));
     cx.simulate_keystrokes("escape");
 
-    // 8. Continuous play at 150 ms: atomic steps, auto-pause on a fill or trigger.
-    click_id(cx, "trn-wb-speed-3");
-    let start_step = snapshot(&state).run.current_step_index;
-    click_id(cx, "trn-wb-play");
-    // Long enough for the whole run at 150 ms per bar; stops at the first auto-pause.
-    for _ in 0..4000 {
-        cx.executor().advance_clock(Duration::from_millis(50));
-        cx.run_until_parked();
-        if !state.lock().unwrap().training.wb.playback.playing {
-            break;
-        }
-    }
-    idle!();
-    {
-        let g = state.lock().unwrap();
-        assert!(!g.training.wb.playback.playing, "playback auto-paused");
-        let reason = g.training.wb.playback.last_pause_reason.clone().unwrap();
-        assert!(
-            reason.contains("成交") || reason.contains("训练结束"),
-            "pause reason: {reason}"
-        );
-    }
-    let ws5 = snapshot(&state);
-    assert!(ws5.run.current_step_index > start_step);
-    assert_eq!(
-        ws5.chart_slice.visible_end_index, ws5.run.visible_bar_count,
-        "UI-B01: PlayStep must advance chart viewport to reveal newly played bars"
-    );
-    // Leaving Workspace pauses playback cleanly (`UI-B02`).
-    if ws5.run.status == SimRunStatus::Active {
-        let step_before_nav = ws5.run.current_step_index;
-        click_id(cx, "trn-wb-play");
-        assert!(state.lock().unwrap().training.wb.playback.playing);
-        click_id(cx, "nav-btn-nav-overview");
-        idle!();
-        for _ in 0..10 {
-            cx.executor().advance_clock(Duration::from_millis(50));
-            cx.run_until_parked();
-        }
-        assert!(
-            !state.lock().unwrap().training.wb.playback.playing,
-            "UI-B02: navigating away from training workspace must pause playback"
-        );
-        click_id(cx, "nav-btn-nav-training");
-        idle!();
-        assert_eq!(snapshot(&state).run.current_step_index, step_before_nav);
-    }
-    // Undo never crosses an advance.
-    cx.simulate_keystrokes("ctrl-z");
-    idle!();
-    assert_eq!(
-        snapshot(&state).run.current_step_index,
-        ws5.run.current_step_index
-    );
-
-    // 9. Focused input swallows shortcuts: N / Space do nothing.
+    // 8. Focused input swallows shortcuts (`N` / `Space`) and leaving Workspace pauses playback (`UI-B02`).
+    // Run both while guaranteed active in Workspace before continuous play may finish the run.
     cx.update(|window, cx| {
         center.update(cx, |panel, cx| {
             let fh = panel
@@ -436,9 +409,89 @@ async fn test_m5_w05_headless_workbench_flow(cx: &mut TestAppContext) {
     assert!(!state.lock().unwrap().training.wb.playback.playing);
     cx.simulate_keystrokes("escape");
 
-    // 10. Finish → report → reveal; the practice account was settled.
-    click_id(cx, "training-finish-btn");
+    click_id(cx, "trn-wb-speed-3");
+    let step_before_nav = snapshot(&state).run.current_step_index;
+    click_id(cx, "trn-wb-play");
+    assert!(state.lock().unwrap().training.wb.playback.playing);
+    click_id(cx, "nav-btn-nav-overview");
     idle!();
+    for _ in 0..10 {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+    }
+    assert!(
+        !state.lock().unwrap().training.wb.playback.playing,
+        "UI-B02: navigating away from training workspace must pause playback"
+    );
+    click_id(cx, "nav-btn-nav-training");
+    idle!();
+    assert_eq!(snapshot(&state).run.current_step_index, step_before_nav);
+
+    // 9. Continuous play at 150 ms: atomic steps, auto-pause on a fill or end of run.
+    let start_step = snapshot(&state).run.current_step_index;
+    click_id(cx, "trn-wb-play");
+    // Long enough for the whole run at 150 ms per bar; stops at the first auto-pause.
+    for _ in 0..4000 {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+        if !state.lock().unwrap().training.wb.playback.playing {
+            break;
+        }
+    }
+    idle!();
+    let mode_after_play = {
+        let g = state.lock().unwrap();
+        assert!(!g.training.wb.playback.playing, "playback auto-paused");
+        let reason = g.training.wb.playback.last_pause_reason.clone().unwrap();
+        assert!(
+            reason.contains("成交") || reason.contains("训练结束"),
+            "pause reason: {reason}"
+        );
+        g.training.mode
+    };
+    if mode_after_play == TrainingViewMode::Workspace {
+        let ws5 = snapshot(&state);
+        assert!(ws5.run.current_step_index > start_step);
+        assert_eq!(
+            ws5.chart_slice.visible_end_index, ws5.run.visible_bar_count,
+            "UI-B01: PlayStep must advance chart viewport to reveal newly played bars"
+        );
+        // Undo never crosses an advance.
+        cx.simulate_keystrokes("ctrl-z");
+        idle!();
+        assert_eq!(
+            snapshot(&state).run.current_step_index,
+            ws5.run.current_step_index
+        );
+        // 10. Finish → report → reveal; the practice account was settled.
+        click_id(cx, "training-finish-btn");
+        idle!();
+    } else {
+        assert_eq!(mode_after_play, TrainingViewMode::Report);
+        let (rep_step, rep_visible) = {
+            let g = state.lock().unwrap();
+            assert!(
+                g.training.workspace.is_none(),
+                "finished run must clear stale active workspace snapshot"
+            );
+            let rep = g.training.report.as_ref().expect("report opened on finish");
+            assert_eq!(rep.run.status, SimRunStatus::Finished);
+            assert!(rep.run.current_step_index > start_step);
+            let vp = g.training.chart_viewport.as_ref().unwrap();
+            assert_eq!(
+                vp.visible_range().end,
+                rep.run.visible_bar_count,
+                "UI-B01: PlayStep must advance chart viewport to reveal newly played bars"
+            );
+            (rep.run.current_step_index, rep.run.visible_bar_count)
+        };
+        // Undo never crosses an advance or reopens a finished run.
+        cx.simulate_keystrokes("ctrl-z");
+        idle!();
+        let after_undo = host.get_training_report(&run_id).unwrap();
+        assert_eq!(after_undo.run.current_step_index, rep_step);
+        assert_eq!(after_undo.run.visible_bar_count, rep_visible);
+    }
     assert_eq!(
         state.lock().unwrap().training.mode,
         TrainingViewMode::Report
