@@ -1094,4 +1094,10 @@ mod tests {
         assert!(install(&package, &target, "invalid", &fixture.0).is_err());
         assert!(!target.exists());
     }
+
+    #[test]
+    fn static_crt_build_timeout_stays_within_quiet_command_limit() {
+        assert!(STATIC_CRT_BUILD_TIMEOUT > delta_app::DEFAULT_QUIET_COMMAND_TIMEOUT);
+        assert!(STATIC_CRT_BUILD_TIMEOUT <= delta_app::MAX_QUIET_COMMAND_TIMEOUT);
+    }
 }
