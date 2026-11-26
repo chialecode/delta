@@ -242,6 +242,13 @@ impl Drop for QuietJobObject {
     }
 }
 
+/// Default timeout for [`run_quiet_command`] (5 minutes).
+pub const DEFAULT_QUIET_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Hard upper bound for [`run_quiet_command_with_timeout`] (30 minutes, enough for cold
+/// static-CRT `--release` workspace builds on 4-core CI runners while remaining explicitly bounded).
+pub const MAX_QUIET_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
 /// Unified quiet child process execution helper (`D-25` / S-10).
 /// All other callers in the workspace are forbidden by `clippy.toml` from calling `std::process::Command::new`.
 pub fn run_quiet_command<I, S>(
@@ -259,7 +266,7 @@ where
         args,
         current_dir,
         extra_env,
-        std::time::Duration::from_secs(300),
+        DEFAULT_QUIET_COMMAND_TIMEOUT,
     )
 }
 
@@ -277,8 +284,11 @@ where
     S: AsRef<OsStr>,
 {
     apply_process_quiet_guards();
-    if timeout.is_zero() || timeout > std::time::Duration::from_secs(300) {
-        return Err("command timeout must be between zero and 300 seconds".into());
+    if timeout.is_zero() || timeout > MAX_QUIET_COMMAND_TIMEOUT {
+        return Err(format!(
+            "command timeout must be between zero and {} seconds",
+            MAX_QUIET_COMMAND_TIMEOUT.as_secs()
+        ));
     }
 
     let mut cmd = Command::new(program);
@@ -1014,5 +1024,41 @@ mod tests {
             elapsed < Duration::from_secs(8),
             "caller waited {elapsed:?} for a detached process to release its stdout"
         );
+    }
+
+    #[test]
+    fn run_quiet_command_with_timeout_enforces_timeout_bounds() {
+        let exe = std::env::current_exe().unwrap();
+        let empty = BTreeMap::new();
+        let zero_err = run_quiet_command_with_timeout(
+            exe.as_os_str(),
+            ["--list"],
+            None,
+            &empty,
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(zero_err.contains("1800 seconds"), "{zero_err}");
+
+        let over_err = run_quiet_command_with_timeout(
+            exe.as_os_str(),
+            ["--list"],
+            None,
+            &empty,
+            MAX_QUIET_COMMAND_TIMEOUT + Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(over_err.contains("1800 seconds"), "{over_err}");
+
+        let ok = run_quiet_command_with_timeout(
+            exe.as_os_str(),
+            ["--exact", "process::tests::nonexistent_timeout_probe"],
+            None,
+            &empty,
+            MAX_QUIET_COMMAND_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(ok.status_code, Some(0), "{}", ok.stderr);
+        assert!(!ok.timed_out);
     }
 }

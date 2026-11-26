@@ -139,8 +139,22 @@ jobs:
       - name: Fetch pinned NSIS 3.13
         run: python -B scripts/fetch_nsis.py
 
+      - name: Cache static-CRT package target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/target-packages
+          key: cargo-packages-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-packages-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Pre-build delta-cli and static-CRT binaries for rehearsal
+        run: |
+          cargo build --release --locked -p delta-cli
+          CARGO_ENCODED_RUSTFLAGS=$'-C\x1ftarget-feature=+crt-static' \
+            cargo build --release --locked --target x86_64-pc-windows-msvc -p delta-desktop -p delta-cli --target-dir .local/target-packages
+
       - name: Rehearse upgrade and tamper rejection (isolated delta-test)
-        run: cargo run --release --locked -p delta-cli -- release-rehearse
+        run: target/release/delta-cli.exe release-rehearse
 
   build:
     name: build
@@ -172,7 +186,7 @@ jobs:
           rustup toolchain install
           cargo --version
 
-      - name: Cache Cargo dependencies and package target
+      - name: Cache Cargo dependencies and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -180,11 +194,18 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-            .local/target-packages
           key: cargo-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-release-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
             cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
+
+      - name: Cache static-CRT package target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .local/target-packages
+          key: cargo-packages-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-packages-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-
 
       - name: Cache pinned NSIS 3.13
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
