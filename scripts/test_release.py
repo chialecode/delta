@@ -193,14 +193,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("\npermissions: {}\n", text)
 
         # Every `uses:` action must be pinned to a full 40-char SHA and listed in
-        # `.github/actions-policy.json` (plus the two artifact actions pending user-authorized
-        # remote allowlist sync under #23; tighten once `.github/actions-policy.json` is synced).
+        # `.github/actions-policy.json`.
         policy = json.loads((REPO_ROOT / ".github/actions-policy.json").read_text(encoding="utf-8"))
-        pending_release_actions = {
-            "actions/upload-artifact@*",
-            "actions/download-artifact@*",
-        }
-        allowed = set(policy["selectedActions"]["patterns_allowed"]) | pending_release_actions
+        allowed = set(policy["selectedActions"]["patterns_allowed"])
         uses = re.findall(r"uses:\s*([^\s#]+)", text)
         self.assertGreaterEqual(len(uses), 4)
         for ref in uses:
@@ -210,7 +205,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertIn(
                 f"{action_name}@*",
                 allowed,
-                f"action {action_name} is not in .github/actions-policy.json or #23 pending list",
+                f"action {action_name} is not in .github/actions-policy.json",
             )
 
         # Split job blocks by 2-space job headers.
