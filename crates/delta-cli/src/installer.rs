@@ -326,9 +326,11 @@ impl PackagingContext {
             return Err(failure(
                 "PACKAGE_BUILD",
                 format!(
-                    "{} release build failed after {:?}; see {log_name}",
+                    "{} release build failed after {:?} (exit {:?}, timed_out: {}); see {log_name}",
                     identity.name(),
-                    started.elapsed()
+                    started.elapsed(),
+                    build.status_code,
+                    build.timed_out,
                 ),
             ));
         }

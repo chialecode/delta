@@ -6,9 +6,10 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
+    time::Duration,
 };
 
-use delta_app::{run_quiet_command, ErrorEnvelope};
+use delta_app::{run_quiet_command, run_quiet_command_with_timeout, ErrorEnvelope};
 use delta_data::sha256_file;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -424,6 +425,10 @@ pub(crate) fn collect_workspace_licenses(
     Ok(guard)
 }
 
+/// Bounded timeout for cold static-CRT `--release` compilation of `delta-desktop` + `delta-cli`
+/// (a 4-core CI runner takes > 5 minutes when `.local/target-packages` is cold).
+const STATIC_CRT_BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
+
 /// Shared release build with static CRT (`x86_64-pc-windows-msvc`) for `delta-desktop` & `delta-cli`.
 pub(crate) fn run_static_crt_release_build(
     root: &Path,
@@ -440,7 +445,7 @@ pub(crate) fn run_static_crt_release_build(
         "CARGO_BUILD_JOBS".into(),
         std::env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "4".into()),
     );
-    run_quiet_command(
+    run_quiet_command_with_timeout(
         OsStr::new("cargo"),
         [
             "build".into(),
@@ -457,6 +462,7 @@ pub(crate) fn run_static_crt_release_build(
         ],
         Some(root),
         &extra_env,
+        STATIC_CRT_BUILD_TIMEOUT,
     )
     .map_err(|e| failure("PACKAGE_BUILD", e))
 }
