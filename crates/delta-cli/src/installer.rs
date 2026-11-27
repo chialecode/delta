@@ -49,6 +49,10 @@ pub(crate) struct InstallerArtifact {
     pub setup_sha256: String,
     pub size: u64,
     pub source_fingerprint: String,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub git_commit: Option<String>,
     pub nsis: String,
     pub built_at: String,
     pub binary_imports: Value,
@@ -194,6 +198,28 @@ fn git_tags(root: &Path) -> Result<Vec<String>, ErrorEnvelope> {
     Ok(result.stdout.lines().map(str::to_string).collect())
 }
 
+/// Current Git branch (when attached) and full commit SHA, best effort so packaging and
+/// `install-dev` record source context on both `main` and clean PR branches.
+pub(crate) fn git_head_info(root: &Path) -> (Option<String>, Option<String>) {
+    let query = |args: &[&str]| -> Option<String> {
+        let result = run_quiet_command(
+            OsStr::new("git"),
+            args.iter().copied(),
+            Some(root),
+            &BTreeMap::new(),
+        )
+        .ok()?;
+        if result.status_code != Some(0) || result.timed_out {
+            return None;
+        }
+        let trimmed = result.stdout.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    };
+    let branch = query(&["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD");
+    let commit = query(&["rev-parse", "HEAD"]);
+    (branch, commit)
+}
+
 /// Next development version for `identity` from the repository tags.
 pub(crate) fn default_dev_version(root: &Path, at: DateTime<Utc>) -> Result<String, ErrorEnvelope> {
     delta_app::dev_version(&git_tags(root)?, at)
@@ -257,6 +283,8 @@ pub(crate) struct PackagingContext {
     makensis: PathBuf,
     tags: Vec<String>,
     pub fingerprint: String,
+    git_branch: Option<String>,
+    git_commit: Option<String>,
 }
 
 impl PackagingContext {
@@ -274,6 +302,7 @@ impl PackagingContext {
         let output = plain_canonical(output).map_err(|e| failure("PACKAGE_OUTPUT", e))?;
         let licenses = collect_workspace_licenses(&root, &output, false)?;
         let tags = git_tags(&root)?;
+        let (git_branch, git_commit) = git_head_info(&root);
         Ok(Self {
             root,
             output,
@@ -281,6 +310,8 @@ impl PackagingContext {
             makensis,
             tags,
             fingerprint,
+            git_branch,
+            git_commit,
         })
     }
 
@@ -379,7 +410,8 @@ impl PackagingContext {
             stage.join("build-info.json"),
             serde_json::to_vec_pretty(&json!({
                 "identity": identity.name(), "version": version_text, "channel": identity.channel().as_str(),
-                "source_fingerprint": self.fingerprint, "built_at": built_at, "binary_imports": imports,
+                "source_fingerprint": self.fingerprint, "git_branch": self.git_branch, "git_commit": self.git_commit,
+                "built_at": built_at, "binary_imports": imports,
             }))
             .map_err(|e| failure("PACKAGE_INFO", e))?,
         )
@@ -448,6 +480,8 @@ impl PackagingContext {
                 .len(),
             setup_path: setup_path.clone(),
             source_fingerprint: self.fingerprint.clone(),
+            git_branch: self.git_branch.clone(),
+            git_commit: self.git_commit.clone(),
             nsis: format!("{NSIS_VERSION} (template-enforced)"),
             built_at,
             binary_imports: imports,
@@ -892,6 +926,12 @@ pub(crate) struct InstallDevReceipt {
     pub elapsed_ms: u64,
     pub at: String,
     pub installer: String,
+    #[serde(default)]
+    pub source_fingerprint: Option<String>,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub git_commit: Option<String>,
     pub verified_registry_version: Option<String>,
     pub verified_exe_version: Option<String>,
     pub restart_process_id: Option<u32>,
@@ -1042,13 +1082,14 @@ pub(crate) fn install_dev(
     }
 }
 
-fn install_dev_into(
+/// Validate that `artifact` matches `expected` (dev-like only) and has a valid semantic version,
+/// populating receipt source metadata. Both `main` and clean PR branches are accepted so local
+/// `delta-dev` can be updated before user PR review.
+fn validate_install_dev_artifact(
     receipt: &mut InstallDevReceipt,
-    package: &Path,
+    artifact: &InstallerArtifact,
     expected: InstallIdentity,
-    log_dir: &Path,
-) -> Result<(), ErrorEnvelope> {
-    let artifact = InstallerArtifact::load(package)?;
+) -> Result<(InstallIdentity, String), ErrorEnvelope> {
     let identity = artifact.identity()?;
     if identity != expected || !identity.is_dev_like() {
         return Err(failure(
@@ -1068,9 +1109,24 @@ fn install_dev_into(
             )
         })?
         .to_string();
+    receipt.new_version = validated_version.clone();
+    receipt.source_fingerprint = Some(artifact.source_fingerprint.clone());
+    receipt.git_branch = artifact.git_branch.clone();
+    receipt.git_commit = artifact.git_commit.clone();
+    Ok((identity, validated_version))
+}
+
+fn install_dev_into(
+    receipt: &mut InstallDevReceipt,
+    package: &Path,
+    expected: InstallIdentity,
+    log_dir: &Path,
+) -> Result<(), ErrorEnvelope> {
+    let artifact = InstallerArtifact::load(package)?;
+    let (identity, validated_version) =
+        validate_install_dev_artifact(receipt, &artifact, expected)?;
     let directory = install_dir(identity)
         .ok_or_else(|| failure("INSTALL_DEV_DIR", "LOCALAPPDATA is not set"))?;
-    receipt.new_version = validated_version.clone();
     receipt.install_location = directory.display().to_string();
     let previous = installed_version(identity);
     receipt.first_install = previous.is_none();
@@ -1748,19 +1804,27 @@ pub(crate) fn release_verify(
     }))
 }
 
+fn test_start_menu_shortcut(identity: InstallIdentity) -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|appdata| {
+        PathBuf::from(appdata)
+            .join("Microsoft/Windows/Start Menu/Programs")
+            .join(format!("{}.lnk", identity.display_name()))
+    })
+}
+
+fn test_desktop_shortcut(identity: InstallIdentity) -> Option<PathBuf> {
+    delta_app::user_desktop_dir()
+        .map(|desktop| desktop.join(format!("{}.lnk", identity.display_name())))
+}
+
 fn test_shortcuts(identity: InstallIdentity) -> Vec<PathBuf> {
-    let mut links = Vec::new();
-    if let Some(appdata) = std::env::var_os("APPDATA") {
-        links.push(
-            PathBuf::from(appdata)
-                .join("Microsoft/Windows/Start Menu/Programs")
-                .join(format!("{}.lnk", identity.display_name())),
-        );
-    }
-    if let Some(desktop) = delta_app::user_desktop_dir() {
-        links.push(desktop.join(format!("{}.lnk", identity.display_name())));
-    }
-    links
+    [
+        test_start_menu_shortcut(identity),
+        test_desktop_shortcut(identity),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// CI release rehearsal: using only `delta-test` and a throw-away key in `%TEMP%`, builds v1 and
@@ -2013,6 +2077,38 @@ pub(crate) fn release_rehearse(root: &Path) -> Result<Value, ErrorEnvelope> {
         &v1,
     )?;
 
+    // First silent install must create both Start-menu and desktop shortcuts. Backdate the
+    // Start-menu shortcut so the v1 -> v2 silent upgrade proves it is left completely untouched.
+    let start_menu_link = test_start_menu_shortcut(identity)
+        .ok_or_else(|| failure("REHEARSE_SHORTCUT", "APPDATA is not set"))?;
+    if !start_menu_link.is_file() {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            "v1 first silent install did not create Start-menu shortcut",
+        ));
+    }
+    let desktop_link = test_desktop_shortcut(identity)
+        .ok_or_else(|| failure("REHEARSE_SHORTCUT", "desktop directory unavailable"))?;
+    if !desktop_link.is_file() {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            "v1 first silent install did not create desktop shortcut",
+        ));
+    }
+    let backdated = std::time::SystemTime::now()
+        .checked_sub(Duration::from_secs(120))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&start_menu_link)
+        .and_then(|file| file.set_modified(backdated))
+        .map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+    let start_menu_mtime_before = fs::metadata(&start_menu_link)
+        .and_then(|m| m.modified())
+        .map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+    let start_menu_hash_before =
+        sha256_file(&start_menu_link).map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+
     // Isolated data sentinel must survive upgrade and uninstall.
     let data_dir = temp.join("data");
     fs::create_dir_all(&data_dir).map_err(|e| failure("REHEARSE_DATA", e))?;
@@ -2076,16 +2172,57 @@ pub(crate) fn release_rehearse(root: &Path) -> Result<Value, ErrorEnvelope> {
         ));
     }
 
+    // Silent over-install must leave an existing Start-menu shortcut untouched (mtime + bytes),
+    // and must never recreate one the user removed.
+    if !start_menu_link.is_file() {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            "existing Start-menu shortcut disappeared during v2 silent upgrade",
+        ));
+    }
+    let start_menu_mtime_after = fs::metadata(&start_menu_link)
+        .and_then(|m| m.modified())
+        .map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+    let start_menu_hash_after =
+        sha256_file(&start_menu_link).map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+    if start_menu_mtime_after != start_menu_mtime_before
+        || start_menu_hash_after != start_menu_hash_before
+    {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            "v2 silent upgrade modified an existing Start-menu shortcut",
+        ));
+    }
+    fs::remove_file(&start_menu_link).map_err(|e| failure("REHEARSE_SHORTCUT", e))?;
+    let v2_reinstall_log = temp.join("reinstall-v2-no-start-menu.log");
+    let run_v2_reinstall = run_setup_silently(&downloaded_v2, &v2_reinstall_log)?;
+    if run_v2_reinstall.exit_code != Some(0) || run_v2_reinstall.timed_out {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            format!(
+                "v2 silent over-install failed: exit {:?}",
+                run_v2_reinstall.exit_code
+            ),
+        ));
+    }
+    if start_menu_link.exists() {
+        return Err(failure(
+            "REHEARSE_SHORTCUT",
+            "v2 silent over-install recreated a removed Start-menu shortcut",
+        ));
+    }
+
     let uninst_log = temp.join("uninstall.log");
     let run_uninst = run_uninstall_silently(identity, &uninst_log)?;
     if run_uninst.exit_code != Some(0)
         || run_uninst.timed_out
         || installed_version(identity).is_some()
         || dir.exists()
+        || test_shortcuts(identity).iter().any(|link| link.exists())
     {
         return Err(failure(
             "REHEARSE_UNINSTALL",
-            "silent uninstall left registry key or install directory",
+            "silent uninstall left registry key, shortcuts or install directory",
         ));
     }
     if fs::read(&sentinel).ok().as_deref() != Some(b"must survive upgrade and uninstall".as_slice())
@@ -2122,6 +2259,7 @@ pub(crate) fn release_rehearse(root: &Path) -> Result<Value, ErrorEnvelope> {
         "v1": v1,
         "v2": v2,
         "tamper_checks_passed": 6,
+        "start_menu_shortcut_preserved": true,
         "range_resume_headers": ranges,
         "elapsed_ms": started.elapsed().as_millis() as u64,
     }))
@@ -2352,6 +2490,20 @@ mod tests {
         assert_eq!(value("DELTA_APP_ID"), "io.github.chialecode.delta-dev-test");
         assert_eq!(value("DELTA_DESKTOP_ON_UPDATE"), "1");
         assert_eq!(value("DELTA_NUMERIC_VERSION"), "0.1.1.0");
+        for (identity, want_desktop_on_update) in [
+            (InstallIdentity::Release, "0"),
+            (InstallIdentity::Test, "0"),
+            (InstallIdentity::Dev, "1"),
+            (InstallIdentity::DevTest, "1"),
+        ] {
+            let identity_defines = nsis_defines(identity, &version, p, p, p, p);
+            let actual = identity_defines
+                .iter()
+                .find(|(n, _)| *n == "DELTA_DESKTOP_ON_UPDATE")
+                .map(|(_, v)| v.as_str())
+                .unwrap();
+            assert_eq!(actual, want_desktop_on_update, "{}", identity.name());
+        }
         assert_eq!(
             InstallIdentity::Dev.uninstall_key(),
             r"Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.delta-dev"
@@ -2360,6 +2512,69 @@ mod tests {
         assert!(template.contains("SetCompressor zlib"));
         assert!(!template.to_ascii_lowercase().contains("setcompressor lzma"));
         assert!(!template.to_ascii_lowercase().contains("/solid lzma"));
+    }
+
+    #[test]
+    fn nsis_template_skips_start_menu_on_silent_over_install_and_keeps_dev_desktop() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let template = fs::read_to_string(root.join(NSIS_TEMPLATE))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let on_init = template
+            .split("Function .onInit")
+            .nth(1)
+            .and_then(|rest| rest.split("FunctionEnd").next())
+            .expect("delta.nsi lacks Function .onInit");
+        // On any silent over-install ($FirstInstall != "1" and ${Silent}), SecStartMenu must
+        // always be unselected so existing Start-menu links are untouched and removed ones stay
+        // absent; interactive over-installs keep ticking existing links.
+        assert!(
+            on_init.contains("${If} $FirstInstall != \"1\"\n    ${If} ${Silent}\n"),
+            "silent over-install must enter a dedicated branch for SecStartMenu"
+        );
+        assert!(
+            !on_init.contains(
+                "${If} $FirstInstall != \"1\"\n  ${AndIfNot} ${FileExists} \"${DELTA_START_MENU_LINK}\""
+            ),
+            "SecStartMenu must not stay selected during silent over-install when the shortcut exists"
+        );
+        assert!(
+            on_init.contains(
+                "!insertmacro UnselectSection ${SecStartMenu}\n    ${ElseIfNot} ${FileExists} \"${DELTA_START_MENU_LINK}\"\n      !insertmacro UnselectSection ${SecStartMenu}"
+            ),
+            "delta.nsi must unselect SecStartMenu on silent over-install and on missing link in wizard"
+        );
+        // Dev-like silent over-installs still select SecDesktop.
+        assert!(
+            on_init.contains(
+                "!if \"${DELTA_DESKTOP_ON_UPDATE}\" == \"1\"\n      ${If} ${Silent}\n        !insertmacro SelectSection ${SecDesktop}"
+            ),
+            "dev-like silent over-install must still select SecDesktop"
+        );
+        // Unselected shortcut removal in -Finish is interactive-only; silent installs never delete.
+        let finish = template
+            .split("Section \"-Finish\"")
+            .nth(1)
+            .and_then(|rest| rest.split("SectionEnd").next())
+            .expect("delta.nsi lacks Section -Finish");
+        assert!(
+            finish.contains(
+                "${IfNot} ${Silent}\n    ${IfNot} ${SectionIsSelected} ${SecStartMenu}\n      Delete \"${DELTA_START_MENU_LINK}\""
+            ),
+            "Finish section must only delete Start-menu shortcut in interactive mode"
+        );
+        // Update uninstaller (/UPDATE) must not delete shortcuts.
+        let uninstall = template
+            .split("Section \"Uninstall\"")
+            .nth(1)
+            .and_then(|rest| rest.split("SectionEnd").next())
+            .expect("delta.nsi lacks Section Uninstall");
+        assert!(
+            uninstall.contains(
+                "${GetOptions} $0 \"/UPDATE\" $1\n  ${If} ${Errors}\n    Push \"${DELTA_START_MENU_LINK}\"\n    Call un.DeltaDeleteShortcut"
+            ),
+            "Uninstall section must skip shortcut deletion when /UPDATE is passed"
+        );
     }
 
     #[test]
@@ -2440,6 +2655,9 @@ mod tests {
             "elapsedMs",
             "at",
             "installer",
+            "sourceFingerprint",
+            "gitBranch",
+            "gitCommit",
             "verifiedRegistryVersion",
             "verifiedExeVersion",
             "launchMethod",
@@ -2449,6 +2667,127 @@ mod tests {
         }
         assert_eq!(value["installer"], "delta-dev-setup-0.1.1-dev.1-x64.exe");
         assert_eq!(value["newVersion"], "0.1.1-dev.1");
+    }
+
+    #[test]
+    fn install_dev_accepts_pr_branch_package_and_records_git_metadata() {
+        let root = std::env::var_os("DELTA_TEST_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("delta_pr_branch_{}", uuid::Uuid::new_v4()));
+        let repo = root.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let res = run_quiet_command(
+                OsStr::new("git"),
+                args.iter().copied(),
+                Some(&repo),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                res.status_code,
+                Some(0),
+                "git {:?} failed: {}",
+                args,
+                res.stderr
+            );
+        };
+        run_git(&["init"]);
+        run_git(&["checkout", "-b", "fix/50-preview-branch"]);
+        fs::write(repo.join("README.md"), b"preview\n").unwrap();
+        run_git(&["add", "README.md"]);
+        run_git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "test: preview commit",
+        ]);
+        let (branch, commit) = git_head_info(&repo);
+        assert_eq!(branch.as_deref(), Some("fix/50-preview-branch"));
+        let sha = commit.expect("expected HEAD commit SHA");
+        assert_eq!(sha.len(), 40);
+        assert!(sha.bytes().all(|b| b.is_ascii_hexdigit()));
+
+        // A clean PR-branch dev installer sidecar loads and passes install-dev validation,
+        // populating sourceFingerprint, gitBranch and gitCommit on the receipt.
+        let setup = root.join("delta-dev-setup-0.1.2-dev.20261127000000-x64.exe");
+        fs::write(&setup, b"fake-setup-payload").unwrap();
+        let artifact = InstallerArtifact {
+            identity: "delta-dev".into(),
+            version: "0.1.2-dev.20261127000000".into(),
+            setup_path: setup.clone(),
+            setup_sha256: sha256_file(&setup).unwrap(),
+            size: fs::metadata(&setup).unwrap().len(),
+            source_fingerprint: "b".repeat(64),
+            git_branch: branch.clone(),
+            git_commit: Some(sha.clone()),
+            nsis: "3.13 (template-enforced)".into(),
+            built_at: "2026-11-27T00:00:00Z".into(),
+            binary_imports: json!({}),
+        };
+        fs::write(
+            InstallerArtifact::sidecar(&setup),
+            serde_json::to_vec_pretty(&artifact).unwrap(),
+        )
+        .unwrap();
+        let loaded = InstallerArtifact::load(&setup).unwrap();
+        assert_eq!(loaded.git_branch.as_deref(), Some("fix/50-preview-branch"));
+        assert_eq!(loaded.git_commit.as_deref(), Some(sha.as_str()));
+
+        let mut receipt = InstallDevReceipt::start("delta-dev", &setup, "");
+        let (id, ver) =
+            validate_install_dev_artifact(&mut receipt, &loaded, InstallIdentity::Dev).unwrap();
+        assert_eq!(id, InstallIdentity::Dev);
+        assert_eq!(ver, "0.1.2-dev.20261127000000");
+        assert_eq!(
+            receipt.source_fingerprint.as_deref(),
+            Some("b".repeat(64).as_str())
+        );
+        assert_eq!(receipt.git_branch.as_deref(), Some("fix/50-preview-branch"));
+        assert_eq!(receipt.git_commit.as_deref(), Some(sha.as_str()));
+
+        // Non-dev identity packages remain refused.
+        let mut wrong_id_artifact = loaded.clone();
+        wrong_id_artifact.identity = "delta-test".into();
+        let mut wrong_receipt = InstallDevReceipt::start("delta-dev", &setup, "");
+        assert_eq!(
+            validate_install_dev_artifact(
+                &mut wrong_receipt,
+                &wrong_id_artifact,
+                InstallIdentity::Dev
+            )
+            .unwrap_err()
+            .code,
+            "INSTALL_DEV_IDENTITY"
+        );
+
+        // Older sidecars lacking git_branch / git_commit still deserialize cleanly.
+        let legacy_json = json!({
+            "identity": "delta-dev",
+            "version": "0.1.2-dev.20261127000000",
+            "setup_path": setup,
+            "setup_sha256": artifact.setup_sha256,
+            "size": artifact.size,
+            "source_fingerprint": "c".repeat(64),
+            "nsis": "3.13 (template-enforced)",
+            "built_at": "2026-11-27T00:00:00Z",
+            "binary_imports": {}
+        });
+        fs::write(
+            InstallerArtifact::sidecar(&setup),
+            serde_json::to_vec(&legacy_json).unwrap(),
+        )
+        .unwrap();
+        let legacy_loaded = InstallerArtifact::load(&setup).unwrap();
+        assert!(legacy_loaded.git_branch.is_none());
+        assert!(legacy_loaded.git_commit.is_none());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

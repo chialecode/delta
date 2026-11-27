@@ -27,7 +27,7 @@
 | --- | --- |
 | push、建 PR、更新 PR | 长期授权；push 只推指定分支，不用 `--all`/`--mirror` |
 | 合并低风险 PR | CI `repository-quality` 与独立审查通过后由 Agent 用 `gh pr merge <号> --squash --match-head-commit <头提交>` 合并 |
-| 合并[高风险](development-workflow.md#high-risk) PR | 用户合并 |
+| 合并[高风险](development-workflow.md#high-risk) PR | CI 与独立审查通过后，先从 PR 分支更新本机开发版并把回执记入 PR，等用户实测并审核后合并 |
 | 发布正式版、改远端设置与规则集、签名密钥、改写已推送历史 | 用户对具体动作授权（改写时用指定旧 SHA 的 `--force-with-lease`） |
 
 - **规则集 `main-protection`**：`main` 只经 PR 写入，禁止强推和删除，线性历史，只允许 squash 合并，所有讨论必须解决，必需检查为 `repository-quality`（[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)：Windows 运行器上的文档与空白检查、`scripts/` 单元测试、`cargo fmt --check`、`cargo clippy -D warnings` 与 `cargo test --workspace --locked`，等同 `quick_gate.py --all`；Cargo 依赖与 `target/` 用 `actions/cache` 按工具链与 `Cargo.lock` 缓存，PR 与 `main` 都可能保存缓存，仓库总量上限 10 GB，超出时 GitHub 先淘汰最旧的，见 [#27](https://github.com/chialecode/delta/issues/27)），无绕过名单。

@@ -879,6 +879,8 @@ fn offline_contracts(gate: &mut Gate) {
             "SetCompressor zlib",
             "Section \"开始菜单快捷方式\" SecStartMenu",
             "Section \"桌面快捷方式\" SecDesktop",
+            "!insertmacro UnselectSection ${SecStartMenu}",
+            "${ElseIfNot} ${FileExists} \"${DELTA_START_MENU_LINK}\"",
             "!if \"${DELTA_DESKTOP_ON_UPDATE}\" == \"1\"",
             "Call DeltaSetShortcutAumid",
             "Uninstall\\${DELTA_APP_ID}",
@@ -1715,6 +1717,15 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
             "a refused install-dev changed the installation or stopped the app",
         )?;
     }
+    // Save the v1 Start-menu shortcut bytes before removing both shortcuts so we can verify
+    // both silent over-install cases: absent stays absent, and existing stays untouched.
+    let start_menu_link = shortcut(identity).ok_or_else(|| failure("A06", "APPDATA is not set"))?;
+    let saved_start_menu = fs::read(&start_menu_link).map_err(|e| {
+        failure(
+            "A06",
+            format!("delta-dev-test Start-menu shortcut missing before over-install: {e}"),
+        )
+    })?;
     // The user removed both shortcuts: a dev-like silent over-install makes the desktop one again
     // (the sign of a new build) and no Start-menu one.
     remove_test_shortcuts(identity)?;
@@ -1784,8 +1795,53 @@ fn case_a06(gate: &mut Gate, packages: &Packages) -> Result<String, ErrorEnvelop
         identity,
         &packages.dev_test_v2.version,
     )?;
+    // Restore the existing Start-menu shortcut with a backdated mtime and remove the desktop
+    // shortcut, then run a silent over-install: desktop shortcut must be recreated while the
+    // existing Start-menu shortcut remains completely untouched (exact mtime and bytes preserved).
+    fs::write(&start_menu_link, &saved_start_menu).map_err(|e| failure("A06", e))?;
+    let backdated = std::time::SystemTime::now()
+        .checked_sub(Duration::from_secs(120))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&start_menu_link)
+        .and_then(|file| file.set_modified(backdated))
+        .map_err(|e| failure("A06", e))?;
+    let start_menu_mtime_before = fs::metadata(&start_menu_link)
+        .and_then(|m| m.modified())
+        .map_err(|e| failure("A06", e))?;
+    let start_menu_hash_before = sha256_file(&start_menu_link).map_err(|e| failure("A06", e))?;
+    if let Some(desktop) = desktop_shortcut(identity).filter(|link| link.exists()) {
+        fs::remove_file(&desktop).map_err(|e| failure("A06", e))?;
+    }
+    let preserve_log = setup_log(gate, "a06-setup-preserve-start-menu");
+    let preserve_run = run_setup_silently(&packages.dev_test_v2.setup_path, &preserve_log)?;
+    ensure(
+        preserve_run.exit_code == Some(0) && !preserve_run.timed_out,
+        format!(
+            "dev-test silent over-install (preserve Start menu) failed: exit {:?}",
+            preserve_run.exit_code
+        ),
+    )?;
+    ensure(
+        has_shortcut(desktop_shortcut(identity)),
+        "dev-like silent over-install did not recreate desktop shortcut when Start-menu shortcut existed",
+    )?;
+    ensure(
+        start_menu_link.is_file(),
+        "dev-like silent over-install removed an existing Start-menu shortcut",
+    )?;
+    let start_menu_mtime_after = fs::metadata(&start_menu_link)
+        .and_then(|m| m.modified())
+        .map_err(|e| failure("A06", e))?;
+    let start_menu_hash_after = sha256_file(&start_menu_link).map_err(|e| failure("A06", e))?;
+    ensure(
+        start_menu_mtime_after == start_menu_mtime_before
+            && start_menu_hash_after == start_menu_hash_before,
+        "dev-like silent over-install modified an existing Start-menu shortcut (mtime or bytes changed)",
+    )?;
     Ok(format!(
-        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently (desktop shortcut made again, no Start-menu one), restarted in background as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept",
+        "delta-test package refused (INSTALL_DEV_IDENTITY) and same-version package refused (INSTALL_DEV_DOWNGRADE) without changes; running app (pid {}) saved and exited, {} -> {} silently (desktop shortcut made again, absent Start-menu shortcut stayed absent), restarted in background as pid {restarted} with its previous arguments {restarted_args} and answered focus as {} (mutex held: {mutex_held}), then quit on request; library kept; silent over-install with existing Start-menu shortcut left Start-menu .lnk untouched (mtime + SHA-256 preserved) while recreating desktop shortcut",
         before["detail"]["process_id"],
         packages.dev_test_v1.version,
         packages.dev_test_v2.version,
