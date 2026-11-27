@@ -17,8 +17,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "DELTA：Agent 与开发者工作入口",
-      "reviewed": "2026-11-24",
-      "basis": "D-38（2026-11-24 流程统一）；vendor-neutral 工作入口"
+      "reviewed": "2026-11-27",
+      "basis": "D-38、D-40；vendor-neutral 工作入口与审核前本机开发版安装规则"
     },
     {
       "path": "CLAUDE.md",
@@ -62,8 +62,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "DELTA",
-      "reviewed": "2026-11-24",
-      "basis": "M2 v1.0 B ready-for-review: final M2/M1 gates, real workflows, static-CRT packages and explicit product/manual limits；2026-11-24 D-38 流程统一"
+      "reviewed": "2026-11-27",
+      "basis": "M2 v1.0 B ready-for-review: final M2/M1 gates, real workflows, static-CRT packages and explicit product/manual limits；2026-11-24 D-38 流程统一；2026-11-27 D-40 快捷方式口径"
     },
     {
       "path": "REVIEW.md",
@@ -134,8 +134,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "已确认决定与设计默认值",
-      "reviewed": "2026-11-24",
-      "basis": "D-01～D-23 用户确认决定及 A-01～A-07 可逆设计默认值；2026-11-24 D-38 流程统一"
+      "reviewed": "2026-11-27",
+      "basis": "D-01～D-40 用户确认决定及 A-01～A-08 可逆设计默认值；2026-11-27 D-40 dev 重装快捷方式与审核前安装规则"
     },
     {
       "path": "docs/decisions/open-questions.md",
@@ -287,8 +287,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "数据、凭据与恢复规则",
-      "reviewed": "2026-11-24",
-      "basis": "M2 B review F-03/04/06/07: library credentials, deletion recovery, package ownership, static CRT and bounded PE inspection, metadata-only logging；2026-11-24 D-38 流程统一"
+      "reviewed": "2026-11-27",
+      "basis": "M2 B review F-03/04/06/07: library credentials, deletion recovery, package ownership, static CRT and bounded PE inspection, metadata-only logging；D-38、D-39、D-40"
     },
     {
       "path": "docs/dev-rules/development-workflow.md",
@@ -296,8 +296,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "issue 驱动的开发流程：需求队列、什么时候找用户、每次改动的流程与高风险清单、开发版自动安装、教训循环与每周维护",
-      "reviewed": "2026-11-24",
-      "basis": "D-38（2026-11-24 流程统一）；D-25、D-36、D-37"
+      "reviewed": "2026-11-27",
+      "basis": "D-38、D-40；D-25、D-36、D-37"
     },
     {
       "path": "docs/dev-rules/git-workflow.md",
@@ -305,8 +305,8 @@
       "status": "active",
       "owner": "维护者",
       "scope": "分支与提交、DCO、远端授权、main 保护与仓库设置镜像",
-      "reviewed": "2026-11-24",
-      "basis": "D-27、D-38（2026-11-24 流程统一）"
+      "reviewed": "2026-11-27",
+      "basis": "D-27、D-38、D-40"
     },
     {
       "path": "docs/dev-rules/local-files-and-references.md",

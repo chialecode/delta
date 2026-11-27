@@ -453,9 +453,11 @@ SectionEnd
 
 ; Shortcuts. In the wizard both are optional: ticked on a first install,
 ; otherwise as the shortcuts are now. Silent installs decide in .onInit: a
-; first install makes both; an over-install keeps the ones there and makes no
-; new one, except that dev-like identities make the desktop shortcut again as
-; a sign of the update.
+; first install makes both; a silent over-install always skips SecStartMenu so
+; the Start menu shortcut is never recreated or rewritten (absent stays absent,
+; existing stays untouched); for SecDesktop it keeps an existing shortcut and
+; makes no new one, except that dev-like identities (DELTA_DESKTOP_ON_UPDATE=1)
+; still make the desktop shortcut as a sign of the update.
 Section "开始菜单快捷方式" SecStartMenu
   SetOutPath "$INSTDIR"
   CreateShortCut "${DELTA_START_MENU_LINK}" "$INSTDIR\${DELTA_DESKTOP_EXE}"
@@ -527,8 +529,14 @@ Function .onInit
 
   ; Shortcut defaults (see the shortcut sections).
   ${If} $FirstInstall != "1"
-  ${AndIfNot} ${FileExists} "${DELTA_START_MENU_LINK}"
-    !insertmacro UnselectSection ${SecStartMenu}
+    ${If} ${Silent}
+      ; Silent over-installs (updates and dev reinstalls) never recreate or
+      ; rewrite the Start menu shortcut: absent stays absent and existing stays
+      ; untouched.
+      !insertmacro UnselectSection ${SecStartMenu}
+    ${ElseIfNot} ${FileExists} "${DELTA_START_MENU_LINK}"
+      !insertmacro UnselectSection ${SecStartMenu}
+    ${EndIf}
   ${EndIf}
   ${If} $FirstInstall != "1"
   ${AndIfNot} ${FileExists} "${DELTA_DESKTOP_LINK}"
@@ -578,7 +586,7 @@ Section "Uninstall"
   !insertmacro DELTA_REMOVE_INSTALLED_FILES
 
   ; An update (run by the next installer) stops here: the installer then
-  ; writes the new files, the uninstaller, the shortcuts and the entry.
+  ; writes the new files, the uninstaller, any selected shortcuts and the entry.
   ClearErrors
   ${GetOptions} $0 "/UPDATE" $1
   ${If} ${Errors}

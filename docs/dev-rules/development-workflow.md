@@ -36,8 +36,8 @@
 4. **提交**：Conventional Commits（`feat: …`、`fix(training): …`），每个提交 `git commit -s`。一个 PR 只做一件事；PR 合并时 squash 成一个提交，分支里提交几次都可以。
 5. **PR**：push 后建 PR，按模板写关联 issue、做了什么、验证（命令 / 被测源码指纹 / 结果 / 未运行项）、风险。碰了高风险清单就加 `risk:high` 标签。
 6. **审查**：CI `repository-quality` 通过后，由干净上下文的审查者（新开的子代理，或交给另一个 Agent）按 [REVIEW](../../REVIEW.md) 审查完整改动；作者不能自己审自己。阻塞项修完再审。
-7. **合并**：低风险 PR 由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；`risk:high` 的 PR 留给用户合并。不轮询长挂命令（如 `gh pr checks --watch`）。
-8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](#dev-install-at-handoff)；在 issue 或对话里报告结果与一个首选下一步。
+7. **审核前更新本机开发版与合并**：低风险 PR 在 CI 与独立审查通过后由 Agent `gh pr merge <号> --squash --match-head-commit <头提交>` 合并；需要用户审核/实测的 PR（包括全部 `risk:high` PR 与界面/行为变更 PR）在请用户审核前，先在干净的 PR 分支上执行[开发版自动安装](#dev-install-at-handoff)，把回执（含版本、`sourceFingerprint`、`gitBranch`、`gitCommit`）写进 PR 正文或 `Agent：` 评论，保持 PR 打开等用户先测试再审核与合并。不轮询长挂命令（如 `gh pr checks --watch`）。
+8. **合并后**：本地 `git switch main && git pull --ff-only`，运行[开发版自动安装](#dev-install-at-handoff)保持 `main` 与本机开发版同步；在 issue 或对话里报告结果与一个首选下一步。
 
 <a id="high-risk"></a>
 ### 2.1 高风险清单
@@ -55,15 +55,15 @@ PR 只要碰到下列任一项就是高风险，加 `risk:high`，Agent 不自�
 <a id="dev-install-at-handoff"></a>
 ### 2.2 开发版自动安装
 
-每次合并进 `main` 后（本机拉取 `main` 后），以及请用户实机检查前，Agent 执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（NSIS 安装包，[D-39](../decisions/confirmed-decisions.md#d-39)）：
+每次请用户审核 PR 前（尤其是 `risk:high` 或涉及界面/安装/行为变更的 PR，直接在干净的 PR 分支上执行，让用户先测试本机开发版再决定是否通过 PR，[D-40](../decisions/confirmed-decisions.md#d-40)），以及每次合并进 `main` 后（本机拉取 `main` 后保持同步）与请用户实机检查前，Agent 执行 `cargo run -p delta-cli -- package-build` 与 `cargo run -p delta-cli -- install-dev`，把最新开发版静默装到本机 `delta-dev`（NSIS 安装包，[D-39](../decisions/confirmed-decisions.md#d-39)）：
 
-1. **首次安装也自动完成**：本机没有 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.delta-dev` 就直接首次安装；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变；从不碰正式版。`DELTA_DEV_AUTO_INSTALL=0` 时跳过（`reason=disabled`），只影响 `delta-dev`，不影响门禁的 `delta-dev-test`。
+1. **首次安装也自动完成**：本机没有 `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.chialecode.delta-dev` 就直接首次安装；已装版本不低于安装包时报 `INSTALL_DEV_DOWNGRADE`、本机不变；支持在干净的 PR 分支与 `main` 分支运行，从不碰正式版。`DELTA_DEV_AUTO_INSTALL=0` 时跳过（`reason=disabled`），只影响 `delta-dev`，不影响门禁的 `delta-dev-test`。
 2. **窗口开着时推迟**：`delta-dev` 在运行且已安装的 `delta-dev.exe` 有可见的顶层窗口（最小化也算，隐藏到托盘不算）时，说明用户正在使用，每 2 秒检查一次，最多等 10 分钟；仍开着就跳过这次安装（跳过不算失败，退出码 0），回执记 `reason=window_open` 并提示关窗后重新运行 `install-dev`。窗口按已安装的 `delta-dev.exe` 路径匹配，`cargo run` 从源码运行的副本不算。
 3. **请托盘中的实例保存后退出**：经控制管道 `quit-for-update`，最多等 30 秒，从不强杀；忙碌或保存失败时放弃本次安装（`INSTALL_DEV_APP_BUSY`），本机不变。
-4. **静默安装并核对**：以 `/S /LOG=<日志>` 安装，从卸载项与已安装程序的 `--build-info` 双重核对版本等于安装包；装完不论原来是否在运行，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）。
-5. **回执**：打印到标准输出并写 `.local/reports/m3/install-dev/install-dev.json`（失败时也写，带已知的旧版本、是否在运行与安装日志；门禁的测试身份写 `install-dev-delta-dev-test.json`，不覆盖它），字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `installer`、`verifiedRegistryVersion`、`verifiedExeVersion`、`restartProcessId`、`launchMethod`、`guidance`、`setup`。`inJob: true` 时请用户从开始菜单打开一次。
+4. **静默安装并核对**：以 `/S /LOG=<日志>` 安装（覆盖安装时跳过开始菜单快捷方式区段，不重建也不改写已有开始菜单 `.lnk`，同时仍可创建桌面快捷方式；D-40），从卸载项与已安装程序的 `--build-info` 双重核对版本等于安装包；装完不论原来是否在运行，都以 `--background` 在系统托盘常驻、不打开主窗口、不抢焦点（D-36 / D-37）。
+5. **回执**：打印到标准输出并写 `.local/reports/m3/install-dev/install-dev.json`（失败时也写，带已知的旧版本、是否在运行与安装日志；门禁的测试身份写 `install-dev-delta-dev-test.json`，不覆盖它），字段统一为 camelCase：`identity`、`installed`、`skipped`、`reason`、`error`、`firstInstall`、`oldVersion`、`newVersion`、`installLocation`、`wasRunning`、`windowOpen`、`deferred`、`deferMs`、`quitMs`、`relaunched`、`background`、`inJob`、`elapsedMs`、`at`，另有 `installer`、`sourceFingerprint`、`gitBranch`、`gitCommit`、`verifiedRegistryVersion`、`verifiedExeVersion`、`restartProcessId`、`launchMethod`、`guidance`、`setup`。`inJob: true` 时请用户从开始菜单打开一次。
 
-装好的版本与 `source_fingerprint` 写进 PR 或 issue 评论。只为自动验证的打包与门禁都不安装。
+装好的版本、`sourceFingerprint`、`gitBranch`、`gitCommit` 与回执摘要写进 PR 正文或 `Agent：` 评论。只为自动验证的打包与门禁都不安装。
 
 <a id="next-step"></a>
 ### 2.3 收尾报告
