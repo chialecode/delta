@@ -26,7 +26,7 @@ sha2 = "0.11"
 hex = "0.4"
 csv = "1.4.0"
 quick-xml = { version = "0.42", features = ["serialize"] }
-rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
+rusqlite = { version = "0.43.0", features = ["bundled", "backup"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "gzip", "stream"] }
 eventsource-stream = "0.2.3"
